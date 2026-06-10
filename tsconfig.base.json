@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "types": ["bun-types"],
+    "paths": {
+      "@piplus/api/*": ["apps/api/src/*"],
+      "@piplus/web/*": ["apps/web/src/*"],
+      "@piplus/db": ["packages/db/src/index.ts"],
+      "@piplus/db/*": ["packages/db/src/*"],
+      "@piplus/domain": ["packages/domain/src/index.ts"],
+      "@piplus/domain/*": ["packages/domain/src/*"],
+      "@piplus/pi-client": ["packages/pi-client/src/index.ts"],
+      "@piplus/pi-client/*": ["packages/pi-client/src/*"],
+      "@piplus/shared": ["packages/shared/src/index.ts"],
+      "@piplus/shared/*": ["packages/shared/src/*"],
+      "@piplus/ui": ["packages/ui/src/index.ts"],
+      "@piplus/ui/*": ["packages/ui/src/*"]
+    }
+  }
+}

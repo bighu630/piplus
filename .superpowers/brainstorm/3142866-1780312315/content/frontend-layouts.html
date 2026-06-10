@@ -1,0 +1,110 @@
+<h2>Frontend Workbench Alignment</h2>
+<p class="subtitle">目标：左侧项目 / session 树，右侧对话为主，整体质感更接近成熟产品而不是普通后台页。</p>
+
+<div class="section">
+  <h3>Your core structure</h3>
+  <div class="mockup">
+    <div class="mockup-header">Information architecture</div>
+    <div class="mockup-body" style="height:220px;display:grid;grid-template-columns:280px 1fr;gap:12px;">
+      <div class="mock-sidebar" style="text-align:left;line-height:1.8;">
+        <strong>Projects</strong><br>
+        Project Alpha<br>
+        &nbsp;&nbsp;Session A <span style="opacity:.7">[architect]</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;Child A1 <span style="opacity:.7">[planner]</span><br>
+        &nbsp;&nbsp;&nbsp;&nbsp;Child A2 <span style="opacity:.7">[coder]</span><br>
+        &nbsp;&nbsp;Session B <span style="opacity:.7">[reviewer]</span><br><br>
+        Project Beta<br>
+        &nbsp;&nbsp;Session X <span style="opacity:.7">[ops]</span>
+      </div>
+      <div style="display:grid;grid-template-rows:56px 1fr 88px;gap:12px;">
+        <div class="mock-nav">Session header | role | model | status | controls</div>
+        <div class="mock-content">Conversation history and current exchange take most of the screen</div>
+        <div class="mock-input">Composer / attachments / send / mode</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>3 layout directions</h3>
+  <div class="cards">
+    <div class="card" data-choice="focus" onclick="toggleSelect(this)">
+      <div class="card-image">
+        <div class="mockup-body" style="height:260px;display:grid;grid-template-columns:260px 1fr;gap:10px;">
+          <div class="mock-sidebar">Dense project tree<br><br>expand / collapse<br>role badges<br>branch lines</div>
+          <div style="display:grid;grid-template-rows:48px 1fr 72px;gap:10px;">
+            <div class="mock-nav">Minimal top bar</div>
+            <div class="mock-content">Large conversation canvas</div>
+            <div class="mock-input">Bottom composer</div>
+          </div>
+        </div>
+      </div>
+      <div class="card-body">
+        <h3>Option A: Conversation Focus</h3>
+        <p>最接近你描述的结构。把大部分面积给对话，左侧树常驻，其他状态信息收在顶部和节点细节里。</p>
+      </div>
+    </div>
+
+    <div class="card" data-choice="split" onclick="toggleSelect(this)">
+      <div class="card-image">
+        <div class="mockup-body" style="height:260px;display:grid;grid-template-columns:240px 1fr 320px;gap:10px;">
+          <div class="mock-sidebar">Project tree</div>
+          <div style="display:grid;grid-template-rows:48px 1fr 72px;gap:10px;">
+            <div class="mock-nav">Top bar</div>
+            <div class="mock-content">Conversation</div>
+            <div class="mock-input">Composer</div>
+          </div>
+          <div class="mock-sidebar">Run details<br>artifacts<br>tool calls<br>memory</div>
+        </div>
+      </div>
+      <div class="card-body">
+        <h3>Option B: Triple Pane</h3>
+        <p>桌面端能力更强，但容易把页面做得像传统工作台。移动端也更难收敛。</p>
+      </div>
+    </div>
+
+    <div class="card" data-choice="layered" onclick="toggleSelect(this)">
+      <div class="card-image">
+        <div class="mockup-body" style="height:260px;display:grid;grid-template-columns:264px 1fr;gap:10px;">
+          <div class="mock-sidebar">Project tree</div>
+          <div style="display:grid;grid-template-rows:48px 1fr 64px;gap:10px;">
+            <div class="mock-nav">Header + tabs</div>
+            <div class="mock-content">Conversation</div>
+            <div class="mock-button" style="display:flex;align-items:center;justify-content:center;">Slide-up inspector / drawer</div>
+          </div>
+        </div>
+      </div>
+      <div class="card-body">
+        <h3>Option C: Layered Workbench</h3>
+        <p>默认保持对话聚焦，运行详情和上下文做成抽屉。桌面与手机都更容易统一。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Mobile direction</h3>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>Recommended mobile behavior</h4>
+      <ul>
+        <li>左侧树在手机上变成全屏 drawer</li>
+        <li>对话区保持单栏，输入框固定底部</li>
+        <li>session 详情 / tool calls 用底部 sheet 打开</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>Avoid</h4>
+      <ul>
+        <li>手机上保留三栏或小侧栏</li>
+        <li>大量卡片包卡片的后台式布局</li>
+        <li>把所有状态都常驻显示，压缩对话空间</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Current recommendation</h3>
+  <p>我建议以 <strong>Option C</strong> 为基础，视觉上做成更精致的 <strong>conversation-first studio</strong>：桌面端看起来接近 A，但把多余信息收进抽屉；手机端也最自然。</p>
+</div>

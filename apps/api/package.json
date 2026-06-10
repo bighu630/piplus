@@ -1,0 +1,23 @@
+{
+  "name": "@piplus/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@piplus/db": "workspace:*",
+    "@piplus/domain": "workspace:*",
+    "@piplus/pi-client": "workspace:*",
+    "@piplus/shared": "workspace:*",
+    "better-auth": "1.6.13",
+    "drizzle-orm": "0.45.2",
+    "hono": "4.12.23"
+  },
+  "devDependencies": {
+    "@types/node": "25.0.0",
+    "typescript": "6.0.3"
+  }
+}

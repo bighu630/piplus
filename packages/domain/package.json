@@ -1,0 +1,22 @@
+{
+  "name": "@piplus/domain",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@piplus/db": "workspace:*",
+    "@piplus/pi-client": "workspace:*",
+    "@piplus/shared": "workspace:*",
+    "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

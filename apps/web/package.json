@@ -1,0 +1,41 @@
+{
+  "name": "@piplus/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test --preload ./src/test-setup.ts"
+  },
+  "dependencies": {
+    "@piplus/shared": "workspace:*",
+    "@piplus/ui": "workspace:*",
+    "@radix-ui/react-slot": "^1.2.4",
+    "@tanstack/react-query": "*",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "framer-motion": "*",
+    "lucide-react": "^1.17.0",
+    "next": "*",
+    "radix-ui": "^1.4.3",
+    "react": "*",
+    "react-dom": "*",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@testing-library/jest-dom": "*",
+    "@testing-library/react": "*",
+    "@types/node": "*",
+    "@types/react": "*",
+    "@types/react-dom": "*",
+    "autoprefixer": "*",
+    "happy-dom": "*",
+    "postcss": "*",
+    "shadcn": "^4.10.0",
+    "tailwindcss": "*",
+    "typescript": "*"
+  }
+}
