@@ -1,11 +1,13 @@
 'use client';
 
-import { Archive, ArrowLeft, ChevronLeft, FolderTree, PanelLeftClose, PanelLeftOpen, Plus, SquarePen, Sparkles } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { Archive, ArrowLeft, ChevronLeft, FolderTree, LogOut, PanelLeftClose, PanelLeftOpen, Plus, SquarePen, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useMediaQuery } from '../lib/use-media-query';
-import type { SessionInfoDTO, TreeResponse } from '@piplus/shared';
+import type { ChatMessageDTO, SessionInfoDTO, TreeResponse } from '@piplus/shared';
 import { createWorkspaceSocket } from '../lib/ws-client';
 import { ChatPanel } from './chat-panel';
+import { CreateProjectModal } from './create-project-modal';
 import { LoginScreen } from './login-screen';
 import { ProjectTree } from './project-tree';
 import { SessionInfoPanel } from './session-info-panel';
@@ -24,9 +26,17 @@ import {
   useUpdateSessionTitleMutation,
   useLoginMutation,
   useLogoutMutation,
+  useModels,
+  useSetSessionModelMutation,
+  useArchiveProjectMutation,
+  useDeleteProjectMutation,
 } from '../lib/hooks';
 
 type Tab = 'chat' | 'session_info';
+
+function tempId(prefix: string) {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function findFirstSession(projects: TreeResponse['projects']) {
   for (const project of projects) {
@@ -68,7 +78,7 @@ export function LayoutShell() {
   // --- auth ---
   const authQuery = useAuthSession();
   const authenticatedUser = authQuery.data?.user
-    ? { userId: authQuery.data.user.id, name: authQuery.data.user.name ?? authQuery.data.user.email }
+    ? { userId: authQuery.data.user.id, name: authQuery.data.user.name }
     : null;
 
   const loginMutation = useLoginMutation();
@@ -83,14 +93,21 @@ export function LayoutShell() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [mobileView, setMobileView] = useState<'nav' | 'content'>('nav');
   const [createProjectName, setCreateProjectName] = useState('');
+  const [createMode, setCreateMode] = useState<'existing' | 'git_clone'>('existing');
+  const [createPath, setCreatePath] = useState('');
+  const [createRepoUrl, setCreateRepoUrl] = useState('');
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [stopArmed, setStopArmed] = useState(false);
   const [streamNote, setStreamNote] = useState('');
+  const [streamingContent, setStreamingContent] = useState('');
+  const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
+  const queryClient = useQueryClient();
 
   // --- data queries ---
   const treeQuery = useTree();
   const tree = treeQuery.data?.projects ?? [];
 
-  const sessionInfoQuery = useSessionInfo(activeTab === 'session_info' ? selectedSessionId : null);
+  const sessionInfoQuery = useSessionInfo(selectedSessionId);
   const sessionInfo = sessionInfoQuery.data;
 
   const messagesQuery = useSessionMessages(
@@ -107,8 +124,29 @@ export function LayoutShell() {
   const stopSessionMut = useStopSessionMutation();
   const archiveSessionMut = useArchiveSessionMutation();
   const updateTitleMut = useUpdateSessionTitleMutation();
+  const archiveProjectMut = useArchiveProjectMutation();
+  const deleteProjectMut = useDeleteProjectMutation();
+
+  function handleArchiveProject(projectId: string) {
+    archiveProjectMut.mutate(projectId);
+  }
+  function handleDeleteProject(projectId: string) {
+    deleteProjectMut.mutate(projectId);
+  }
 
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
+
+  useEffect(() => {
+    setPendingUserMessages([]);
+    setStreamingContent('');
+    setStreamNote('');
+  }, [selectedSessionId]);
+
+  // --- model ---
+  const modelsQuery = useModels();
+  const setModelMut = useSetSessionModelMutation();
+  const modelDisabled = currentSessionNode?.runtime_status !== 'idle';
+  const modelLabel = sessionInfo?.session.current_model?.label ?? modelsQuery.data?.[0]?.label ?? '选择模型';
 
   // --- derived UI state ---
   const tabs = useMemo(
@@ -156,48 +194,129 @@ export function LayoutShell() {
   }, [currentSessionNode?.runtime_status, stopArmed, selectedSessionId, stopSessionMut]);
 
   // --- WebSocket ---
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  selectedProjectIdRef.current = selectedProjectId;
+  const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
+
   useEffect(() => {
     if (!selectedSessionId) return;
 
-    const socket = createWorkspaceSocket((event) => {
-      try {
-        const message = JSON.parse(event.data as string) as {
-          kind?: string;
-          phase?: string;
-          type?: string;
-          scope?: { session_id?: string };
-          payload?: { delta?: string | null; runtime_status?: SessionInfoDTO['session']['runtime_status'] };
-        };
-        if (message.kind === 'chat_stream' && message.scope?.session_id === selectedSessionId && activeTab === 'chat') {
-          const delta = message.payload?.delta ?? '';
-          setStreamNote(`${message.phase ?? 'stream'}${delta ? ` · ${delta}` : ''}`);
-        }
-        if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
-          // handled by query invalidation
-        }
-        if (message.kind === 'event' && (message.type === 'tree.changed' || message.type === 'project.created' || message.type === 'session.created' || message.type === 'session.archived')) {
-          treeQuery.refetch();
-        }
-      } catch { /* ignore */ }
+    const socket = createWorkspaceSocket({
+      onMessage(event) {
+        try {
+          const message = JSON.parse(event.data as string) as {
+            kind?: string;
+            phase?: string;
+            type?: string;
+            scope?: { session_id?: string };
+            payload?: { delta?: string | null; runtime_status?: SessionInfoDTO['session']['runtime_status'] };
+          };
+          console.log('[web/ws] received', message);
+
+          // ── chat_stream 到达但 session 不匹配时打印日志 ──
+          if (message.kind === 'chat_stream' && message.scope?.session_id !== selectedSessionId) {
+            console.log('[web/ws] chat_stream session mismatch', {
+              scopeSessionId: message.scope?.session_id,
+              selectedSessionId,
+            });
+          }
+
+          // ── chat_stream：delta 只在 chat tab 显示 ──
+          if (message.kind === 'chat_stream' && message.scope?.session_id === selectedSessionId) {
+            // start/delta 仅在 chat tab 中实时渲染
+            if (activeTabRef.current === 'chat') {
+              const delta = message.payload?.delta ?? '';
+              setStreamNote(`${message.phase ?? 'stream'}${delta ? ` · ${delta}` : ''}`);
+              if (message.phase === 'start') {
+                setStreamingContent('');
+              } else if (message.phase === 'delta') {
+                setStreamingContent((prev) => prev + delta);
+              }
+            }
+
+            // complete 不受 tab 影响：清理状态 + 异步等 refetch 完成再清 streaming
+            if (message.phase === 'complete') {
+              setStreamNote('完成');
+              // 先保留 streamingContent（假消息保持可见），等数据到位再清
+              Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
+                queryClient.invalidateQueries({ queryKey: ['tree'] }),
+              ]).then(() => {
+                setStreamingContent('');
+                setStreamNote('');
+              });
+            }
+
+            if (message.phase === 'error') {
+              setStreamNote('错误');
+            }
+          }
+
+          // ── runtime_status_changed 事件 ──
+          if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
+            const status = message.payload?.runtime_status;
+            console.log('[web/ws] runtime status changed', status);
+            treeQuery.refetch();
+            if (status === 'idle') {
+              console.log('[web/ws] idle detected, refreshing history');
+              messagesQuery.refetch();
+              Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
+                queryClient.invalidateQueries({ queryKey: ['tree'] }),
+              ]).then(() => {
+                setStreamingContent('');
+                setStreamNote('');
+                setPendingUserMessages([]);
+              });
+            }
+          }
+
+          // ── tree 变更事件 ──
+          if (message.kind === 'event' && (
+            message.type === 'tree.changed'
+            || message.type === 'project.created'
+            || message.type === 'session.created'
+            || message.type === 'session.archived'
+          )) {
+            treeQuery.refetch();
+          }
+        } catch { /* ignore */ }
+      },
+      onOpen() {
+        console.log('[web/ws] open');
+        socket.hello();
+        socket.setContext({
+          project_id: selectedProjectIdRef.current ?? undefined,
+          session_id: selectedSessionId,
+          current_tab: activeTabRef.current,
+        });
+        socket.ping();
+      },
     });
 
-    socket.socket.addEventListener('open', () => {
-      socket.hello();
-      socket.setContext({
-        project_id: selectedProjectId ?? undefined,
-        session_id: selectedSessionId,
-        current_tab: activeTab,
-      });
-      socket.ping();
-    });
+    socketRef.current = socket;
 
-    return () => socket.close();
-  }, [activeTab, selectedProjectId, selectedSessionId, treeQuery]);
+    return () => {
+      socketRef.current = null;
+      socket.close();
+    };
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (!socketRef.current || !selectedSessionId) return;
+    socketRef.current.setContext({
+      project_id: selectedProjectId ?? undefined,
+      session_id: selectedSessionId,
+      current_tab: activeTab,
+    });
+  }, [activeTab, selectedProjectId, selectedSessionId]);
 
   // --- handlers ---
-  async function handleLogin(email: string, password: string) {
+  async function handleLogin(password: string) {
     try {
-      await loginMutation.mutateAsync({ email, password });
+      await loginMutation.mutateAsync(password);
       authQuery.refetch();
     } catch { /* handled by mutation state */ }
   }
@@ -206,12 +325,16 @@ export function LayoutShell() {
     logoutMutation.mutate();
   }
 
-  async function handleCreateProject() {
-    const name = createProjectName.trim();
-    if (!name) return;
+  async function handleCreateProject(params: { name: string; path: string; repoUrl: string }) {
     try {
-      const result = await createProjectMut.mutateAsync(name);
-      setCreateProjectName('');
+      const mode = params.repoUrl ? 'git_clone' : 'existing';
+      const result = await createProjectMut.mutateAsync({
+        name: params.name,
+        mode,
+        path: mode === 'existing' ? params.path : undefined,
+        repoUrl: mode === 'git_clone' ? params.repoUrl : undefined,
+      });
+      setShowCreateDialog(false);
       setMobileView('content');
       setActiveTab('chat');
       if (result.projectId) {
@@ -224,10 +347,22 @@ export function LayoutShell() {
     } catch { /* ignore */ }
   }
 
+  function handleOpenCreateDialog() {
+    setShowCreateDialog(true);
+  }
+
   async function handleCreateSession() {
     if (!selectedProjectId) return;
     try {
-      const result = await createSessionMut.mutateAsync(selectedProjectId);
+      const result = await createSessionMut.mutateAsync({
+      projectId: selectedProjectId,
+      inheritModel: sessionInfo?.session.current_model
+        ? {
+            provider: sessionInfo.session.current_model.provider,
+            id: sessionInfo.session.current_model.id,
+          }
+        : null,
+    });
       setMobileView('content');
       setActiveTab('chat');
       setSelectedSessionId(result.session_id);
@@ -237,8 +372,17 @@ export function LayoutShell() {
 
   async function handleSend(content: string) {
     if (!selectedSessionId) return;
+    const optimisticMessage: ChatMessageDTO = {
+      id: tempId('optimistic'),
+      role: 'user',
+      message_kind: 'normal',
+      source_session_id: null,
+      content_text: content,
+      created_at: new Date().toISOString(),
+    };
+    setPendingUserMessages((prev) => [...prev, optimisticMessage]);
     await sendMessageMut.mutateAsync(content);
-    messagesQuery.refetch();
+    queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
   }
 
   async function handleStopSession() {
@@ -263,15 +407,16 @@ export function LayoutShell() {
     return (
       <LoginScreen
         busy={loginMutation.isPending}
-        error={loginMutation.isError ? '登录失败，请检查本地账户凭据。' : null}
+        error={loginMutation.isError ? '密码错误' : null}
         onSubmit={handleLogin}
       />
     );
   }
 
   return (
-    <main className="workspace-shell min-h-screen">
-      <div className="mx-auto flex min-h-screen max-w-[1280px] px-4 py-4 md:px-6 md:py-6">{/* mobile nav page */}
+    <>
+    <main className="workspace-shell h-dvh overflow-hidden">
+      <div className="mx-auto flex h-full max-w-[1280px] box-border px-4 md:px-6">{/* mobile nav page */}
         {!isDesktop && mobileView === 'nav' ? (
           <MobileNavPage
             authenticatedUser={authenticatedUser!}
@@ -284,15 +429,23 @@ export function LayoutShell() {
               setSelectedSessionId(sessionId);
               setMobileView('content');
             }}
-            onCreateProject={handleCreateProject}
+            onCreateProject={handleOpenCreateDialog}
             createProjectName={createProjectName}
             setCreateProjectName={setCreateProjectName}
             creatingProject={createProjectMut.isPending}
+            createMode={createMode}
+            setCreateMode={setCreateMode}
+            createPath={createPath}
+            setCreatePath={setCreatePath}
+            createRepoUrl={createRepoUrl}
+            setCreateRepoUrl={setCreateRepoUrl}
             onCreateSession={handleCreateSession}
             creatingSession={createSessionMut.isPending}
             onLogout={handleLogout}
             treeLoading={treeQuery.isLoading}
             activeTab={activeTab}
+            onArchiveProject={handleArchiveProject}
+            onDeleteProject={handleDeleteProject}
           />
         ) : null}
 
@@ -300,20 +453,24 @@ export function LayoutShell() {
         {isDesktop ? (
           <aside className={`${
             sidebarCollapsed ? 'w-12' : 'w-[280px]'
-          } flex-shrink-0 flex-col border-r border-white/6 transition-all duration-200`}>
+          } mr-3 flex-shrink-0 flex flex-col min-h-0 transition-all duration-200`}>
 
             {sidebarCollapsed ? (
               <div className="flex flex-1 flex-col items-center gap-2 py-3">
                 <button className="ghost-button ghost-button-sm p-1.5" onClick={() => setSidebarCollapsed(false)} type="button">
                   <PanelLeftOpen size={18} />
                 </button>
+                <div className="mt-auto">
+                  <button className="ghost-button ghost-button-sm p-1.5" onClick={handleLogout} type="button" title="登出">
+                    <LogOut size={14} />
+                  </button>
+                </div>
               </div>
             ) : (
               <>
                 <SidebarHeader
                   onCollapse={() => setSidebarCollapsed(true)}
                   authenticatedUser={authenticatedUser!}
-                  onLogout={handleLogout}
                 />
                 <SidebarContent
                   tree={tree}
@@ -323,12 +480,20 @@ export function LayoutShell() {
                   onSelectProject={setSelectedProjectId}
                   onSelectSession={setSelectedSessionId}
                   authenticatedUser={authenticatedUser!}
-                  onCreateProject={handleCreateProject}
+                  onCreateProject={handleOpenCreateDialog}
                   createProjectName={createProjectName}
                   setCreateProjectName={setCreateProjectName}
                   creatingProject={createProjectMut.isPending}
+                  createMode={createMode}
+                  setCreateMode={setCreateMode}
+                  createPath={createPath}
+                  setCreatePath={setCreatePath}
+                  createRepoUrl={createRepoUrl}
+                  setCreateRepoUrl={setCreateRepoUrl}
                   onCreateSession={handleCreateSession}
                   creatingSession={createSessionMut.isPending}
+                  onArchiveProject={handleArchiveProject}
+                  onDeleteProject={handleDeleteProject}
                   onLogout={handleLogout}
                   treeLoading={treeQuery.isLoading}
                 />
@@ -342,7 +507,7 @@ export function LayoutShell() {
         <section className="flex flex-1 flex-col overflow-hidden">
           {/* mobile back button bar */}
           {!isDesktop ? (
-            <div className="flex items-center gap-3 border-b border-white/6 px-3 py-2">
+            <div className="flex items-center gap-3 bg-[rgba(255,255,255,0.02)] px-3 py-2">
               <button
                 className="ghost-button ghost-button-sm ghost-button-icon"
                 onClick={() => setMobileView('nav')}
@@ -359,7 +524,7 @@ export function LayoutShell() {
 
           <div className="flex flex-1 flex-col overflow-hidden">
             {/* tab bar */}
-            <div className="flex items-center justify-between gap-3 border-b border-white/6 px-4 py-2">
+            <div className="flex items-center justify-between gap-3 bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01))] px-4 py-2.5">
               <TabsBar items={tabs} value={activeTab} onChange={(t) => setActiveTab(t as Tab)} />
               <div className="flex items-center gap-2">
                 <button
@@ -375,11 +540,17 @@ export function LayoutShell() {
             </div>
 
             {/* panel area */}
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 min-h-0 overflow-hidden">
               {activeTab === 'chat' ? (
                 <ChatPanel
-                  messages={messages}
-                  disabled={messagesQuery.isLoading}
+                  messages={[
+                    ...messages,
+                    ...pendingUserMessages,
+                    ...(streamingContent
+                      ? [{ id: 'streaming', role: 'assistant', message_kind: 'normal', source_session_id: null, content_text: streamingContent, created_at: new Date().toISOString() } as ChatMessageDTO]
+                      : []),
+                  ]}
+                  disabled={!selectedSessionId}
                   loadingMore={loadingMoreMessages}
                   canLoadMore={hasMoreMessages}
                   onLoadMore={async () => { await messagesQuery.fetchNextPage(); }}
@@ -389,6 +560,16 @@ export function LayoutShell() {
                   stopArmed={stopArmed} onStop={handleStopSession}
                   stopDisabled={currentSessionNode?.runtime_status !== 'running'}
                   streamNote={streamNote}
+                  models={modelsQuery.data ?? []}
+                  modelLabel={modelLabel}
+                  modelDisabled={modelDisabled}
+                  onModelSelect={async (provider, id) => {
+                    if (!selectedSessionId) return;
+                    const result = await setModelMut.mutateAsync({ sessionId: selectedSessionId, provider, id });
+                    queryClient.setQueryData(['session', 'info', selectedSessionId], (old: any) =>
+                      old ? { ...old, session: { ...old.session, current_model: result.model } } : null);
+                    await queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] });
+                  }}
                 />
               ) : (
                 <SessionInfoPanel info={sessionInfo} onTitleChanged={handleTitleChanged} />
@@ -397,78 +578,33 @@ export function LayoutShell() {
           </div>
         </section>
         )}
-        <section className="flex flex-1 flex-col overflow-hidden">
-          {/* mobile toolbar */}
-          <div className="flex items-center gap-2 border-b border-white/6 px-3 py-2 md:hidden">
-            <button className="ghost-button ghost-button-sm" onClick={() => setMobileView('nav')} type="button">
-              <PanelLeftOpen size={18} />
-            </button>
-            <span className="text-sm font-medium text-[var(--text)]">piplus</span>
-          </div>
-
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {/* tab bar */}
-            <div className="flex items-center justify-between gap-3 border-b border-white/6 px-4 py-2">
-              <TabsBar items={tabs} value={activeTab} onChange={(t) => setActiveTab(t as Tab)} />
-              <div className="flex items-center gap-2">
-                <button
-                  className="ghost-button ghost-button-sm"
-                  disabled={!selectedSessionId || archiveSessionMut.isPending}
-                  onClick={handleArchiveSession}
-                  type="button"
-                >
-                  <Archive size={14} />
-                  <span className="ml-1.5">{archiveSessionMut.isPending ? '...' : '归档'}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* panel area */}
-            <div className="flex-1 overflow-hidden">
-              {activeTab === 'chat' ? (
-                <ChatPanel
-                  messages={messages}
-                  disabled={messagesQuery.isLoading}
-                  loadingMore={loadingMoreMessages}
-                  canLoadMore={hasMoreMessages}
-                  onLoadMore={async () => { await messagesQuery.fetchNextPage(); }}
-                  onSend={handleSend}
-                  sending={sendMessageMut.isPending}
-                  sessionTitle={currentSessionNode?.title ?? 'Session'}
-                  stopArmed={stopArmed} onStop={handleStopSession}
-                  stopDisabled={currentSessionNode?.runtime_status !== 'running'}
-                  streamNote={streamNote}
-                />
-              ) : (
-                <SessionInfoPanel info={sessionInfo} onTitleChanged={handleTitleChanged} />
-              )}
-            </div>
-          </div>
-        </section>
       </div>
     </main>
+    <CreateProjectModal
+      open={showCreateDialog}
+      busy={createProjectMut.isPending}
+      onClose={() => setShowCreateDialog(false)}
+      onSubmit={handleCreateProject}
+    />
+    </>
   );
 }
 
 // --- sub-components extracted for reuse ---
-function SidebarHeader({ onCollapse, authenticatedUser, onLogout }: {
+function SidebarHeader({ onCollapse, authenticatedUser }: {
   onCollapse: () => void;
   authenticatedUser: { userId: string; name: string };
-  onLogout: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-white/6 px-3 py-3">
+    <div className="flex items-center justify-between gap-2 px-3 py-3">
       <div className="flex items-center gap-2">
         <FolderTree size={16} className="text-[var(--accent)]" />
         <span className="text-sm font-semibold tracking-[-0.02em] text-[var(--text)]">piplus</span>
       </div>
       <div className="flex items-center gap-1">
         <span className="text-[11px] text-[var(--text-dim)]">{authenticatedUser.name}</span>
-        <button className="ghost-button ghost-button-sm p-1" onClick={onLogout} type="button" title="登出">
-          <PanelLeftClose size={14} />
-        </button>
         <button className="ghost-button ghost-button-sm p-1" onClick={onCollapse} type="button" title="收起侧栏">
-          <ChevronLeft size={14} />
+          <PanelLeftClose size={14} />
         </button>
       </div>
     </div>
@@ -487,10 +623,18 @@ function SidebarContent({
   createProjectName,
   setCreateProjectName,
   creatingProject,
+  createMode,
+  setCreateMode,
+  createPath,
+  setCreatePath,
+  createRepoUrl,
+  setCreateRepoUrl,
   onCreateSession,
   creatingSession,
-  onLogout: _onLogout,
+  onLogout,
   treeLoading,
+  onArchiveProject,
+  onDeleteProject,
 }: {
   tree: TreeResponse['projects'];
   selectedSessionId: string | null;
@@ -503,15 +647,38 @@ function SidebarContent({
   createProjectName: string;
   setCreateProjectName: (v: string) => void;
   creatingProject: boolean;
+  createMode: 'existing' | 'git_clone';
+  setCreateMode: (mode: 'existing' | 'git_clone') => void;
+  createPath: string;
+  setCreatePath: (v: string) => void;
+  createRepoUrl: string;
+  setCreateRepoUrl: (v: string) => void;
   onCreateSession: () => void;
   creatingSession: boolean;
   onLogout: () => void;
   treeLoading: boolean;
+  onArchiveProject?: (projectId: string) => void;
+  onDeleteProject?: (projectId: string) => void;
 }) {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
+      {/* new project button — top */}
+      <div className="px-3 py-3">
+        <button
+          className="ghost-button ghost-button-sm w-full justify-center"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onCreateProject();
+          }}
+          type="button"
+        >
+          <Plus size={14} />
+          <span className="ml-1.5">新建项目</span>
+        </button>
+      </div>
+
       {/* project tree */}
-      <ScrollArea className="flex-1" viewportClassName="px-3 py-3">
+      <ScrollArea className="flex-1 min-h-0" viewportClassName="px-2 py-3">
         {treeLoading ? (
           <p className="py-6 text-center text-xs text-[var(--text-dim)]">加载中...</p>
         ) : tree.length === 0 ? (
@@ -535,33 +702,25 @@ function SidebarContent({
                 onSelectProject(projectId);
                 onSelectSession(sessionId);
               }}
+              onSelectProject={onSelectProject}
+              onCreateSession={onCreateSession}
+              creatingSession={creatingSession}
+              onArchiveProject={onArchiveProject}
+              onDeleteProject={onDeleteProject}
             />
           </>
         )}
       </ScrollArea>
 
-      {/* actions */}
-      <div className="border-t border-white/6 px-3 py-3 space-y-2">
-        <div className="flex gap-1.5">
-          <input
-            className="flex-1 rounded-[12px] border border-white/8 bg-black/10 px-3 py-1.5 text-xs text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
-            placeholder="新项目名称"
-            value={createProjectName}
-            onChange={(e) => setCreateProjectName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') onCreateProject(); }}
-          />
-          <button className="ghost-button ghost-button-sm" disabled={creatingProject || !createProjectName.trim()} onClick={onCreateProject} type="button">
-            <Plus size={14} />
-          </button>
-        </div>
+      {/* logout — bottom */}
+      <div className="mt-auto px-3 py-3">
         <button
-          className="ghost-button ghost-button-sm w-full justify-center"
-          disabled={creatingSession}
-          onClick={onCreateSession}
+          className="ghost-button ghost-button-sm w-full justify-center text-[var(--text-dim)]"
+          onClick={onLogout}
           type="button"
         >
-          <SquarePen size={14} />
-          <span className="ml-1.5">{creatingSession ? '...' : '新建空白 Session'}</span>
+          <LogOut size={14} />
+          <span className="ml-1.5">登出</span>
         </button>
       </div>
     </div>
@@ -579,11 +738,19 @@ function MobileNavPage({
   createProjectName,
   setCreateProjectName,
   creatingProject,
+  createMode,
+  setCreateMode,
+  createPath,
+  setCreatePath,
+  createRepoUrl,
+  setCreateRepoUrl,
   onCreateSession,
   creatingSession,
   onLogout,
   treeLoading,
   activeTab: _activeTab,
+  onArchiveProject,
+  onDeleteProject,
 }: {
   authenticatedUser: { userId: string; name: string };
   tree: TreeResponse['projects'];
@@ -595,15 +762,23 @@ function MobileNavPage({
   createProjectName: string;
   setCreateProjectName: (v: string) => void;
   creatingProject: boolean;
+  createMode: 'existing' | 'git_clone';
+  setCreateMode: (mode: 'existing' | 'git_clone') => void;
+  createPath: string;
+  setCreatePath: (v: string) => void;
+  createRepoUrl: string;
+  setCreateRepoUrl: (v: string) => void;
   onCreateSession: () => void;
   creatingSession: boolean;
   onLogout: () => void;
   treeLoading: boolean;
   activeTab: string;
+  onArchiveProject?: (projectId: string) => void;
+  onDeleteProject?: (projectId: string) => void;
 }) {
   return (
-    <div className="flex min-h-screen w-full flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-white/6 px-4 py-3">
+    <div className="flex h-full min-h-0 w-full flex-col">
+      <header className="flex items-center justify-between gap-2 px-4 py-3">
         <div className="flex items-center gap-2">
           <FolderTree size={16} className="text-[var(--accent)]" />
           <span className="text-sm font-semibold tracking-[-0.02em] text-[var(--text)]">piplus</span>
@@ -638,15 +813,20 @@ function MobileNavPage({
               activeSessionId={selectedSessionId}
               showArchived={showArchived}
               onSelectSession={onSelectSession}
+              onSelectProject={() => {}}
+              onCreateSession={onCreateSession}
+              creatingSession={creatingSession}
+              onArchiveProject={onArchiveProject}
+              onDeleteProject={onDeleteProject}
             />
           </div>
         )}
       </div>
 
-      <footer className="border-t border-white/6 px-4 py-4 space-y-3">
+      <footer className="space-y-3 bg-[rgba(255,255,255,0.015)] px-4 py-4">
         <div className="flex gap-2">
           <input
-            className="flex-1 rounded-[14px] border border-white/8 bg-black/10 px-4 py-2.5 text-sm text-[var(--text)] outline-none placeholder:text-[var(--text-dim)]"
+            className="shell-input flex-1"
             placeholder="新项目名称"
             value={createProjectName}
             onChange={(e) => setCreateProjectName(e.target.value)}

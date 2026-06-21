@@ -2,21 +2,19 @@ import { upgradeWebSocket } from 'hono/bun';
 import type { Hono } from 'hono';
 import { createEvent, parseClientMessage } from './protocol';
 import { registerSocket } from './session';
-import { getAuth } from '../auth/better-auth';
+import { verifyToken } from '../auth/token';
 
 const socketHub = registerSocket();
 
 export function registerWebSocketRoutes(app: Hono) {
   app.get('/ws', upgradeWebSocket((c) => ({
     async onOpen(_evt, ws) {
-      // validate session
-      const auth = getAuth();
-      if (auth) {
-        const session = await (auth as any).api.getSession({ headers: c.req.raw.headers }).catch(() => null);
-        const userId = session?.user?.id ?? c.req.header('x-user-id');
-        if (userId) {
-          (ws as any).__userId = userId;
-        }
+      const rawHeaders = c.req.raw.headers;
+      const header = rawHeaders.get('Authorization') ?? '';
+      const token = header.replace(/^Bearer\s+/i, '');
+      const userId = verifyToken(token) ? 'local-user' : c.req.header('x-user-id');
+      if (userId) {
+        (ws as any).__userId = userId;
       }
       socketHub.attach(ws);
       ws.send(JSON.stringify(createEvent('connection.opened', { status: 'ok' })));

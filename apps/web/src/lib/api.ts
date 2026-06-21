@@ -24,12 +24,14 @@ export type SessionResponse = {
 export type LoginResponse = SessionResponse;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const authHeaders = getAuthHeaders() as Record<string, string>;
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
     cache: 'no-store',
     ...init,
     headers: {
       'content-type': 'application/json',
-      ...(init?.headers ?? {}),
+      ...authHeaders,
+      ...(init?.headers as Record<string, string> ?? {}),
     },
   });
   if (!response.ok) {
@@ -38,20 +40,50 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function login(email: string, password: string) {
-  return request<SessionResponse>('/api/v1/auth/sign-in/email', {
+export function login(password: string) {
+  return request<{ token: string; user: { id: string; name: string } }>('/api/v1/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ password }),
   });
 }
 
-export function getSession() {
-  return request<SessionResponse>('/api/v1/auth/session');
+export function checkAuth(token: string) {
+  return request<{ ok: true; user: { id: string; name: string } }>('/api/v1/auth/check', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 }
 
-export function logout() {
-  return request<{ ok: true }>('/api/v1/auth/sign-out', {
+function getAuthHeaders() {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('piplus_token') : null;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export type ModelInfo = {
+  provider: string;
+  id: string;
+  label: string;
+};
+
+export function getModels() {
+  return request<{ models: ModelInfo[] }>('/api/v1/models');
+}
+
+export function setSessionModel(sessionId: string, model: { provider: string; id: string }) {
+  return request<{ session_id: string; model: ModelInfo }>(`/api/v1/sessions/${sessionId}/model`, {
     method: 'POST',
+    body: JSON.stringify(model),
+  });
+}
+
+export function archiveProject(projectId: string) {
+  return request<{ project_id: string; status: string }>(`/api/v1/projects/${projectId}/archive`, {
+    method: 'POST',
+  });
+}
+
+export function deleteProject(projectId: string) {
+  return request<{ project_id: string; status: string }>(`/api/v1/projects/${projectId}`, {
+    method: 'DELETE',
   });
 }
 
@@ -72,22 +104,23 @@ export function getSessionMessages(sessionId: string, options?: { cursor?: strin
 }
 
 export function sendSessionMessage(sessionId: string, content: string) {
-  return request<{ accepted: boolean; session_id: string; message_id: string }>(`/api/v1/sessions/${sessionId}/chat/messages`, {
+  return request<{ accepted: boolean; session_id: string; run_id: string; message_id: string }>(`/api/v1/sessions/${sessionId}/chat/messages`, {
     method: 'POST',
     body: JSON.stringify({ content }),
   });
 }
 
-export function createProject(name: string) {
+export function createProject(name: string, mode?: string, path?: string, repoUrl?: string) {
   return request<{ projectId: string; sessionId?: string; piSessionId?: string }>(`/api/v1/projects`, {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, mode: mode ?? 'existing', path: path ?? '', repo_url: repoUrl ?? '' }),
   });
 }
 
-export function createProjectSession(projectId: string) {
+export function createProjectSession(projectId: string, inheritModel?: { provider: string; id: string } | null) {
   return request<{ session_id: string; project_id: string }>(`/api/v1/projects/${projectId}/sessions`, {
     method: 'POST',
+    body: JSON.stringify({ inherit_model: inheritModel ?? null }),
   });
 }
 

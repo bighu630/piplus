@@ -64,7 +64,7 @@ describe('ProjectTree', () => {
       />,
     );
     expect(screen.getByText('Planner Session')).toBeTruthy();
-    expect(screen.getByText('planner')).toBeTruthy();
+    expect(screen.getByText('规划者')).toBeTruthy();
   });
 
   test('hides archived sessions when showArchived is false', () => {

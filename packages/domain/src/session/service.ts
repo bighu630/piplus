@@ -5,6 +5,10 @@ import { createRoleManagerService } from '../role-manager/service';
 export type SessionCreateInput = {
   projectId: string;
   createdBy: string;
+  inheritModel?: {
+    provider: string;
+    id: string;
+  } | null;
 };
 
 export async function createTopLevelSession(db: RoleManagerDb, piClient: PiClient, input: SessionCreateInput) {

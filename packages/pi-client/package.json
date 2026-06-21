@@ -10,6 +10,9 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.1"
+  },
   "devDependencies": {
     "typescript": "*"
   }

@@ -4,6 +4,9 @@ export type ProjectDTO = {
   id: string;
   name: string;
   status: keyof typeof ProjectStatus;
+  project_path: string;
+  source_type: string;
+  source_url: string;
   archived_at: string | null;
   last_activity_at: string;
   created_at: string;
@@ -36,6 +39,12 @@ export type SessionInfoDTO = {
     created_at: string;
     archived_at: string | null;
     pi_session_id: string;
+    pi_session_locator_json: string;
+    current_model: {
+      provider: string;
+      id: string;
+      label: string;
+    } | null;
     status: keyof typeof SessionStatus;
     runtime_status: keyof typeof RuntimeStatus;
   };

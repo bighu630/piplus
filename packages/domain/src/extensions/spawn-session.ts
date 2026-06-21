@@ -1,13 +1,17 @@
 export type InternalSpawnSessionInput = {
   role: string;
-  target: string;
+  objective: string;
+  scope?: string;
+  task?: string;
   constraints: string[];
 };
 
 export function buildSpawnSessionInput(input: InternalSpawnSessionInput) {
   return {
     role: input.role,
-    target: input.target,
+    objective: input.objective,
+    scope: input.scope,
+    task: input.task,
     constraints: input.constraints,
   };
 }

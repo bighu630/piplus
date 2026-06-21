@@ -17,7 +17,7 @@ describe('ChatPanel', () => {
 
   test('shows session title in header', () => {
     render(<ChatPanel sessionTitle="My Chat" />);
-    expect(screen.getByText('Chat · My Chat')).toBeTruthy();
+    expect(screen.getByText('My Chat')).toBeTruthy();
   });
 
   test('renders stop button in armed state', () => {

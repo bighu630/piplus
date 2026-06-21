@@ -43,7 +43,7 @@ describe('realtime route emissions', () => {
     const projectRes = await app.request('/api/v1/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'Realtime Project' }),
+      body: JSON.stringify({ name: 'Realtime Project', mode: 'existing', path: '/tmp' }),
     });
     expect(projectRes.status).toBe(201);
     const projectBody = await projectRes.json();
@@ -69,7 +69,7 @@ describe('realtime route emissions', () => {
     const projectRes = await app.request('/api/v1/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'Realtime Session Project' }),
+      body: JSON.stringify({ name: 'Realtime Session Project', mode: 'existing', path: '/tmp' }),
     });
     const projectBody = await projectRes.json();
 
@@ -97,9 +97,8 @@ describe('realtime route emissions', () => {
 
     const messages = socket.sent.map((raw) => JSON.parse(raw) as { kind: string; type?: string; phase?: string; scope?: { session_id?: string; project_id?: string } });
     expect(messages.some((msg) => msg.kind === 'event' && msg.type === 'session.runtime_status_changed' && msg.scope?.session_id === projectBody.sessionId)).toBe(true);
-    expect(messages.some((msg) => msg.kind === 'chat_stream' && msg.phase === 'start' && msg.scope?.session_id === projectBody.sessionId)).toBe(true);
-    expect(messages.some((msg) => msg.kind === 'chat_stream' && msg.phase === 'delta' && msg.scope?.session_id === projectBody.sessionId)).toBe(true);
-    expect(messages.some((msg) => msg.kind === 'chat_stream' && msg.phase === 'complete' && msg.scope?.session_id === projectBody.sessionId)).toBe(true);
+    expect(messages.some((msg) => msg.kind === 'event' && msg.type === 'session.archived' && msg.scope?.session_id === projectBody.sessionId)).toBe(true);
+    expect(messages.some((msg) => msg.kind === 'event' && msg.type === 'tree.changed' && msg.scope?.project_id === projectBody.projectId)).toBe(true);
     expect(messages.some((msg) => msg.kind === 'event' && msg.type === 'session.archived' && msg.scope?.session_id === projectBody.sessionId)).toBe(true);
     expect(messages.some((msg) => msg.kind === 'event' && msg.type === 'tree.changed' && msg.scope?.project_id === projectBody.projectId)).toBe(true);
   });

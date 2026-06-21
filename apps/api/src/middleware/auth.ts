@@ -1,34 +1,23 @@
 import type { Context, Next } from 'hono';
-import { getAuth } from '../auth/better-auth';
+import { verifyToken } from '../auth/token';
 
 export async function requireAuth(c: Context, next: Next) {
-  const auth = getAuth();
-  if (!auth) {
-    return c.json({ error: { code: 'UNAUTHENTICATED', message: 'Auth service unavailable' } }, 503);
-  }
-  let userId: string | undefined;
-  let userName: string | undefined;
+  const header = c.req.header('Authorization') ?? '';
+  const token = header.replace(/^Bearer\s+/i, '');
 
-  const session = await (auth as any).api.getSession({ headers: c.req.raw.headers }).catch(() => null);
-  if (session?.user?.id) {
-    userId = session.user.id;
-    userName = session.user.name ?? session.user.email;
+  if (token && verifyToken(token)) {
+    c.set('userId', 'local-user');
+    c.set('userName', 'Piplus');
+    return await next();
   }
 
   // Fallback: allow x-user-id for dev / test
-  if (!userId) {
-    const headerUserId = c.req.header('x-user-id');
-    if (headerUserId && Bun.env.NODE_ENV !== 'production') {
-      userId = headerUserId;
-      userName = headerUserId;
-    }
+  const headerUserId = c.req.header('x-user-id');
+  if (headerUserId && Bun.env.NODE_ENV !== 'production') {
+    c.set('userId', headerUserId);
+    c.set('userName', headerUserId);
+    return await next();
   }
 
-  if (!userId) {
-    return c.json({ error: { code: 'UNAUTHENTICATED', message: 'Missing user session' } }, 401);
-  }
-
-  c.set('userId', userId);
-  c.set('userName', userName ?? userId);
-  await next();
+  return c.json({ error: { code: 'UNAUTHENTICATED', message: 'Missing or invalid token' } }, 401);
 }

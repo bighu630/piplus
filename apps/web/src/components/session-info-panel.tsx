@@ -25,6 +25,8 @@ export function SessionInfoPanel({ info, onTitleChanged }: Props) {
     created_at: new Date().toISOString(),
     archived_at: null,
     pi_session_id: 'pi_session_stub',
+    pi_session_locator_json: '{}',
+    current_model: null,
     status: 'active',
     runtime_status: 'idle',
   };
@@ -61,22 +63,19 @@ export function SessionInfoPanel({ info, onTitleChanged }: Props) {
 
   return (
     <ScrollArea className="h-full" viewportClassName="px-4 py-4 md:px-5 md:py-5">
-      <div className="mx-auto flex max-w-[980px] flex-col gap-4">
+      <div className="mx-auto flex max-w-[760px] flex-col gap-4">
         <div>
-          <p className="workspace-eyebrow">Read-only inspector</p>
-          <h3 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-[var(--text)]">Session Info</h3>
-          <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">
-            这是当前 session 的只读解释视图，只在切换到本 tab 时加载，不与 chat 主视图抢空间。
-          </p>
+          <h3 className="text-xl font-semibold tracking-[-0.04em] text-[var(--text)]">Session Info</h3>
+          <p className="mt-2 text-sm leading-6 text-[var(--text-muted)]">当前 session 的信息列表。</p>
         </div>
 
-        <InfoSection title="Overview" subtitle="Session snapshot">
-          <InfoGrid>
+        <section className="rounded-[24px] border border-[var(--line)] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.024))] p-4 shadow-[var(--glass-highlight)]">
+          <div className="space-y-2">
             {editingTitle ? (
               <div className="rounded-[16px] border border-[var(--accent)]/40 bg-black/10 p-2">
                 <input
                   ref={titleInputRef}
-                  className="w-full bg-transparent text-sm font-medium text-[var(--text)] outline-none"
+                  className="w-full bg-transparent text-base font-medium text-[var(--text)] outline-none"
                   value={titleDraft}
                   onChange={(e) => setTitleDraft(e.target.value.slice(0, 200))}
                   onBlur={commitTitle}
@@ -87,108 +86,71 @@ export function SessionInfoPanel({ info, onTitleChanged }: Props) {
                 />
               </div>
             ) : (
-              <button className="metric-clickable" onClick={startEditingTitle} type="button" title="点击编辑标题">
-                <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--text-dim)]">Title</span>
-                <span className="text-sm font-medium text-[var(--text)]">{session.title}</span>
+              <button className="w-full text-left" onClick={startEditingTitle} type="button" title="点击编辑标题">
+                <InfoRow label="Title" value={session.title} valueClassName="text-base font-medium text-[var(--text)]" />
               </button>
             )}
-            <Metric label="Project" value={project.name} />
-            <Metric label="Role name" value={roleTemplate.name} />
-            <Metric label="Role key" value={roleTemplate.key} />
-            <Metric label="Role version" value={roleTemplate.version} />
-            <Metric label="Parent" value={lineage.parent_session?.title ?? 'none'} />
-            <Metric label="Root" value={lineage.root_session?.title ?? 'self'} />
-            <Metric label="Depth" value={String(lineage.depth)} />
-            <Metric label="Created by" value={session.created_by} />
-            <Metric label="Created at" value={session.created_at} />
-            <Metric label="PI session ID" value={session.pi_session_id} mono />
-            <Metric label="Runtime" value={session.runtime_status} />
-            <Metric label="Archived" value={session.archived_at ? 'yes' : 'no'} />
-          </InfoGrid>
-        </InfoSection>
-
-        <InfoSection title="Prompts" subtitle="Prompt snapshots">
-          <PromptBlock label="role_base_prompt_snapshot" value={info?.prompts.role_base_prompt_snapshot ?? '—'} />
-          <PromptBlock label="user_supplied_prompt" value={info?.prompts.user_supplied_prompt ?? '—'} />
-          <PromptBlock label="parent_supplied_prompt" value={info?.prompts.parent_supplied_prompt ?? '—'} />
-          <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-medium text-[var(--text)]">compiled_prompt</p>
-              <button className="ghost-button ghost-button-sm" onClick={() => setShowCompiledPrompt((value) => !value)} type="button">
-                {showCompiledPrompt ? '收起' : '展开'}
-              </button>
-            </div>
-            {showCompiledPrompt ? (
-              <div className="prompt-box mt-3">{info?.prompts.compiled_prompt ?? '—'}</div>
-            ) : (
-              <p className="mt-3 text-sm text-[var(--text-dim)]">默认折叠，避免页面过长。</p>
-            )}
+            <InfoRow label="Project" value={project.name} />
+            <InfoRow label="Role name" value={roleTemplate.name} />
+            <InfoRow label="Role key" value={roleTemplate.key} />
+            <InfoRow label="Role version" value={roleTemplate.version} />
+            <InfoRow label="Parent" value={lineage.parent_session?.title ?? 'none'} />
+            <InfoRow label="Root" value={lineage.root_session?.title ?? 'self'} />
+            <InfoRow label="Depth" value={String(lineage.depth)} />
+            <InfoRow label="Created by" value={session.created_by} />
+            <InfoRow label="Created at" value={session.created_at} />
+            <InfoRow label="PI session ID" value={session.pi_session_id} mono />
+            <InfoRow label="Current model" value={session.current_model?.label ?? 'none'} />
+            <InfoRow label="Runtime" value={session.runtime_status} />
+            <InfoRow label="Archived" value={session.archived_at ? 'yes' : 'no'} />
+            <InfoRow label="sync_status" value={sync.sync_status} />
+            <InfoRow label="last_synced_at" value={sync.last_synced_at ?? 'never'} />
+            <InfoRow label="last_pi_message_id" value={sync.last_pi_message_id ?? '—'} mono />
+            <InfoRow label="retry_count" value={String(sync.retry_count)} />
+            <InfoRow label="last_error" value={sync.last_error ?? 'none'} />
           </div>
-        </InfoSection>
+        </section>
 
-        <InfoSection title="Sync" subtitle="Control-plane state">
-          <InfoGrid>
-            <Metric label="sync_status" value={sync.sync_status} />
-            <Metric label="last_synced_at" value={sync.last_synced_at ?? 'never'} />
-            <Metric label="last_pi_message_id" value={sync.last_pi_message_id ?? '—'} mono />
-            <Metric label="retry_count" value={String(sync.retry_count)} />
-            <Metric label="last_error" value={sync.last_error ?? 'none'} />
-          </InfoGrid>
-        </InfoSection>
+        <section className="rounded-[24px] border border-[var(--line)] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.024))] p-4 shadow-[var(--glass-highlight)]">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-[var(--text)]">compiled_prompt</p>
+            <button className="ghost-button ghost-button-sm" onClick={() => setShowCompiledPrompt((value) => !value)} type="button">
+              {showCompiledPrompt ? '收起' : '展开'}
+            </button>
+          </div>
+          {showCompiledPrompt ? (
+            <div className="prompt-box mt-3">{info?.prompts.compiled_prompt ?? '—'}</div>
+          ) : (
+            <p className="mt-3 text-sm text-[var(--text-dim)]">默认折叠，避免页面过长。</p>
+          )}
+        </section>
 
-        <InfoSection title="Recent Events" subtitle="Latest session events">
-          <div className="space-y-3">
+        <section className="rounded-[24px] border border-[var(--line)] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.024))] p-4 shadow-[var(--glass-highlight)]">
+          <p className="text-sm font-medium text-[var(--text)]">Recent Events</p>
+          <div className="mt-3 space-y-3">
             {recentEvents.length === 0 ? (
-              <div className="rounded-[22px] border border-white/8 bg-black/10 p-4 text-sm text-[var(--text-dim)]">暂无 recent events。</div>
+              <div className="rounded-[18px] border border-[var(--line-soft)] bg-[rgba(255,255,255,0.03)] p-3.5 text-sm text-[var(--text-dim)]">暂无 recent events。</div>
             ) : (
               recentEvents.map((event) => (
-                <article key={event.id} className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-[var(--text)]">{event.type}</p>
-                      <p className="mt-1 text-xs text-[var(--text-dim)]">{event.created_at}</p>
-                    </div>
-                    <span className="chip chip-inline">{event.id}</span>
-                  </div>
+                <article key={event.id} className="rounded-[18px] border border-[var(--line-soft)] bg-[rgba(255,255,255,0.03)] p-3.5">
+                  <InfoRow label={event.type} value={event.created_at} />
+                  <div className="mt-2 text-sm text-[var(--text-dim)]">{event.id}</div>
                   <div className="prompt-box mt-3">{event.payload}</div>
                 </article>
               ))
             )}
           </div>
-        </InfoSection>
+        </section>
       </div>
     </ScrollArea>
   );
 }
 
-function InfoSection({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+function InfoRow({ label, value, mono = false, valueClassName = '' }: { label: string; value: string; mono?: boolean; valueClassName?: string }) {
   return (
-    <section className="rounded-[26px] border border-white/8 bg-[var(--surface-soft)] p-4 md:p-5">
-      <p className="workspace-eyebrow">{subtitle}</p>
-      <h4 className="mt-2 text-lg font-semibold tracking-[-0.03em] text-[var(--text)]">{title}</h4>
-      <div className="mt-4 space-y-4">{children}</div>
-    </section>
-  );
-}
-
-function InfoGrid({ children }: { children: React.ReactNode }) {
-  return <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{children}</div>;
-}
-
-function Metric({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="rounded-[20px] border border-white/8 bg-black/10 p-4">
-      <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-dim)]">{label}</p>
-      <p className={`mt-3 text-sm leading-6 text-[var(--text)] ${mono ? 'font-mono text-[12px]' : 'font-medium'}`}>{value}</p>
-    </div>
-  );
-}
-
-function PromptBlock({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-[22px] border border-white/8 bg-black/10 p-4">
-      <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-dim)]">{label}</p>
-      <div className="prompt-box mt-3">{value}</div>
+    <div className="flex items-start justify-between gap-4 rounded-[14px] border border-[var(--line-soft)] bg-[rgba(255,255,255,0.02)] px-3 py-2.5">
+      <span className="shrink-0 text-sm font-semibold text-[var(--text)]">{label}</span>
+      <span className={`min-w-0 text-right text-sm leading-6 text-[var(--text-muted)] ${mono ? 'font-mono text-[12px]' : ''} ${valueClassName}`}>{value}</span>
     </div>
   );
 }

@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   depth INTEGER NOT NULL,
   role_template_id TEXT NOT NULL,
   pi_session_id TEXT NOT NULL,
+  pi_session_locator_json TEXT NOT NULL DEFAULT '{}',
   requested_by_message_id TEXT,
   title TEXT NOT NULL,
   title_source TEXT NOT NULL,

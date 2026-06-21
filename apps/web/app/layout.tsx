@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import './globals.css';
+import 'highlight.js/styles/github-dark.css';
 import { QueryProvider } from '../src/providers/query-provider';
 
 export const metadata = {

@@ -25,7 +25,7 @@ describe('project routes', () => {
 
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({
-      error: { code: 'UNAUTHENTICATED', message: 'Missing user session' },
+      error: { code: 'UNAUTHENTICATED', message: 'Missing or invalid token' },
     });
   });
 
@@ -37,7 +37,7 @@ describe('project routes', () => {
     const res = await app.request('/api/v1/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'API Project' }),
+      body: JSON.stringify({ name: 'API Project', mode: 'existing', path: '/tmp' }),
     });
 
     expect(res.status).toBe(201);
@@ -50,5 +50,6 @@ describe('project routes', () => {
     const [session] = await db.select().from(sessions).where(eq(sessions.id, body.sessionId)).limit(1);
     expect(project?.name).toBe('API Project');
     expect(session?.parentSessionId).toBeNull();
+    expect(session?.piSessionLocatorJson).toContain('sessionFile');
   });
 });

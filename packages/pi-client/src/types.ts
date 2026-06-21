@@ -1,3 +1,5 @@
+import type { PiSessionLocator } from './locator';
+
 export type PiMessageRole = 'user' | 'assistant' | 'system';
 
 export type PiToolDef = {
@@ -12,11 +14,42 @@ export type PiCreateSessionInput = {
   prompt: string;
   tools?: PiToolDef[];
   metadata?: Record<string, unknown>;
+  cwd?: string;
 };
 
 export type PiCreateSessionResult = {
   sessionId: string;
+  locator: PiSessionLocator;
 };
+
+export type PiHistoryMessage = {
+  id: string;
+  role: PiMessageRole;
+  text: string;
+  createdAt: string | null;
+};
+
+export type PiHistoryPage = {
+  messages: PiHistoryMessage[];
+  nextCursor: string | null;
+};
+
+export type PiRunAccepted = {
+  sessionId: string;
+  runId: string;
+};
+
+export type PiModelInfo = {
+  provider: string;
+  id: string;
+  label: string;
+};
+
+export type PiSessionStreamEvent =
+  | { type: 'message_start'; sessionId: string; runId: string; messageId?: string }
+  | { type: 'text_delta'; sessionId: string; runId: string; messageId?: string; delta: string }
+  | { type: 'message_end'; sessionId: string; runId: string; messageId?: string }
+  | { type: 'error'; sessionId: string; runId: string; messageId?: string; error: string };
 
 export type PiMessage = {
   id: string;
@@ -24,19 +57,33 @@ export type PiMessage = {
   text: string;
 };
 
-export type PiListMessagesResult = {
-  messages: PiMessage[];
-  nextCursor: string | null;
-};
-
-export type PiChatResult = {
-  sessionId: string;
-  messageId: string;
-  status: 'accepted';
-};
-
 export type PiStopSessionResult = {
   status: 'stopped';
+};
+
+export type PiClient = {
+  createSession(input: PiCreateSessionInput): Promise<PiCreateSessionResult>;
+  restoreRuntime(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<void>;
+  subscribeSession(sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>): Promise<() => void>;
+  getHistory(sessionId: string, locator: PiSessionLocator, cursor?: string | null, limit?: number): Promise<PiHistoryPage>;
+  sendMessage(sessionId: string, content: string): Promise<PiRunAccepted>;
+  stopSession(sessionId: string): Promise<PiStopSessionResult>;
+  closeRuntime(sessionId: string): Promise<void>;
+  listAvailableModels(): Promise<PiModelInfo[]>;
+  getCurrentModel(sessionId: string): Promise<PiModelInfo | null>;
+  setSessionModel(
+    sessionId: string,
+    locator: PiSessionLocator,
+    modelRef: { provider: string; id: string },
+    cwd?: string,
+  ): Promise<PiModelInfo>;
+  bindToolRuntime(
+    sessionId: string,
+    tools: PiToolDef[],
+    handler: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>,
+    cwd?: string,
+  ): Promise<void>;
+  registerTools?(tools: PiToolDef[]): Promise<void>;
 };
 
 export type PiToolCallContext = {
@@ -63,22 +110,5 @@ export type PiStreamChunk = {
   blocks?: unknown[] | null;
 };
 
-export type PiClient = {
-  createSession(input: PiCreateSessionInput): Promise<PiCreateSessionResult>;
-  listMessages(sessionId: string, cursor?: string | null, limit?: number): Promise<PiListMessagesResult>;
-  sendMessage(sessionId: string, content: string): Promise<PiChatResult>;
-  stopSession(sessionId: string): Promise<PiStopSessionResult>;
-  registerTools?(tools: PiToolDef[]): Promise<void>;
-};
+export type PiRealtimeCapableClient = PiClient;
 
-export type PiRealtimeCapableClient = PiClient & {
-  registerToolRuntime?(tools: PiToolDef[], handler: PiToolCallHandler): Promise<void>;
-  streamMessage?(
-    sessionId: string,
-    content: string,
-    handlers: {
-      onChunk: (chunk: PiStreamChunk) => Promise<void> | void;
-      onEvent?: (event: PiStreamEvent) => Promise<void> | void;
-    },
-  ): Promise<PiChatResult>;
-};

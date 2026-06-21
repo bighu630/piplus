@@ -15,7 +15,7 @@ describe('createWorkspaceSocket', () => {
     };
     (globalThis as any).WebSocket = mock(() => mockWs);
 
-    const ws = createWorkspaceSocket(() => {});
+    const ws = createWorkspaceSocket({ onMessage: () => {} });
 
     ws.hello();
     ws.setContext({ project_id: 'p1', session_id: 's1', current_tab: 'chat' });
@@ -51,7 +51,7 @@ describe('createWorkspaceSocket', () => {
     };
     (globalThis as any).WebSocket = mock(() => mockWs);
     const messages: MessageEvent[] = [];
-    createWorkspaceSocket((ev) => messages.push(ev));
+    createWorkspaceSocket({ onMessage: (ev) => messages.push(ev) });
 
     expect(listeners.message).toBeFunction();
     const fakeEvent = { data: JSON.stringify({ kind: 'event', type: 'test' }) };

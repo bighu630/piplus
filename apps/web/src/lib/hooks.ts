@@ -5,9 +5,12 @@ import {
   getTree,
   getSessionInfo,
   getSessionMessages,
-  getSession,
+  checkAuth,
   login,
-  logout,
+  getModels,
+  setSessionModel,
+  archiveProject,
+  deleteProject,
   createProject,
   createProjectSession,
   sendSessionMessage,
@@ -21,9 +24,44 @@ import type { SessionInfoDTO, TreeResponse } from '@piplus/shared';
 export function useAuthSession() {
   return useQuery({
     queryKey: ['auth', 'session'],
-    queryFn: getSession,
+    queryFn: async () => {
+      const token = localStorage.getItem('piplus_token');
+      if (!token) return null;
+      return checkAuth(token);
+    },
     retry: false,
     staleTime: 5 * 60_000,
+  });
+}
+
+export function useModels() {
+  return useQuery({
+    queryKey: ['models'],
+    queryFn: async () => (await getModels()).models,
+    staleTime: 60_000,
+  });
+}
+
+export function useSetSessionModelMutation() {
+  return useMutation({
+    mutationFn: ({ sessionId, provider, id }: { sessionId: string; provider: string; id: string }) =>
+      setSessionModel(sessionId, { provider, id }),
+  });
+}
+
+export function useArchiveProjectMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => archiveProject(projectId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['tree'] }),
+  });
+}
+
+export function useDeleteProjectMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => deleteProject(projectId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['tree'] }),
   });
 }
 
@@ -53,20 +91,27 @@ export function useSessionMessages(
     initialPageParam: '0',
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     enabled: Boolean(sessionId),
-    staleTime: 10_000,
+    staleTime: 0,
   });
 }
 
 export function useLoginMutation() {
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ email, password }: { email: string; password: string }) => login(email, password),
+    mutationFn: (password: string) => login(password),
+    onSuccess: (data) => {
+      localStorage.setItem('piplus_token', data.token);
+      queryClient.setQueryData(['auth', 'session'], data);
+    },
   });
 }
 
 export function useLogoutMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: logout,
+    mutationFn: async () => {
+      localStorage.removeItem('piplus_token');
+    },
     onSettled: () => {
       queryClient.clear();
     },
@@ -76,7 +121,8 @@ export function useLogoutMutation() {
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) => createProject(name),
+    mutationFn: (params: { name: string; mode?: string; path?: string; repoUrl?: string }) =>
+      createProject(params.name, params.mode, params.path, params.repoUrl),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },
@@ -86,7 +132,8 @@ export function useCreateProjectMutation() {
 export function useCreateSessionMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (projectId: string) => createProjectSession(projectId),
+    mutationFn: (input: { projectId: string; inheritModel?: { provider: string; id: string } | null }) =>
+      createProjectSession(input.projectId, input.inheritModel),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },

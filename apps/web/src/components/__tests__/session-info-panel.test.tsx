@@ -14,7 +14,7 @@ describe('SessionInfoPanel', () => {
     const info = {
       session: { id: 's1', title: 'My Test Session', project_id: 'p1', parent_session_id: null,
         root_session_id: 's1', created_by: 'x', created_at: '2026-01-01T00:00:00Z', archived_at: null,
-        pi_session_id: 'pi_a', status: 'active', runtime_status: 'idle' },
+        pi_session_id: 'pi_a', pi_session_locator_json: '{}', current_model: null, status: 'active', runtime_status: 'idle' },
       project: { id: 'p1', name: 'Demo' },
       lineage: { parent_session: null, root_session: { id: 's1', title: 'My Test Session' }, depth: 0 },
       role_template: { key: 'planner', version: '1', name: 'Planner' },
@@ -32,7 +32,7 @@ describe('SessionInfoPanel', () => {
     const info = {
       session: { id: 's1', title: 'Click Me', project_id: 'p1', parent_session_id: null,
         root_session_id: 's1', created_by: 'x', created_at: '2026-01-01T00:00:00Z', archived_at: null,
-        pi_session_id: 'pi_a', status: 'active', runtime_status: 'idle' },
+        pi_session_id: 'pi_a', pi_session_locator_json: '{}', current_model: null, status: 'active', runtime_status: 'idle' },
       project: { id: 'p1', name: 'Demo' },
       lineage: { parent_session: null, root_session: { id: 's1', title: 'Click Me' }, depth: 0 },
       role_template: { key: 'planner', version: '1', name: 'Planner' },

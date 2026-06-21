@@ -4,6 +4,7 @@ import { registerAuthRoutes } from './auth/routes';
 import { requireAuth } from './middleware/auth';
 import { registerProjectRoutes } from './routes/projects';
 import { registerSessionRoutes, registerSessionMutationRoutes } from './routes/sessions';
+import { registerModelRoutes } from './routes/models';
 import { registerTreeRoutes } from './routes/tree';
 
 export function createApp() {
@@ -13,8 +14,8 @@ export function createApp() {
     '*',
     cors({
       origin: (origin) => origin ?? '*',
-      allowMethods: ['GET', 'POST', 'OPTIONS'],
-      allowHeaders: ['Content-Type', 'x-user-id'],
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowHeaders: ['Content-Type', 'x-user-id', 'Authorization'],
       credentials: false,
     }),
   );
@@ -25,9 +26,11 @@ export function createApp() {
   app.use('/api/v1/projects', requireAuth);
   app.use('/api/v1/projects/*', requireAuth);
   app.use('/api/v1/sessions/*', requireAuth);
+  app.use('/api/v1/models', requireAuth);
   registerTreeRoutes(app);
   registerProjectRoutes(app);
   registerSessionRoutes(app);
   registerSessionMutationRoutes(app);
+  registerModelRoutes(app);
   return app;
 }

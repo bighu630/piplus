@@ -15,9 +15,10 @@ const contexts = new WeakMap<AttachedSocket, ConnectionContext>();
 
 function shouldDeliver(message: ServerMessage, context?: ConnectionContext) {
   if (message.kind === 'chat_stream') {
+    if (context?.current_tab !== 'chat') return false;
     if (!context?.session_id) return false;
     if (message.scope.session_id !== context.session_id) return false;
-    return context.current_tab === 'chat';
+    return true;
   }
 
   return true;
@@ -55,14 +56,9 @@ export function registerSocket() {
         return;
       }
 
-      const payload = JSON.stringify(message);
-      for (const ws of sockets) {
-        const context = contexts.get(ws);
-        if (!shouldDeliver(message, context)) continue;
-        if (context?.session_id === sessionId) {
-          ws.send(payload);
-        }
-      }
+      console.log('[ws/server] sendToSession', { sessionId, kind: message.kind, phase: (message as any).phase ?? null });
+      // chat_stream 改为广播，由前端按 session_id 自行过滤，避免 server 端 context 串线
+      this.broadcast(message);
     },
   };
 }

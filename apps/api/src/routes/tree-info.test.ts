@@ -29,7 +29,7 @@ describe('tree and session info routes', () => {
     const projectRes = await app.request('/api/v1/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'Tree Project' }),
+      body: JSON.stringify({ name: 'Tree Project', mode: 'existing', path: '/tmp' }),
     });
     const projectBody = await projectRes.json();
 
@@ -71,7 +71,7 @@ describe('tree and session info routes', () => {
     const projectRes = await app.request('/api/v1/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'Info Project' }),
+      body: JSON.stringify({ name: 'Info Project', mode: 'existing', path: '/tmp' }),
     });
     const projectBody = await projectRes.json();
 

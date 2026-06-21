@@ -5,23 +5,23 @@ import { LoginScreen } from '../login-screen';
 describe('LoginScreen', () => {
   afterEach(() => cleanup());
 
-  test('renders email and password fields with defaults', () => {
+  test('renders password field', () => {
     const onSubmit = mock(() => {});
     render(<LoginScreen onSubmit={onSubmit} />);
-    const inputs = screen.getAllByDisplayValue(/seed/);
-    expect(inputs.length).toBeGreaterThanOrEqual(1);
+    const input = screen.getByDisplayValue('');
+    expect(input.getAttribute('type')).toBe('password');
   });
 
-  test('calls onSubmit with email and password', () => {
-    const calls: string[][] = [];
-    const onSubmit = async (email: string, password: string) => { calls.push([email, password]); };
+  test('calls onSubmit with password', () => {
+    let submitted = '';
+    const onSubmit = async (password: string) => { submitted = password; };
     render(<LoginScreen onSubmit={onSubmit} />);
 
+    const input = screen.getByDisplayValue('');
+    fireEvent.change(input, { target: { value: 'test123' } });
     const btn = screen.getByText('登录');
     fireEvent.click(btn);
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.[0]).toBe('seed@local');
-    expect(calls[0]?.[1]).toBe('seed123');
+    expect(submitted).toBe('test123');
   });
 
   test('shows error message when error prop is set', () => {
