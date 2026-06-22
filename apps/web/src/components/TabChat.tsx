@@ -66,9 +66,24 @@ export default function TabChat({
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Always scroll to bottom while streaming new content
+    if (streamingContent) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+
+    // For messages changes, only scroll if user is already near the bottom.
+    // This prevents jumping when prepending older messages via "加载更早消息".
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const isNearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    if (isNearBottom) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, streamingContent]);
 
   const handleSubmit = () => {
@@ -117,7 +132,7 @@ export default function TabChat({
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative">
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
         {hasMore && (
           <div className="flex justify-center">
             <button
