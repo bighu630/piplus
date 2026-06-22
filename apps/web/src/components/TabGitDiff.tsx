@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import {
   FileCode,
   Copy,
@@ -6,13 +6,15 @@ import {
   GitBranch,
   RefreshCw,
   Download,
-  ChevronDown,
   ChevronRight,
   Info,
   GitPullRequest,
   GitCommitVertical,
   ArrowUpCircle,
   X,
+  FileText,
+  Folder,
+  FolderOpen,
 } from 'lucide-react';
 
 interface GitActionResult {
@@ -27,13 +29,14 @@ interface TabGitDiffProps {
   diff: string | null;
   isLoading: boolean;
   onRefresh: () => void;
-  // Git actions
   onPull: () => Promise<GitActionResult>;
   onPush: () => Promise<GitActionResult>;
   onCommit: (message: string) => Promise<GitActionResult>;
+  onAddGitignore: (filePath: string) => Promise<unknown>;
   isPulling: boolean;
   isPushing: boolean;
   isCommitting: boolean;
+  isAddingGitignore: boolean;
 }
 
 interface DiffLine {
@@ -47,7 +50,169 @@ interface DiffFile {
   lines: DiffLine[];
 }
 
+interface FileTreeNode {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+  children: FileTreeNode[];
+}
+
 type GitOp = 'pull' | 'push' | 'commit';
+
+function buildFileTree(files: string[]): FileTreeNode[] {
+  const root: FileTreeNode[] = [];
+
+  for (const filepath of files) {
+    const parts = filepath.split('/');
+    let level = root;
+    let accumulatedPath = '';
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      accumulatedPath = accumulatedPath ? `${accumulatedPath}/${part}` : part;
+      const isLast = i === parts.length - 1;
+
+      let existing = level.find((n) => n.name === part);
+      if (!existing) {
+        existing = {
+          name: part,
+          path: accumulatedPath,
+          kind: isLast ? 'file' : 'directory',
+          children: [],
+        };
+        level.push(existing);
+      }
+
+      if (isLast) {
+        existing.kind = 'file';
+      }
+
+      level = existing.children;
+    }
+  }
+
+  function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
+    return nodes
+      .sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      })
+      .map((node) => ({ ...node, children: sortTree(node.children) }));
+  }
+
+  return sortTree(root);
+}
+
+function DiffFileTree({
+  nodes,
+  depth,
+  expanded,
+  onToggle,
+  selectedPath,
+  onSelect,
+  onAddGitignore,
+  isAddingGitignore,
+}: {
+  nodes: FileTreeNode[];
+  depth: number;
+  expanded: Record<string, boolean>;
+  onToggle: (path: string) => void;
+  selectedPath: string | null;
+  onSelect: (path: string) => void;
+  onAddGitignore: (filePath: string) => void;
+  isAddingGitignore: boolean;
+}) {
+  return (
+    <>
+      {nodes.map((node) => {
+        const isDirectory = node.kind === 'directory';
+        const isOpen = expanded[node.path] ?? true;
+        const isSelected = selectedPath === node.path;
+
+        return (
+          <div key={node.path}>
+            <div
+              className={`group flex items-center gap-1 rounded-lg text-left text-xs transition cursor-pointer ${
+                isSelected
+                  ? 'bg-blue-50 dark:bg-blue-950/30'
+                  : 'hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (isDirectory) {
+                    onToggle(node.path);
+                  } else {
+                    onSelect(node.path);
+                  }
+                }}
+                className="flex items-center gap-1.5 flex-1 min-w-0 px-1.5 py-1"
+                style={{ paddingLeft: `${depth * 12 + 6}px` }}
+              >
+                {isDirectory ? (
+                  <ChevronRight className={`w-3 h-3 shrink-0 transition ${isOpen ? 'rotate-90' : ''}`} />
+                ) : (
+                  <span className="w-3 h-3 shrink-0" />
+                )}
+                {isDirectory ? (
+                  isOpen ? (
+                    <FolderOpen className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+                  ) : (
+                    <Folder className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+                  )
+                ) : (
+                  <FileText className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                )}
+                <span
+                  className={`truncate ${
+                    isSelected
+                      ? 'text-blue-700 dark:text-blue-300'
+                      : 'text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {node.name}
+                </span>
+              </button>
+
+              {/* Gitignore button - hidden until hover */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAddGitignore(node.path);
+                }}
+                disabled={isAddingGitignore}
+                title={`Add ${node.path} to .gitignore`}
+                className="shrink-0 mr-1 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer disabled:opacity-30"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+
+            {isDirectory && isOpen && node.children.length > 0 && (
+              <div className="mt-0.5">
+                <DiffFileTree
+                  nodes={node.children}
+                  depth={depth + 1}
+                  expanded={expanded}
+                  onToggle={onToggle}
+                  selectedPath={selectedPath}
+                  onSelect={onSelect}
+                  onAddGitignore={onAddGitignore}
+                  isAddingGitignore={isAddingGitignore}
+                />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
 
 export default function TabGitDiff({
   diff,
@@ -56,15 +221,20 @@ export default function TabGitDiff({
   onPull,
   onPush,
   onCommit,
+  onAddGitignore,
   isPulling,
   isPushing,
   isCommitting,
+  isAddingGitignore,
 }: TabGitDiffProps) {
   const [copied, setCopied] = useState(false);
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({});
   const [showCommitInput, setShowCommitInput] = useState(false);
   const [commitMessage, setCommitMessage] = useState('');
   const [opFeedback, setOpFeedback] = useState<{ op: GitOp; result: 'ok' | 'error'; message: string } | null>(null);
+  const [treeExpanded, setTreeExpanded] = useState<Record<string, boolean>>({});
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const clearFeedback = useCallback(() => {
     setOpFeedback(null);
@@ -140,10 +310,6 @@ export default function TabGitDiff({
     URL.revokeObjectURL(url);
   };
 
-  const toggleCollapsed = (filename: string) => {
-    setCollapsedFiles((prev) => ({ ...prev, [filename]: !prev[filename] }));
-  };
-
   const parsedFiles = useMemo((): DiffFile[] => {
     if (!diff) return [];
     const lines = diff.split('\n');
@@ -185,7 +351,41 @@ export default function TabGitDiff({
     return files;
   }, [diff]);
 
+  const fileTree = useMemo(() => {
+    const filenames = parsedFiles
+      .filter((f) => f.lines.some((l) => l.type !== 'header'))
+      .map((f) => f.filename);
+    return buildFileTree(filenames);
+  }, [parsedFiles]);
+
+  // Reset selection when diff changes
+  useEffect(() => {
+    setSelectedFilePath(null);
+    fileRefs.current = new Map();
+  }, [diff]);
+
+  const handleFileSelect = useCallback((path: string) => {
+    setSelectedFilePath(path);
+    const el = fileRefs.current.get(path);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
+
+  const toggleTreeExpanded = useCallback((path: string) => {
+    setTreeExpanded((prev) => ({ ...prev, [path]: !(prev[path] ?? true) }));
+  }, []);
+
+  const toggleCollapsed = useCallback((filename: string) => {
+    setCollapsedFiles((prev) => ({ ...prev, [filename]: !prev[filename] }));
+  }, []);
+
   const anyBusy = isPulling || isPushing || isCommitting || isLoading;
+
+  const functionalFiles = useMemo(
+    () => parsedFiles.filter((f) => f.lines.some((l) => l.type !== 'header')),
+    [parsedFiles],
+  );
 
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50/60 dark:bg-slate-900/10 overflow-hidden">
@@ -206,7 +406,6 @@ export default function TabGitDiff({
         </div>
 
         <div className="flex items-center space-x-2 flex-wrap gap-y-2">
-          {/* Refresh */}
           <button
             onClick={onRefresh}
             disabled={isLoading}
@@ -216,7 +415,6 @@ export default function TabGitDiff({
             <span>{isLoading ? '加载中…' : '刷新'}</span>
           </button>
 
-          {/* Pull */}
           <button
             onClick={handlePull}
             disabled={anyBusy}
@@ -226,7 +424,6 @@ export default function TabGitDiff({
             <span>{isPulling ? 'Pulling…' : 'Pull'}</span>
           </button>
 
-          {/* Push */}
           <button
             onClick={handlePush}
             disabled={anyBusy}
@@ -236,7 +433,6 @@ export default function TabGitDiff({
             <span>{isPushing ? 'Pushing…' : 'Push'}</span>
           </button>
 
-          {/* Commit */}
           <button
             onClick={() => {
               setShowCommitInput(true);
@@ -328,96 +524,133 @@ export default function TabGitDiff({
         </div>
       )}
 
-      {/* Diff content */}
-      <div className="flex-1 overflow-y-auto p-6">
+      {/* Diff content area */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* No diff state */}
         {!diff ? (
-          <div className="h-full flex flex-col items-center justify-center text-center space-y-3">
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3">
             <GitBranch className="w-10 h-10 text-slate-300 dark:text-slate-600" />
             <p className="text-sm text-slate-400 dark:text-slate-500">暂无变更</p>
             <p className="text-xs text-slate-400 dark:text-slate-500">点击"刷新"获取当前会话的工作区差异</p>
           </div>
         ) : (
-          <div className="max-w-5xl mx-auto space-y-6">
-            <div className="flex items-start space-x-3 bg-blue-50/50 dark:bg-indigo-950/20 border border-blue-100 dark:border-indigo-900/60 p-4 rounded-xl text-xs text-blue-800 dark:text-indigo-300 leading-relaxed font-sans">
-              <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-bold">Git Diff：</span>新增行以绿色高亮，删除行以红色高亮。可点击文件名展开/收起每个文件的变更。
+          <>
+            {/* Left sidebar - file tree */}
+            <aside className="w-[300px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col">
+              <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
+                  <FileCode className="w-4 h-4 text-blue-500" />
+                  <span>变更文件</span>
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 mt-0.5">
+                  {functionalFiles.length} 个文件
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+                {fileTree.length === 0 ? (
+                  <div className="text-xs text-slate-400 p-2">无变更文件</div>
+                ) : (
+                  <DiffFileTree
+                    nodes={fileTree}
+                    depth={0}
+                    expanded={treeExpanded}
+                    onToggle={toggleTreeExpanded}
+                    selectedPath={selectedFilePath}
+                    onSelect={handleFileSelect}
+                    onAddGitignore={(filePath) => { onAddGitignore(filePath); }}
+                    isAddingGitignore={isAddingGitignore}
+                  />
+                )}
+              </div>
+            </aside>
+
+            {/* Right diff viewer */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="max-w-5xl mx-auto space-y-6">
+                <div className="flex items-start space-x-3 bg-blue-50/50 dark:bg-indigo-950/20 border border-blue-100 dark:border-indigo-900/60 p-4 rounded-xl text-xs text-blue-800 dark:text-indigo-300 leading-relaxed font-sans">
+                  <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Git Diff：</span>新增行以绿色高亮，删除行以红色高亮。可点击文件名展开/收起每个文件的变更。左侧目录可快速跳转。
+                  </div>
+                </div>
+
+                {functionalFiles.map((fileObj) => {
+                  const isCollapsed = collapsedFiles[fileObj.filename] || false;
+
+                  return (
+                    <div
+                      key={fileObj.filename}
+                      ref={(el) => {
+                        if (el) fileRefs.current.set(fileObj.filename, el);
+                      }}
+                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xs scroll-mt-4"
+                    >
+                      <button
+                        onClick={() => toggleCollapsed(fileObj.filename)}
+                        className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 cursor-pointer"
+                      >
+                        <div className="flex items-center space-x-2">
+                          <FileCode className="w-4 h-4 text-blue-500" />
+                          <span className="text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">
+                            {fileObj.filename}
+                          </span>
+                        </div>
+                        {isCollapsed ? (
+                          <ChevronRight className="w-4 h-4 text-slate-400" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 text-slate-400 rotate-90" />
+                        )}
+                      </button>
+
+                      {!isCollapsed && (
+                        <div className="overflow-x-auto font-mono text-xs">
+                          {fileObj.lines.map((l) => {
+                            if (l.type === 'header') return null;
+
+                            let rowClass = 'text-slate-600 dark:text-slate-300';
+                            let sign = ' ';
+
+                            if (l.type === 'add') {
+                              rowClass = 'bg-emerald-50/70 dark:bg-emerald-950/20 text-emerald-800 dark:text-emerald-300';
+                              sign = '+';
+                            } else if (l.type === 'delete') {
+                              rowClass = 'bg-rose-50/70 dark:bg-rose-950/20 text-rose-800 dark:text-rose-300';
+                              sign = '-';
+                            } else if (l.type === 'meta') {
+                              rowClass = 'bg-blue-50/40 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 font-semibold';
+                            }
+
+                            let displayText = l.text;
+                            if (l.type === 'add' && l.text.startsWith('+')) {
+                              displayText = l.text.substring(1);
+                            } else if (l.type === 'delete' && l.text.startsWith('-')) {
+                              displayText = l.text.substring(1);
+                            }
+
+                            return (
+                              <div
+                                key={l.lineNum}
+                                className={`flex items-center px-3 py-0.5 ${rowClass} transition-colors`}
+                              >
+                                <span className="w-12 shrink-0 text-slate-400 dark:text-slate-500 select-none text-[10px] text-right pr-3 border-r border-slate-200/40 dark:border-slate-800">
+                                  {l.lineNum}
+                                </span>
+                                <span className="w-5 shrink-0 text-center select-none font-bold text-xs opacity-70">
+                                  {sign}
+                                </span>
+                                <span className="pl-1.5 whitespace-pre break-all">{displayText}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
-
-            {parsedFiles.map((fileObj, idx) => {
-              const isCollapsed = collapsedFiles[fileObj.filename] || false;
-              const functionalLines = fileObj.lines.filter((l) => l.type !== 'header');
-              if (functionalLines.length === 0) return null;
-
-              return (
-                <div
-                  key={idx}
-                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xs"
-                >
-                  <button
-                    onClick={() => toggleCollapsed(fileObj.filename)}
-                    className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-800 cursor-pointer"
-                  >
-                    <div className="flex items-center space-x-2">
-                      <FileCode className="w-4 h-4 text-blue-500" />
-                      <span className="text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">
-                        {fileObj.filename}
-                      </span>
-                    </div>
-                    {isCollapsed ? (
-                      <ChevronRight className="w-4 h-4 text-slate-400" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4 text-slate-400" />
-                    )}
-                  </button>
-
-                  {!isCollapsed && (
-                    <div className="overflow-x-auto font-mono text-xs">
-                      {fileObj.lines.map((l) => {
-                        if (l.type === 'header') return null;
-
-                        let rowClass = 'text-slate-600 dark:text-slate-300';
-                        let sign = ' ';
-
-                        if (l.type === 'add') {
-                          rowClass = 'bg-emerald-50/70 dark:bg-emerald-950/20 text-emerald-800 dark:text-emerald-300';
-                          sign = '+';
-                        } else if (l.type === 'delete') {
-                          rowClass = 'bg-rose-50/70 dark:bg-rose-950/20 text-rose-800 dark:text-rose-300';
-                          sign = '-';
-                        } else if (l.type === 'meta') {
-                          rowClass = 'bg-blue-50/40 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 font-semibold';
-                        }
-
-                        let displayText = l.text;
-                        if (l.type === 'add' && l.text.startsWith('+')) {
-                          displayText = l.text.substring(1);
-                        } else if (l.type === 'delete' && l.text.startsWith('-')) {
-                          displayText = l.text.substring(1);
-                        }
-
-                        return (
-                          <div
-                            key={l.lineNum}
-                            className={`flex items-center px-3 py-0.5 ${rowClass} transition-colors`}
-                          >
-                            <span className="w-12 shrink-0 text-slate-400 dark:text-slate-500 select-none text-[10px] text-right pr-3 border-r border-slate-200/40 dark:border-slate-800">
-                              {l.lineNum}
-                            </span>
-                            <span className="w-5 shrink-0 text-center select-none font-bold text-xs opacity-70">
-                              {sign}
-                            </span>
-                            <span className="pl-1.5 whitespace-pre break-all">{displayText}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          </>
         )}
       </div>
     </div>

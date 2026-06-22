@@ -1,5 +1,11 @@
 import { getApiBaseUrl } from './constants';
-import type { SessionInfoDTO, TreeResponse, ChatMessageDTO } from '@piplus/shared';
+import type {
+  SessionInfoDTO,
+  TreeResponse,
+  ChatMessageDTO,
+  SessionFileTreeResponseDTO,
+  SessionFileContentResponseDTO,
+} from '@piplus/shared';
 
 export type ModelInfo = {
   provider: string;
@@ -106,6 +112,15 @@ export function getSessionGitDiff(sessionId: string) {
   return request<{ session_id: string; diff: string; cwd: string }>(`/api/v1/sessions/${sessionId}/git-diff`);
 }
 
+export function getSessionFileTree(sessionId: string) {
+  return request<SessionFileTreeResponseDTO>(`/api/v1/sessions/${sessionId}/files/tree`);
+}
+
+export function getSessionFileContent(sessionId: string, path: string) {
+  const params = new URLSearchParams({ path });
+  return request<SessionFileContentResponseDTO>(`/api/v1/sessions/${sessionId}/files/content?${params.toString()}`);
+}
+
 export type GitActionResult = {
   session_id: string;
   cwd: string;
@@ -127,6 +142,13 @@ export function gitCommit(sessionId: string, message: string) {
     method: 'POST',
     body: JSON.stringify({ message }),
   });
+}
+
+export function addGitignore(sessionId: string, path: string) {
+  return request<{ session_id: string; path: string; result: string }>(
+    `/api/v1/sessions/${sessionId}/git/gitignore`,
+    { method: 'POST', body: JSON.stringify({ path }) },
+  );
 }
 
 // Projects

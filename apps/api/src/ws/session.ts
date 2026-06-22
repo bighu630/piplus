@@ -3,7 +3,7 @@ import type { ClientMessage, ServerMessage } from '@piplus/shared/ws';
 type ConnectionContext = {
   project_id?: string;
   session_id?: string;
-  current_tab?: 'chat' | 'session_info' | 'git_diff';
+  current_tab?: 'chat' | 'session_info' | 'git_diff' | 'files';
 };
 
 type AttachedSocket = {
@@ -50,7 +50,6 @@ export function registerSocket() {
         return;
       }
 
-      console.log('[ws/server] sendToSession', { sessionId, kind: message.kind, phase: (message as any).phase ?? null });
       // chat_stream 改为广播，由前端按 session_id 自行过滤，避免 server 端 context 串线
       this.broadcast(message);
     },

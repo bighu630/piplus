@@ -120,6 +120,7 @@ export function createPiClient(): PiClient {
     },
     async restoreRuntime(sessionId, locator, cwd) {
       const runtimeCwd = cwd ?? runtimeRegistry.get(sessionId)?.cwd ?? process.cwd();
+      console.log('[pi-client] restoreRuntime start', { sessionId, locatorFile: locator.sessionFile, cwd: runtimeCwd });
       const sessionDir = dirname(locator.sessionFile);
       const expectedSessionDir = SessionManager.create(runtimeCwd).getSessionDir();
       const isPiSessionPath = sessionDir === expectedSessionDir;
@@ -137,6 +138,17 @@ export function createPiClient(): PiClient {
 
         if (!sessionContext.model) {
           options.model = await ensureModel();
+          console.log('[pi-client] restoreRuntime fallback default model', {
+            sessionId,
+            provider: options.model?.provider ?? null,
+            id: options.model?.id ?? null,
+          });
+        } else {
+          console.log('[pi-client] restoreRuntime sessionContext model', {
+            sessionId,
+            provider: sessionContext.model.provider,
+            id: sessionContext.model.modelId,
+          });
         }
 
         const { session: agentSession } = await createAgentSession(options);
@@ -149,6 +161,11 @@ export function createPiClient(): PiClient {
             label: agentSession.model.name ?? `${agentSession.model.provider}/${agentSession.model.id}`,
           };
         }
+        console.log('[pi-client] restoreRuntime done', {
+          sessionId,
+          provider: session.model?.provider ?? null,
+          id: session.model?.id ?? null,
+        });
       } catch {
         throw new Error('pi_session_runtime_unavailable');
       }
@@ -266,6 +283,13 @@ export function createPiClient(): PiClient {
 
     async setSessionModel(sessionId, locator, modelRef, cwd) {
       let session = runtimeRegistry.ensure(sessionId, locator, cwd);
+      console.log('[pi-client] setSessionModel start', {
+        sessionId,
+        locatorFile: locator.sessionFile,
+        provider: modelRef.provider,
+        id: modelRef.id,
+        cwd: cwd ?? session.cwd,
+      });
 
       const available = await modelRegistry.getAvailable();
       const target = available.find((m) => m.provider === modelRef.provider && m.id === modelRef.id);
@@ -298,6 +322,12 @@ export function createPiClient(): PiClient {
         id: target.id,
         label: target.name ?? `${target.provider}/${target.id}`,
       };
+
+      console.log('[pi-client] setSessionModel done', {
+        sessionId,
+        provider: session.model.provider,
+        id: session.model.id,
+      });
 
       return session.model;
     },
@@ -338,6 +368,15 @@ export function createPiClient(): PiClient {
 
       const sessionManager = SessionManager.open(session.locator.sessionFile);
       const sessionContext = sessionManager.buildSessionContext();
+      console.log('[pi-client] bindToolRuntime start', {
+        sessionId,
+        locatorFile: session.locator.sessionFile,
+        cwd: session.cwd,
+        sessionContextModelProvider: sessionContext.model?.provider ?? null,
+        sessionContextModelId: sessionContext.model?.modelId ?? null,
+        registryModelProvider: session.model?.provider ?? null,
+        registryModelId: session.model?.id ?? null,
+      });
       const options: Parameters<typeof createAgentSession>[0] = {
         cwd: session.cwd,
         resourceLoader: loader,
@@ -346,6 +385,11 @@ export function createPiClient(): PiClient {
 
       if (!sessionContext.model) {
         options.model = await ensureModel();
+        console.log('[pi-client] bindToolRuntime fallback default model', {
+          sessionId,
+          provider: options.model?.provider ?? null,
+          id: options.model?.id ?? null,
+        });
       }
 
       const { session: agentSession } = await createAgentSession(options);
@@ -357,6 +401,11 @@ export function createPiClient(): PiClient {
           label: agentSession.model.name ?? `${agentSession.model.provider}/${agentSession.model.id}`,
         };
       }
+      console.log('[pi-client] bindToolRuntime done', {
+        sessionId,
+        provider: session.model?.provider ?? null,
+        id: session.model?.id ?? null,
+      });
     },
 
     async registerTools(_tools: PiToolDef[]) {

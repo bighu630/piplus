@@ -315,6 +315,12 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       const inheritedModel = parent.currentModelProvider && parent.currentModelId
         ? { provider: parent.currentModelProvider, id: parent.currentModelId }
         : null;
+      console.log('[role-manager] spawnSession model inheritance', {
+        parentSessionId: parent.id,
+        parentModelProvider: parent.currentModelProvider,
+        parentModelId: parent.currentModelId,
+        inheritedModel,
+      });
       const piSession = await piClient.createSession({
         title,
         prompt: compiledPrompt,
@@ -346,7 +352,13 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       });
 
       await touchProject(db, input.projectId);
-      console.log('[role-manager] spawnSession done', { sessionId, piSessionId, locatorFile: piSession.locator.sessionFile });
+      console.log('[role-manager] spawnSession done', {
+        sessionId,
+        piSessionId,
+        locatorFile: piSession.locator.sessionFile,
+        persistedModelProvider: currentModel?.provider ?? piSession.model?.provider ?? null,
+        persistedModelId: currentModel?.id ?? piSession.model?.id ?? null,
+      });
       return { sessionId, piSessionId, locator: piSession.locator };
     },
 

@@ -91,3 +91,23 @@ export type ChatMessageDTO = {
   content_text: string;
   created_at: string;
 };
+
+export type SessionFileTreeNodeDTO = {
+  name: string;
+  path: string;
+  kind: 'file' | 'directory';
+  children?: SessionFileTreeNodeDTO[];
+};
+
+export type SessionFileTreeResponseDTO = {
+  session_id: string;
+  root_path: string;
+  tree: SessionFileTreeNodeDTO[];
+};
+
+export type SessionFileContentResponseDTO = {
+  session_id: string;
+  path: string;
+  content: string;
+  truncated: boolean;
+};

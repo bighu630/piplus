@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ServerMessage } from '@piplus/shared';
+import hljsLight from 'highlight.js/styles/github.css?url';
+import hljsDark from 'highlight.js/styles/github-dark.css?url';
 import Sidebar from './components/Sidebar';
 import TabChat from './components/TabChat';
 import TabSessionInfo from './components/TabSessionInfo';
 import TabGitDiff from './components/TabGitDiff';
+import TabFiles from './components/TabFiles';
 import Modal from './components/Modal';
 import { LoginScreen } from './components/LoginScreen';
 import { createWorkspaceSocket } from './lib/ws-client';
@@ -14,6 +17,8 @@ import {
   useSessionInfo,
   useSessionMessages,
   useSessionGitDiff,
+  useSessionFileTree,
+  useSessionFileContent,
   useCreateProjectMutation,
   useCreateSessionMutation,
   useSendMessageMutation,
@@ -28,6 +33,7 @@ import {
   useGitPullMutation,
   useGitPushMutation,
   useGitCommitMutation,
+  useAddGitignoreMutation,
 } from './lib/hooks';
 import {
   Sparkles,
@@ -42,7 +48,8 @@ import {
   Wrench,
 } from 'lucide-react';
 
-type Tab = 'chat' | 'info' | 'diff';
+type Tab = 'chat' | 'info' | 'diff' | 'files';
+type SendShortcutMode = 'enter' | 'mod_enter';
 
 const WORKSPACE_ROOT_PATH = '/workspace';
 
@@ -134,10 +141,33 @@ export default function App() {
       return 'light';
     }
   });
+  const [sendShortcutMode, setSendShortcutMode] = useState<SendShortcutMode>(() => {
+    try {
+      const saved = localStorage.getItem('pi-send-shortcut-mode');
+      return saved === 'mod_enter' ? 'mod_enter' : 'enter';
+    } catch {
+      return 'enter';
+    }
+  });
 
   useEffect(() => {
     try { localStorage.setItem('pi-workspace-theme', theme); } catch { /* noop */ }
+
+    // Dynamically load matching highlight.js theme so code preview matches the app theme.
+    const hljsLinkId = 'hljs-theme';
+    const existing = document.getElementById(hljsLinkId);
+    if (existing) existing.remove();
+
+    const link = document.createElement('link');
+    link.id = hljsLinkId;
+    link.rel = 'stylesheet';
+    link.href = theme === 'dark' ? hljsDark : hljsLight;
+    document.head.appendChild(link);
   }, [theme]);
+
+  useEffect(() => {
+    try { localStorage.setItem('pi-send-shortcut-mode', sendShortcutMode); } catch { /* noop */ }
+  }, [sendShortcutMode]);
 
   const queryClient = useQueryClient();
 
@@ -149,6 +179,12 @@ export default function App() {
   const sessionInfo = sessionInfoQuery.data;
 
   const gitDiffQuery = useSessionGitDiff(activeTab === 'diff' ? selectedSessionId : null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const fileTreeQuery = useSessionFileTree(activeTab === 'files' ? selectedSessionId : null);
+  const fileContentQuery = useSessionFileContent(
+    activeTab === 'files' ? selectedSessionId : null,
+    activeTab === 'files' ? selectedFilePath : null,
+  );
 
   const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null);
   const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => {
@@ -177,6 +213,7 @@ export default function App() {
     setPendingUserMessages([]);
     setStreamingContent('');
     setStreamNote('');
+    setSelectedFilePath(null);
   }, [selectedSessionId]);
 
   // Restore session from URL first, then fallback to first available session.
@@ -297,7 +334,13 @@ export default function App() {
         socket.setContext({
           project_id: selectedProjectIdRef.current ?? undefined,
           session_id: selectedSessionId,
-          current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : 'chat',
+          current_tab: activeTabRef.current === 'info'
+            ? 'session_info'
+            : activeTabRef.current === 'diff'
+              ? 'git_diff'
+              : activeTabRef.current === 'files'
+                ? 'files'
+                : 'chat',
         });
         socket.ping();
       },
@@ -319,7 +362,13 @@ export default function App() {
     socketRef.current.setContext({
       project_id: selectedProjectId ?? undefined,
       session_id: selectedSessionId,
-      current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : 'chat',
+      current_tab: activeTab === 'info'
+        ? 'session_info'
+        : activeTab === 'diff'
+          ? 'git_diff'
+          : activeTab === 'files'
+            ? 'files'
+            : 'chat',
     });
   }, [activeTab, selectedProjectId, selectedSessionId]);
 
@@ -441,6 +490,7 @@ export default function App() {
   const gitPullMut = useGitPullMutation(selectedSessionId);
   const gitPushMut = useGitPushMutation(selectedSessionId);
   const gitCommitMut = useGitCommitMutation(selectedSessionId);
+  const addGitignoreMut = useAddGitignoreMutation(selectedSessionId);
 
   const handleGitPull = useCallback(async () => {
     return gitPullMut.mutateAsync();
@@ -595,6 +645,16 @@ export default function App() {
             >
               Git
             </button>
+            <button
+              onClick={() => setActiveTab('files')}
+              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
+                activeTab === 'files'
+                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
+                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+              }`}
+            >
+              Files
+            </button>
           </div>
         </header>
 
@@ -618,6 +678,7 @@ export default function App() {
                   sessionTitle={sessionInfo?.session.title}
                   wsConnected={wsConnected}
                   selectedSessionId={selectedSessionId}
+                  sendShortcutMode={sendShortcutMode}
                 />
               )}
 
@@ -639,6 +700,24 @@ export default function App() {
                   isPulling={gitPullMut.isPending}
                   isPushing={gitPushMut.isPending}
                   isCommitting={gitCommitMut.isPending}
+                  onAddGitignore={(filePath) => addGitignoreMut.mutateAsync(filePath)}
+                  isAddingGitignore={addGitignoreMut.isPending}
+                />
+              )}
+
+              {activeTab === 'files' && (
+                <TabFiles
+                  treeResponse={fileTreeQuery.data ?? null}
+                  treeLoading={fileTreeQuery.isLoading}
+                  treeError={fileTreeQuery.error instanceof Error ? fileTreeQuery.error.message : null}
+                  contentResponse={fileContentQuery.data ?? null}
+                  contentLoading={fileContentQuery.isLoading}
+                  contentError={fileContentQuery.error instanceof Error ? fileContentQuery.error.message : null}
+                  selectedPath={selectedFilePath}
+                  onSelectPath={setSelectedFilePath}
+                  onRefresh={() => {
+                    void fileTreeQuery.refetch();
+                  }}
                 />
               )}
             </>
@@ -786,6 +865,34 @@ export default function App() {
         icon={<Settings className="w-4 h-4 text-slate-500 dark:text-slate-400" />}
       >
         <div className="space-y-4">
+          <div>
+            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+              发送快捷键
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setSendShortcutMode('enter')}
+                className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                  sendShortcutMode === 'enter'
+                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400'
+                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Enter 发送
+              </button>
+              <button
+                onClick={() => setSendShortcutMode('mod_enter')}
+                className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                  sendShortcutMode === 'mod_enter'
+                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400'
+                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Ctrl/Cmd+Enter 发送
+              </button>
+            </div>
+          </div>
+
           <div>
             <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
               主题

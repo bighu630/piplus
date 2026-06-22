@@ -16,9 +16,12 @@ import {
   archiveSession,
   updateSessionTitle,
   getSessionGitDiff,
+  getSessionFileTree,
+  getSessionFileContent,
   gitPull,
   gitPush,
   gitCommit,
+  addGitignore,
   type ModelInfo,
 } from './api';
 
@@ -111,6 +114,24 @@ export function useSessionGitDiff(sessionId: string | null) {
     queryKey: ['session', 'git-diff', sessionId],
     queryFn: () => getSessionGitDiff(sessionId!),
     enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
+export function useSessionFileTree(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'files', 'tree', sessionId],
+    queryFn: () => getSessionFileTree(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
+export function useSessionFileContent(sessionId: string | null, path: string | null) {
+  return useQuery({
+    queryKey: ['session', 'files', 'content', sessionId, path],
+    queryFn: () => getSessionFileContent(sessionId!, path!),
+    enabled: Boolean(sessionId && path),
     staleTime: 10_000,
   });
 }
@@ -227,6 +248,18 @@ export function useGitCommitMutation(sessionId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (message: string) => gitCommit(sessionId!, message),
+    onSettled: () => {
+      if (sessionId) {
+        queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+      }
+    },
+  });
+}
+
+export function useAddGitignoreMutation(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (filePath: string) => addGitignore(sessionId!, filePath),
     onSettled: () => {
       if (sessionId) {
         queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });

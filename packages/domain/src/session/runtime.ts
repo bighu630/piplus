@@ -70,16 +70,37 @@ export async function startSessionRun(input: StartSessionRunInput) {
   }
 
   const locator = parseLocator(session.piSessionLocatorJson);
+  console.log('[session-runtime] restore start', {
+    sessionId: input.sessionId,
+    projectId: project.id,
+    locatorFile: locator.sessionFile,
+    dbModelProvider: session.currentModelProvider,
+    dbModelId: session.currentModelId,
+  });
   await input.piClient.restoreRuntime(input.sessionId, locator, project.projectPath);
 
   if (session.currentModelProvider && session.currentModelId) {
+    console.log('[session-runtime] enforce model from db', {
+      sessionId: input.sessionId,
+      provider: session.currentModelProvider,
+      id: session.currentModelId,
+    });
     await input.piClient.setSessionModel(
       input.sessionId,
       locator,
       { provider: session.currentModelProvider, id: session.currentModelId },
       project.projectPath,
     );
+  } else {
+    console.log('[session-runtime] no db model to enforce', { sessionId: input.sessionId });
   }
+
+  const runtimeModel = await input.piClient.getCurrentModel(input.sessionId);
+  console.log('[session-runtime] runtime model before bind', {
+    sessionId: input.sessionId,
+    provider: runtimeModel?.provider ?? null,
+    id: runtimeModel?.id ?? null,
+  });
 
   const toolDefs = await buildAllToolDefs(input.db);
   await input.piClient.bindToolRuntime(input.sessionId, toolDefs, async (toolName, args) => {
@@ -90,6 +111,13 @@ export async function startSessionRun(input: StartSessionRunInput) {
       userId: input.userId,
     });
   }, project.projectPath);
+
+  const boundRuntimeModel = await input.piClient.getCurrentModel(input.sessionId);
+  console.log('[session-runtime] runtime model after bind', {
+    sessionId: input.sessionId,
+    provider: boundRuntimeModel?.provider ?? null,
+    id: boundRuntimeModel?.id ?? null,
+  });
 
   const unsubscribe = input.onStreamEvent
     ? await input.piClient.subscribeSession(input.sessionId, input.onStreamEvent)

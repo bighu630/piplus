@@ -30,6 +30,7 @@ interface TabChatProps {
   sessionTitle?: string;
   wsConnected?: boolean;
   selectedSessionId?: string | null;
+  sendShortcutMode?: 'enter' | 'mod_enter';
 }
 
 function sanitizeStreamingContent(content: string): string {
@@ -64,6 +65,7 @@ export default function TabChat({
   sessionTitle,
   wsConnected,
   selectedSessionId,
+  sendShortcutMode,
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -171,10 +173,26 @@ export default function TabChat({
     onSend(content);
   };
 
-  const handleCopyCode = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+  const handleCopyCode = async (text: string, id: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      setCopiedId(null);
+    }
   };
 
   const isRunning = runtimeStatus === 'running';
@@ -222,7 +240,7 @@ export default function TabChat({
 
                             if (!isInline) {
                               const language = match ? match[1] : 'code';
-                              const blockId = Math.random().toString(36).substr(2, 9);
+                              const blockId = `${msg.id}-${language}-${codeText}`;
                               return (
                                 <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 relative font-mono text-xs shadow-3xs max-w-full">
                                   <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
@@ -329,7 +347,7 @@ export default function TabChat({
 
                         if (!isInline) {
                           const language = match ? match[1] : 'code';
-                          const blockId = Math.random().toString(36).substr(2, 9);
+                          const blockId = `stream-${language}-${codeText}`;
                           return (
                             <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 relative font-mono text-xs shadow-3xs max-w-full">
                               <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
@@ -460,9 +478,22 @@ export default function TabChat({
               disabled={isRunning || sending}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  handleSubmit();
+                if (sendShortcutMode === 'mod_enter') {
+                  // Ctrl/Cmd+Enter 发送，Enter 换行
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    handleSubmit();
+                  }
+                } else {
+                  // Enter 发送，Ctrl/Cmd+Enter 换行（默认）
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    if (e.metaKey || e.ctrlKey) {
+                      // Ctrl/Cmd+Enter → 换行
+                      return;
+                    }
+                    e.preventDefault();
+                    handleSubmit();
+                  }
                 }
               }}
               placeholder="向当前会话发送消息…"
@@ -477,7 +508,9 @@ export default function TabChat({
                 </span>
               </div>
               {!isRunning && (
-                <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">Ctrl / Cmd + Enter 发送</span>
+                <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">
+                  {sendShortcutMode === 'mod_enter' ? 'Ctrl/Cmd+Enter 发送' : 'Enter 发送 · Ctrl/Cmd+Enter 换行'}
+                </span>
               )}
               {isRunning && (
                 <button

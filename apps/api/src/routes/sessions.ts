@@ -11,6 +11,9 @@ import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
 import { createAuditService, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
+import { readdir, readFile, appendFile, access } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import path from 'node:path';
 
 function randomId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
@@ -43,6 +46,69 @@ function nextMessageTime() {
 }
 
 const log = createLogger('routes.sessions');
+const MAX_FILE_TREE_DEPTH = 6;
+const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
+const TEXT_FILE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.css', '.scss', '.sass', '.less', '.html', '.htm',
+  '.yml', '.yaml', '.xml', '.svg', '.sh', '.bash', '.zsh', '.env', '.toml', '.ini', '.conf', '.config', '.sql', '.py', '.rb',
+  '.rs', '.go', '.java', '.kt', '.swift', '.php', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.vue', '.svelte', '.astro',
+  '.gitignore', '.gitattributes', '.editorconfig', '.npmrc', '.prettierignore', '.prettierrc', '.eslintrc', '.eslintignore', '.dockerignore',
+]);
+const IGNORED_ENTRY_NAMES = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.turbo', 'coverage']);
+
+function isTextFilePath(filePath: string) {
+  const baseName = path.basename(filePath).toLowerCase();
+  const ext = path.extname(filePath).toLowerCase();
+  return TEXT_FILE_EXTENSIONS.has(baseName) || TEXT_FILE_EXTENSIONS.has(ext) || !path.basename(filePath).includes('.');
+}
+
+function looksLikeBinary(buffer: Buffer) {
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
+  if (sample.includes(0)) return true;
+
+  let suspiciousBytes = 0;
+  for (const byte of sample) {
+    const isPrintableAscii = byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126);
+    const isCommonUtf8LeadOrContinuation = byte >= 128;
+    if (!isPrintableAscii && !isCommonUtf8LeadOrContinuation) {
+      suspiciousBytes += 1;
+    }
+  }
+
+  return sample.length > 0 && suspiciousBytes / sample.length > 0.1;
+}
+
+async function buildFileTree(rootPath: string, relativePath = '', depth = 0): Promise<Array<{ name: string; path: string; kind: 'file' | 'directory'; children?: any[] }>> {
+  if (depth > MAX_FILE_TREE_DEPTH) return [];
+  const absoluteDir = relativePath ? path.join(rootPath, relativePath) : rootPath;
+  const entries = await readdir(absoluteDir, { withFileTypes: true });
+  const visible = entries
+    .filter((entry) => !IGNORED_ENTRY_NAMES.has(entry.name) && !entry.name.startsWith('.DS_Store'))
+    .sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+  const nodes = await Promise.all(visible.map(async (entry) => {
+    const entryRelativePath = relativePath ? path.posix.join(relativePath, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      return {
+        name: entry.name,
+        path: entryRelativePath,
+        kind: 'directory' as const,
+        children: await buildFileTree(rootPath, entryRelativePath, depth + 1),
+      };
+    }
+    return {
+      name: entry.name,
+      path: entryRelativePath,
+      kind: 'file' as const,
+    };
+  }));
+
+  return nodes;
+}
 
 export function registerSessionRoutes(app: Hono) {
   const piClient = createPiClient();
@@ -255,7 +321,6 @@ export function registerSessionRoutes(app: Hono) {
       content,
       startedAt: now,
       onStreamEvent: async (event) => {
-        console.log('[api/ws] stream event', { sessionId, type: event.type, delta: (event as any).delta ?? null });
         for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
           socketHub.sendToSession(sessionId, frame);
         }
@@ -421,10 +486,92 @@ export function registerSessionRoutes(app: Hono) {
     return { cwd: project.projectPath || process.cwd() };
   }
 
+  function resolveSafeFilePath(rootDir: string, relativePath: string) {
+    const normalized = relativePath.replace(/\\/g, '/');
+    const resolved = path.resolve(rootDir, normalized);
+    const relative = path.relative(rootDir, resolved);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return null;
+    }
+    return resolved;
+  }
+
+  async function buildFileTree(
+    rootDir: string,
+    currentDir = rootDir,
+  ): Promise<Array<{ name: string; path: string; kind: 'file' | 'directory'; children?: any[] }>> {
+    const entries = await readdir(currentDir, { withFileTypes: true });
+    const visibleEntries = entries
+      .filter((entry) => entry.name !== '.git' && entry.name !== 'node_modules')
+      .sort((a, b) => {
+        if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+    return Promise.all(visibleEntries.map(async (entry) => {
+      const absolutePath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(rootDir, absolutePath).replace(/\\/g, '/');
+      if (entry.isDirectory()) {
+        return {
+          name: entry.name,
+          path: relativePath,
+          kind: 'directory' as const,
+          children: await buildFileTree(rootDir, absolutePath),
+        };
+      }
+      return {
+        name: entry.name,
+        path: relativePath,
+        kind: 'file' as const,
+      };
+    }));
+  }
+
   function execGit(cwd: string, ...args: string[]) {
     const stdout = execSync(`git ${args.join(' ')}`, { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).toString();
     return stdout;
   }
+
+  app.get('/api/v1/sessions/:sessionId/files/tree', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    const tree = await buildFileTree(cwd);
+    return c.json({ session_id: sessionId, root_path: cwd, tree });
+  });
+
+  app.get('/api/v1/sessions/:sessionId/files/content', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const relativePath = String(c.req.query('path') ?? '').trim();
+    if (!relativePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'File path is required' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+    const absolutePath = path.resolve(cwd, relativePath);
+    const relativeToRoot = path.relative(cwd, absolutePath);
+    if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Path is outside project root' } }, 400);
+    }
+    if (!isTextFilePath(absolutePath)) {
+      return c.json({ error: { code: 'UNSUPPORTED_FILE', message: 'Only text file preview is supported' } }, 400);
+    }
+
+    const buffer = await readFile(absolutePath);
+    if (looksLikeBinary(buffer)) {
+      return c.json({ error: { code: 'UNSUPPORTED_FILE', message: 'Binary file preview is not supported' } }, 400);
+    }
+
+    const truncated = buffer.byteLength > MAX_FILE_CONTENT_BYTES;
+    const content = buffer.subarray(0, MAX_FILE_CONTENT_BYTES).toString('utf8');
+    return c.json({ session_id: sessionId, path: relativePath, content, truncated });
+  });
 
   app.get('/api/v1/sessions/:sessionId/git-diff', async (c) => {
     const userId = (c as any).get('userId') as string;
@@ -499,6 +646,43 @@ export function registerSessionRoutes(app: Hono) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
       return c.json({ session_id: sessionId, cwd, result: 'error', stderr }, 500);
     }
+  });
+
+  app.post('/api/v1/sessions/:sessionId/git/gitignore', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const filePath = String((body as { path?: string }).path ?? '').trim();
+
+    if (!filePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Path is required' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+
+    const gitignorePath = path.join(resolved.cwd, '.gitignore');
+    const normalizedEntry = filePath.replace(/\\/g, '/');
+
+    let existingContent = '';
+    try {
+      await access(gitignorePath, constants.R_OK);
+      existingContent = await readFile(gitignorePath, 'utf8');
+    } catch {
+      // .gitignore doesn't exist yet, that's fine
+    }
+
+    const lines = existingContent.split('\n').map((l) => l.trim());
+    if (lines.includes(normalizedEntry)) {
+      return c.json({ session_id: sessionId, path: normalizedEntry, result: 'already_ignored' });
+    }
+
+    const entry = existingContent.endsWith('\n') || existingContent.length === 0
+      ? `${normalizedEntry}\n`
+      : `\n${normalizedEntry}\n`;
+
+    await appendFile(gitignorePath, entry, 'utf8');
+    return c.json({ session_id: sessionId, path: normalizedEntry, result: 'ok' });
   });
 
   registerWebSocketRoutes(app);

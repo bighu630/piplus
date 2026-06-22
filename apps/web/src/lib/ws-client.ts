@@ -56,7 +56,7 @@ export function createWorkspaceSocket({
     setContext(payload: {
       project_id?: string;
       session_id?: string;
-      current_tab?: 'chat' | 'session_info' | 'git_diff';
+      current_tab?: 'chat' | 'session_info' | 'git_diff' | 'files';
     }) {
       safeSend({ kind: 'client', type: 'set_context', payload } satisfies ClientMessage);
     },
