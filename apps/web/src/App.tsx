@@ -25,6 +25,9 @@ import {
   useSetSessionModelMutation,
   useArchiveProjectMutation,
   useDeleteProjectMutation,
+  useGitPullMutation,
+  useGitPushMutation,
+  useGitCommitMutation,
 } from './lib/hooks';
 import {
   Sparkles,
@@ -389,6 +392,26 @@ export default function App() {
     queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', selectedSessionId] });
   }, [selectedSessionId, queryClient]);
 
+  // Git mutations
+  const gitPullMut = useGitPullMutation(selectedSessionId);
+  const gitPushMut = useGitPushMutation(selectedSessionId);
+  const gitCommitMut = useGitCommitMutation(selectedSessionId);
+
+  const handleGitPull = useCallback(async () => {
+    return gitPullMut.mutateAsync();
+  }, [gitPullMut]);
+
+  const handleGitPush = useCallback(async () => {
+    return gitPushMut.mutateAsync();
+  }, [gitPushMut]);
+
+  const handleGitCommit = useCallback(
+    async (message: string) => {
+      return gitCommitMut.mutateAsync(message);
+    },
+    [gitCommitMut],
+  );
+
   const handleLoadMore = useCallback(() => {
     if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
       messagesQuery.fetchNextPage();
@@ -525,7 +548,7 @@ export default function App() {
                   : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
               }`}
             >
-              Git Diff
+              Git
             </button>
           </div>
         </header>
@@ -564,6 +587,12 @@ export default function App() {
                   diff={gitDiffQuery.data?.diff ?? null}
                   isLoading={gitDiffQuery.isLoading}
                   onRefresh={handleRefreshDiff}
+                  onPull={handleGitPull}
+                  onPush={handleGitPush}
+                  onCommit={handleGitCommit}
+                  isPulling={gitPullMut.isPending}
+                  isPushing={gitPushMut.isPending}
+                  isCommitting={gitCommitMut.isPending}
                 />
               )}
             </>

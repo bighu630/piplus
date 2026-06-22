@@ -83,6 +83,13 @@ export function registerSessionRoutes(app: Hono) {
 
     const events = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, sessionId)).orderBy(desc(sessionEvents.createdAt)).limit(20);
 
+    const runtimeModel = await piClient.getCurrentModel(sessionId);
+    const currentModel = runtimeModel ?? (
+      session.currentModelProvider && session.currentModelId
+        ? { provider: session.currentModelProvider, id: session.currentModelId, label: `${session.currentModelProvider}/${session.currentModelId}` }
+        : null
+    );
+
     return c.json({
       session: {
         id: session.id,
@@ -97,9 +104,7 @@ export function registerSessionRoutes(app: Hono) {
         pi_session_locator_json: session.piSessionLocatorJson,
         status: session.status,
         runtime_status: session.runtimeStatus,
-        current_model: session.currentModelProvider && session.currentModelId
-          ? { provider: session.currentModelProvider, id: session.currentModelId, label: `${session.currentModelProvider}/${session.currentModelId}` }
-          : await piClient.getCurrentModel(sessionId),
+        current_model: currentModel,
       },
       project: project
         ? { id: project.id, name: project.name }
@@ -244,11 +249,7 @@ export function registerSessionRoutes(app: Hono) {
     } as any);
 
     const locator = parseLocator(session.piSessionLocatorJson);
-    // Restore with persisted model if available (survives server restart).
-    const modelOverride = session.currentModelProvider && session.currentModelId
-      ? { provider: session.currentModelProvider, id: session.currentModelId }
-      : undefined;
-    await piClient.restoreRuntime(sessionId, locator, project.projectPath, modelOverride);
+    await piClient.restoreRuntime(sessionId, locator, project.projectPath);
 
     const toolDefs = await buildAllToolDefs(db);
     await piClient.bindToolRuntime(sessionId, toolDefs, async (toolName, args) => {
@@ -435,20 +436,32 @@ export function registerSessionRoutes(app: Hono) {
    *       404:
    *         description: 会话不存在或无访问权限。
    */
-  app.get('/api/v1/sessions/:sessionId/git-diff', async (c) => {
+  function resolveProjectDir(c: any, userId: string, sessionId: string) {
     const db = createDb(`file:${getDbPath()}`);
+    const [session] = db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1).all();
+    if (!session) return { error: { code: 'NOT_FOUND', message: 'Session not found' }, status: 404 } as const;
+
+    const [project] = db.select({ projectPath: projects.projectPath, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1).all();
+    if (!project || project.createdBy !== userId) return { error: { code: 'NOT_FOUND', message: 'Session not found' }, status: 404 } as const;
+
+    return { cwd: project.projectPath || process.cwd() };
+  }
+
+  function execGit(cwd: string, ...args: string[]) {
+    const stdout = execSync(`git ${args.join(' ')}`, { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).toString();
+    return stdout;
+  }
+
+  app.get('/api/v1/sessions/:sessionId/git-diff', async (c) => {
     const userId = (c as any).get('userId') as string;
     const sessionId = decodeURIComponent(c.req.param('sessionId'));
-    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
-    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
 
-    const [project] = await db.select({ projectPath: projects.projectPath, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
-    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
-
-    const cwd = project.projectPath || process.cwd();
     let diff = '';
     try {
-      diff = execSync('git diff', { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).toString();
+      diff = execGit(cwd, 'diff');
     } catch (err: unknown) {
       if (err instanceof Error && 'stdout' in err) {
         diff = String((err as any).stdout ?? '');
@@ -456,6 +469,62 @@ export function registerSessionRoutes(app: Hono) {
     }
 
     return c.json({ session_id: sessionId, diff, cwd });
+  });
+
+  app.post('/api/v1/sessions/:sessionId/git/pull', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      const stdout = execGit(cwd, 'pull');
+      return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim() || 'Already up to date.' });
+    } catch (err: unknown) {
+      const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
+      return c.json({ session_id: sessionId, cwd, result: 'error', stderr }, 500);
+    }
+  });
+
+  app.post('/api/v1/sessions/:sessionId/git/push', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      const stdout = execGit(cwd, 'push');
+      return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim() || 'Everything up-to-date.' });
+    } catch (err: unknown) {
+      const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
+      return c.json({ session_id: sessionId, cwd, result: 'error', stderr }, 500);
+    }
+  });
+
+  app.post('/api/v1/sessions/:sessionId/git/commit', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const message = String((body as { message?: string }).message ?? '').trim();
+
+    if (!message) {
+      return c.json({ error: { code: 'EMPTY_MESSAGE', message: 'Commit message is required' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      execGit(cwd, 'add -A');
+      const stdout = execGit(cwd, `commit -m "${message.replace(/"/g, '\\"')}"`);
+      return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim() });
+    } catch (err: unknown) {
+      const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
+      return c.json({ session_id: sessionId, cwd, result: 'error', stderr }, 500);
+    }
   });
 
   registerWebSocketRoutes(app);

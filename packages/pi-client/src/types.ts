@@ -64,7 +64,7 @@ export type PiStopSessionResult = {
 
 export type PiClient = {
   createSession(input: PiCreateSessionInput): Promise<PiCreateSessionResult>;
-  restoreRuntime(sessionId: string, locator: PiSessionLocator, cwd?: string, modelOverride?: { provider: string; id: string; label?: string }): Promise<void>;
+  restoreRuntime(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<void>;
   subscribeSession(sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>): Promise<() => void>;
   getHistory(sessionId: string, locator: PiSessionLocator, cursor?: string | null, limit?: number): Promise<PiHistoryPage>;
   sendMessage(sessionId: string, content: string): Promise<PiRunAccepted>;

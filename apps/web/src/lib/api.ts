@@ -106,6 +106,29 @@ export function getSessionGitDiff(sessionId: string) {
   return request<{ session_id: string; diff: string; cwd: string }>(`/api/v1/sessions/${sessionId}/git-diff`);
 }
 
+export type GitActionResult = {
+  session_id: string;
+  cwd: string;
+  result: 'ok' | 'error';
+  stdout?: string;
+  stderr?: string;
+};
+
+export function gitPull(sessionId: string) {
+  return request<GitActionResult>(`/api/v1/sessions/${sessionId}/git/pull`, { method: 'POST' });
+}
+
+export function gitPush(sessionId: string) {
+  return request<GitActionResult>(`/api/v1/sessions/${sessionId}/git/push`, { method: 'POST' });
+}
+
+export function gitCommit(sessionId: string, message: string) {
+  return request<GitActionResult>(`/api/v1/sessions/${sessionId}/git/commit`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+}
+
 // Projects
 export function createProject(name: string, mode?: string, path?: string, repoUrl?: string) {
   return request<{ projectId: string; sessionId?: string; piSessionId?: string }>('/api/v1/projects', {

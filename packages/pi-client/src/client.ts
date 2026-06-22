@@ -5,6 +5,7 @@ import {
   SessionManager,
   AuthStorage,
   ModelRegistry,
+  type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { existsSync } from 'node:fs';
@@ -62,17 +63,22 @@ function decodeCursor(cursor: string | null | undefined, total: number) {
   return Math.min(value, total);
 }
 
+function sessionFileHasModelChange(sessionManager: SessionManager, provider: string, modelId: string) {
+  const entries = sessionManager.getEntries() as SessionEntry[];
+  return entries.some((entry) => entry.type === 'model_change' && entry.provider === provider && entry.modelId === modelId);
+}
+
 export function createPiClient(): PiClient {
   let resolvedModel: any;
   (async () => {
     const available = await modelRegistry.getAvailable();
-    resolvedModel = available.find((m) => m.provider === 'deepseek' && m.id === 'deepseek-v4-pro') ?? available[0];
+    resolvedModel = available[0];
   })();
 
   async function ensureModel(): Promise<any> {
     if (resolvedModel) return resolvedModel;
     const available = await modelRegistry.getAvailable();
-    resolvedModel = available.find((m) => m.provider === 'deepseek' && m.id === 'deepseek-v4-pro') ?? available[0];
+    resolvedModel = available[0];
     return resolvedModel;
   }
 
@@ -100,7 +106,7 @@ export function createPiClient(): PiClient {
       session.dispose();
       return { sessionId: session.sessionId, locator, model: active.model };
     },
-    async restoreRuntime(sessionId, locator, cwd, modelOverride) {
+    async restoreRuntime(sessionId, locator, cwd) {
       const runtimeCwd = cwd ?? runtimeRegistry.get(sessionId)?.cwd ?? process.cwd();
       const sessionDir = dirname(locator.sessionFile);
       const expectedSessionDir = SessionManager.create(runtimeCwd).getSessionDir();
@@ -109,49 +115,26 @@ export function createPiClient(): PiClient {
         throw new Error('pi_session_runtime_unavailable');
       }
       try {
-        // 读取 session 文件中持久化的模型（由 agentSession.setModel() 写入）
         const sessionManager = SessionManager.open(locator.sessionFile);
         const sessionContext = sessionManager.buildSessionContext();
 
-        let model: any;
-        // 优先级：session 文件中的模型 > modelOverride > registry 缓存 > 默认
-        if (sessionContext.model) {
-          const available = await modelRegistry.getAvailable();
-          model = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
-          if (!model) {
-            model = modelOverride ?? runtimeRegistry.get(sessionId)?.model ?? await ensureModel();
-          }
-        } else if (modelOverride) {
-          const available = await modelRegistry.getAvailable();
-          model = available.find((m) => m.provider === modelOverride.provider && m.id === modelOverride.id);
-          if (!model) {
-            model = runtimeRegistry.get(sessionId)?.model ?? await ensureModel();
-          }
-        } else {
-          const existingModel = runtimeRegistry.get(sessionId)?.model ?? runtimeRegistry.get(sessionId)?.agentSession?.model;
-          model = existingModel ?? await ensureModel();
-        }
-
-        const { session: agentSession } = await createAgentSession({
+        const options: Parameters<typeof createAgentSession>[0] = {
           cwd: runtimeCwd,
           sessionManager,
-          model,
-        });
+        };
+
+        if (!sessionContext.model) {
+          options.model = await ensureModel();
+        }
+
+        const { session: agentSession } = await createAgentSession(options);
         const session = runtimeRegistry.ensure(sessionId, locator, runtimeCwd);
         session.agentSession = agentSession;
-        // If modelOverride was provided (from DB), cache it in the registry.
-        // Otherwise ensure session.model reflects what was actually used.
-        if (modelOverride) {
+        if (agentSession.model) {
           session.model = {
-            provider: modelOverride.provider,
-            id: modelOverride.id,
-            label: modelOverride.label ?? `${modelOverride.provider}/${modelOverride.id}`,
-          };
-        } else if (!session.model) {
-          session.model = {
-            provider: model.provider,
-            id: model.id,
-            label: model.name ?? `${model.provider}/${model.id}`,
+            provider: agentSession.model.provider,
+            id: agentSession.model.id,
+            label: agentSession.model.name ?? `${agentSession.model.provider}/${agentSession.model.id}`,
           };
         }
       } catch {
@@ -270,26 +253,39 @@ export function createPiClient(): PiClient {
     },
 
     async setSessionModel(sessionId, locator, modelRef, cwd) {
-      const session = runtimeRegistry.ensure(sessionId, locator, cwd);
+      let session = runtimeRegistry.ensure(sessionId, locator, cwd);
 
       const available = await modelRegistry.getAvailable();
       const target = available.find((m) => m.provider === modelRef.provider && m.id === modelRef.id);
       if (!target) throw new Error('pi_model_not_found');
 
-      // 保存到 runtime registry，后续 bindToolRuntime / sendMessage 会读取
+      if (!session.agentSession) {
+        await this.restoreRuntime(sessionId, locator, cwd);
+        session = runtimeRegistry.ensure(sessionId, locator, cwd);
+      }
+
+      if (!session.agentSession) {
+        throw new Error('pi_session_runtime_unavailable');
+      }
+      if (session.agentSession.isStreaming) {
+        throw new Error('pi_session_busy');
+      }
+
+      await session.agentSession.setModel(target);
+
+      // 兜底：确保模型切换一定持久化到 session 文件。
+      // 按文档 AgentSession.setModel() 会 appendModelChange，但当前集成路径下测试显示
+      // 某些情况下 session 文件没有写入 model_change，因此这里做一次镜像校验与补写。
+      const sessionManager = SessionManager.open(locator.sessionFile);
+      if (!sessionFileHasModelChange(sessionManager, target.provider, target.id)) {
+        sessionManager.appendModelChange(target.provider, target.id);
+      }
+
       session.model = {
         provider: target.provider,
         id: target.id,
         label: target.name ?? `${target.provider}/${target.id}`,
       };
-
-      // 如果 agentSession 已存在，也立即切换
-      if (session.agentSession) {
-        if (session.agentSession.isStreaming) {
-          throw new Error('pi_session_busy');
-        }
-        await session.agentSession.setModel(target);
-      }
 
       return session.model;
     },
@@ -299,8 +295,6 @@ export function createPiClient(): PiClient {
       session.toolDefs = tools;
       session.toolHandler = handler;
 
-      // 保存旧 agentSession 的模型，确保 rebuild 后不丢失用户设置
-      const existingModel = session.model ?? session.agentSession?.model;
       if (session.agentSession) {
         session.agentSession.dispose();
       }
@@ -330,37 +324,25 @@ export function createPiClient(): PiClient {
       });
       await loader.reload();
 
-      // 读取 session 文件中上次持久化的模型（由 agentSession.setModel() 写入）
       const sessionManager = SessionManager.open(session.locator.sessionFile);
       const sessionContext = sessionManager.buildSessionContext();
-
-      // 优先使用 session 文件中持久化的模型，其次用 registry 缓存，最后用默认
-      let model: any;
-      if (sessionContext.model) {
-        const available = await modelRegistry.getAvailable();
-        model = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
-        if (!model) {
-          // session 文件中记录的模型不在可用列表中，用默认
-          model = existingModel ?? await ensureModel();
-        }
-      } else {
-        model = existingModel ?? await ensureModel();
-      }
-
-      const { session: agentSession } = await createAgentSession({
+      const options: Parameters<typeof createAgentSession>[0] = {
         cwd: session.cwd,
         resourceLoader: loader,
         sessionManager,
-        model,
-      });
-      session.agentSession = agentSession;
+      };
 
-      // 确保 registry 中的 model 缓存与实际创建的一致
-      if (!session.model) {
+      if (!sessionContext.model) {
+        options.model = await ensureModel();
+      }
+
+      const { session: agentSession } = await createAgentSession(options);
+      session.agentSession = agentSession;
+      if (agentSession.model) {
         session.model = {
-          provider: model.provider,
-          id: model.id,
-          label: model.name ?? `${model.provider}/${model.id}`,
+          provider: agentSession.model.provider,
+          id: agentSession.model.id,
+          label: agentSession.model.name ?? `${agentSession.model.provider}/${agentSession.model.id}`,
         };
       }
     },

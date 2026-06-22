@@ -16,6 +16,9 @@ import {
   archiveSession,
   updateSessionTitle,
   getSessionGitDiff,
+  gitPull,
+  gitPush,
+  gitCommit,
   type ModelInfo,
 } from './api';
 
@@ -192,5 +195,42 @@ export function useDeleteProjectMutation() {
   return useMutation({
     mutationFn: (projectId: string) => deleteProject(projectId),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['tree'] }),
+  });
+}
+
+// Git mutations
+export function useGitPullMutation(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => gitPull(sessionId!),
+    onSettled: () => {
+      if (sessionId) {
+        queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+      }
+    },
+  });
+}
+
+export function useGitPushMutation(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => gitPush(sessionId!),
+    onSettled: () => {
+      if (sessionId) {
+        queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+      }
+    },
+  });
+}
+
+export function useGitCommitMutation(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (message: string) => gitCommit(sessionId!, message),
+    onSettled: () => {
+      if (sessionId) {
+        queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+      }
+    },
   });
 }

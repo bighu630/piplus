@@ -53,7 +53,7 @@ describe('session routes', () => {
     expect(Array.isArray(page.messages)).toBe(true);
   });
 
-  test('stop endpoint returns stopping and persists runtime state transition', async () => {
+  test('set session model persists DB mirror and is returned by session info', async () => {
     const path = makeDbPath();
     createSeedDb(path);
     Bun.env.DATABASE_URL = `file:${path}`;
@@ -62,18 +62,35 @@ describe('session routes', () => {
     const projectRes = await app.request('/api/v1/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'Stop Project', mode: 'existing', path: '/tmp' }),
+      body: JSON.stringify({ name: 'Model Mirror Project', mode: 'existing', path: '/tmp' }),
     });
     const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
 
-    const stopRes = await app.request(`/api/v1/sessions/${projectBody.sessionId}/stop`, {
-      method: 'POST',
+    const modelsRes = await app.request('/api/v1/models', {
       headers: { 'x-user-id': 'user_seed' },
     });
+    expect(modelsRes.status).toBe(200);
+    const modelsBody = await modelsRes.json();
+    const target = modelsBody.models.at(-1) ?? modelsBody.models[0];
+    expect(target).toBeTruthy();
 
-    expect(stopRes.status).toBe(202);
-    const stopBody = await stopRes.json();
-    expect(stopBody).toEqual({ session_id: projectBody.sessionId, status: 'stopping' });
+    const setModelRes = await app.request(`/api/v1/sessions/${sessionId}/model`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ provider: target.provider, id: target.id }),
+    });
+    expect(setModelRes.status).toBe(200);
+
+    const infoRes = await app.request(`/api/v1/sessions/${sessionId}/info`, {
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(infoRes.status).toBe(200);
+    const info = await infoRes.json();
+    expect(info.session.current_model).toMatchObject({
+      provider: target.provider,
+      id: target.id,
+    });
   });
 
   test('patch session title updates the title', async () => {

@@ -162,17 +162,72 @@ describe('pi client gateway', () => {
     expect(models[0]).toHaveProperty('label');
   });
 
-  test('setSessionModel switches the model for the current session', async () => {
+  test('setSessionModel persists model_change into session file across runtime restore', async () => {
     const client = createPiClient();
-    const created = await client.createSession({ prompt: 'hello', title: 'Model Test' });
+    const created = await client.createSession({ prompt: 'hello', title: 'Persisted Model Test' });
     await client.restoreRuntime(created.sessionId, created.locator);
+
     const models = await client.listAvailableModels();
-    const target = models[0];
-    const result = await client.setSessionModel(created.sessionId, created.locator, {
+    const target = models.find((m) => !(created.model && m.provider === created.model.provider && m.id === created.model.id)) ?? models[0];
+    expect(target).toBeTruthy();
+
+    await client.setSessionModel(created.sessionId, created.locator, {
       provider: target.provider,
       id: target.id,
     });
-    expect(result.provider).toBe(target.provider);
-    expect(result.id).toBe(target.id);
+
+    const persisted = SessionManager.open(created.locator.sessionFile).buildSessionContext().model;
+    expect(persisted).toMatchObject({
+      provider: target.provider,
+      modelId: target.id,
+    });
+
+    await client.closeRuntime(created.sessionId);
+    await client.restoreRuntime(created.sessionId, created.locator);
+
+    expect(await client.getCurrentModel(created.sessionId)).toMatchObject({
+      provider: target.provider,
+      id: target.id,
+    });
   });
+
+  test('bindToolRuntime keeps the model restored from session file', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Bind Runtime Model Test' });
+    await client.restoreRuntime(created.sessionId, created.locator);
+
+    const models = await client.listAvailableModels();
+    const target = models.at(-1) ?? models[0];
+    expect(target).toBeTruthy();
+
+    await client.setSessionModel(created.sessionId, created.locator, {
+      provider: target.provider,
+      id: target.id,
+    });
+    await client.closeRuntime(created.sessionId);
+
+    await client.bindToolRuntime(
+      created.sessionId,
+      [
+        {
+          name: 'test_ping',
+          description: 'Reply with pong',
+          parameters: {
+            type: 'object',
+            properties: { message: { type: 'string' } },
+            required: ['message'],
+          },
+        },
+      ],
+      async () => ({ pong: true }),
+    );
+
+    expect(await client.getCurrentModel(created.sessionId)).toMatchObject({
+      provider: target.provider,
+      id: target.id,
+    });
+
+    await client.closeRuntime(created.sessionId);
+  });
+
 });

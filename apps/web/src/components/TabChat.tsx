@@ -86,9 +86,17 @@ export default function TabChat({
 
   const isRunning = runtimeStatus === 'running';
   const allMessages = [...messages];
-  // Append pending user messages that haven't been confirmed
+  // Append pending user messages that haven't been confirmed.
+  // The optimistic message id differs from the persisted backend id,
+  // so dedupe by latest user message content instead of id only.
   for (const pm of pendingUserMessages) {
-    if (!allMessages.find((m) => m.id === pm.id)) {
+    const hasConfirmedMatch = allMessages.some((m) =>
+      m.role === 'user' &&
+      m.content_text === pm.content_text &&
+      Math.abs(new Date(m.created_at).getTime() - new Date(pm.created_at).getTime()) < 60_000,
+    );
+    const hasPendingMatch = allMessages.some((m) => m.id === pm.id);
+    if (!hasConfirmedMatch && !hasPendingMatch) {
       allMessages.push(pm);
     }
   }

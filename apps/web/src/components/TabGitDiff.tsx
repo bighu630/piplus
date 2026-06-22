@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import {
   FileCode,
   Copy,
@@ -9,12 +9,31 @@ import {
   ChevronDown,
   ChevronRight,
   Info,
+  GitPullRequest,
+  GitCommitVertical,
+  ArrowUpCircle,
+  X,
 } from 'lucide-react';
+
+interface GitActionResult {
+  session_id: string;
+  cwd: string;
+  result: 'ok' | 'error';
+  stdout?: string;
+  stderr?: string;
+}
 
 interface TabGitDiffProps {
   diff: string | null;
   isLoading: boolean;
   onRefresh: () => void;
+  // Git actions
+  onPull: () => Promise<GitActionResult>;
+  onPush: () => Promise<GitActionResult>;
+  onCommit: (message: string) => Promise<GitActionResult>;
+  isPulling: boolean;
+  isPushing: boolean;
+  isCommitting: boolean;
 }
 
 interface DiffLine {
@@ -28,9 +47,79 @@ interface DiffFile {
   lines: DiffLine[];
 }
 
-export default function TabGitDiff({ diff, isLoading, onRefresh }: TabGitDiffProps) {
+type GitOp = 'pull' | 'push' | 'commit';
+
+export default function TabGitDiff({
+  diff,
+  isLoading,
+  onRefresh,
+  onPull,
+  onPush,
+  onCommit,
+  isPulling,
+  isPushing,
+  isCommitting,
+}: TabGitDiffProps) {
   const [copied, setCopied] = useState(false);
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({});
+  const [showCommitInput, setShowCommitInput] = useState(false);
+  const [commitMessage, setCommitMessage] = useState('');
+  const [opFeedback, setOpFeedback] = useState<{ op: GitOp; result: 'ok' | 'error'; message: string } | null>(null);
+
+  const clearFeedback = useCallback(() => {
+    setOpFeedback(null);
+  }, []);
+
+  const handlePull = useCallback(async () => {
+    try {
+      const res = await onPull();
+      setOpFeedback({
+        op: 'pull',
+        result: res.result,
+        message: res.result === 'ok' ? (res.stdout || 'Pull 成功') : (res.stderr || 'Pull 失败'),
+      });
+    } catch {
+      setOpFeedback({ op: 'pull', result: 'error', message: 'Pull 失败' });
+    }
+    setTimeout(clearFeedback, 6000);
+  }, [onPull, clearFeedback]);
+
+  const handlePush = useCallback(async () => {
+    try {
+      const res = await onPush();
+      setOpFeedback({
+        op: 'push',
+        result: res.result,
+        message: res.result === 'ok' ? (res.stdout || 'Push 成功') : (res.stderr || 'Push 失败'),
+      });
+    } catch {
+      setOpFeedback({ op: 'push', result: 'error', message: 'Push 失败' });
+    }
+    setTimeout(clearFeedback, 6000);
+  }, [onPush, clearFeedback]);
+
+  const handleCommit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!commitMessage.trim()) return;
+      try {
+        const res = await onCommit(commitMessage.trim());
+        setOpFeedback({
+          op: 'commit',
+          result: res.result,
+          message: res.result === 'ok' ? (res.stdout || 'Commit 成功') : (res.stderr || 'Commit 失败'),
+        });
+        if (res.result === 'ok') {
+          setCommitMessage('');
+          setShowCommitInput(false);
+        }
+      } catch {
+        setOpFeedback({ op: 'commit', result: 'error', message: 'Commit 失败' });
+      }
+      setTimeout(clearFeedback, 6000);
+    },
+    [commitMessage, onCommit, clearFeedback],
+  );
 
   const handleCopyText = () => {
     if (diff) {
@@ -96,6 +185,8 @@ export default function TabGitDiff({ diff, isLoading, onRefresh }: TabGitDiffPro
     return files;
   }, [diff]);
 
+  const anyBusy = isPulling || isPushing || isCommitting || isLoading;
+
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50/60 dark:bg-slate-900/10 overflow-hidden">
       {/* Top controls */}
@@ -109,19 +200,53 @@ export default function TabGitDiff({ diff, isLoading, onRefresh }: TabGitDiffPro
               工作区变更
             </span>
             <span className="text-[10px] font-mono text-slate-400 block mt-0.5">
-              当前会话的 Git Diff
+              当前会话的 Git 操作
             </span>
           </div>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 flex-wrap gap-y-2">
+          {/* Refresh */}
           <button
             onClick={onRefresh}
             disabled={isLoading}
             className="flex items-center space-x-1.5 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200/50 dark:border-indigo-900 rounded-xl text-indigo-600 dark:text-indigo-400 font-semibold hover:bg-indigo-100/70 dark:hover:bg-indigo-900 disabled:opacity-50 text-xs transition cursor-pointer"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-            <span>{isLoading ? '加载中…' : '刷新 Diff'}</span>
+            <span>{isLoading ? '加载中…' : '刷新'}</span>
+          </button>
+
+          {/* Pull */}
+          <button
+            onClick={handlePull}
+            disabled={anyBusy}
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/50 dark:border-emerald-900 rounded-xl text-emerald-600 dark:text-emerald-400 font-semibold hover:bg-emerald-100/70 dark:hover:bg-emerald-900 disabled:opacity-50 text-xs transition cursor-pointer"
+          >
+            <ArrowUpCircle className={`w-3.5 h-3.5 ${isPulling ? 'animate-spin' : ''}`} />
+            <span>{isPulling ? 'Pulling…' : 'Pull'}</span>
+          </button>
+
+          {/* Push */}
+          <button
+            onClick={handlePush}
+            disabled={anyBusy}
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/50 dark:border-amber-900 rounded-xl text-amber-600 dark:text-amber-400 font-semibold hover:bg-amber-100/70 dark:hover:bg-amber-900 disabled:opacity-50 text-xs transition cursor-pointer"
+          >
+            <GitPullRequest className={`w-3.5 h-3.5 ${isPushing ? 'animate-spin' : ''}`} />
+            <span>{isPushing ? 'Pushing…' : 'Push'}</span>
+          </button>
+
+          {/* Commit */}
+          <button
+            onClick={() => {
+              setShowCommitInput(true);
+              setCommitMessage('');
+            }}
+            disabled={anyBusy}
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-violet-50 dark:bg-violet-950/30 border border-violet-200/50 dark:border-violet-900 rounded-xl text-violet-600 dark:text-violet-400 font-semibold hover:bg-violet-100/70 dark:hover:bg-violet-900 disabled:opacity-50 text-xs transition cursor-pointer"
+          >
+            <GitCommitVertical className={`w-3.5 h-3.5 ${isCommitting ? 'animate-spin' : ''}`} />
+            <span>{isCommitting ? 'Committing…' : 'Commit'}</span>
           </button>
 
           {diff && (
@@ -146,13 +271,70 @@ export default function TabGitDiff({ diff, isLoading, onRefresh }: TabGitDiffPro
         </div>
       </div>
 
+      {/* Feedback toast */}
+      {opFeedback && (
+        <div
+          className={`mx-6 mt-3 px-4 py-2 rounded-xl text-xs font-medium flex items-center justify-between ${
+            opFeedback.result === 'ok'
+              ? 'bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 text-emerald-700 dark:text-emerald-300'
+              : 'bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300'
+          }`}
+        >
+          <span className="truncate">{opFeedback.message}</span>
+          <button onClick={clearFeedback} className="ml-2 shrink-0 hover:opacity-70 cursor-pointer">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Inline commit input */}
+      {showCommitInput && (
+        <div className="mx-6 mt-3 bg-white dark:bg-slate-900 border border-violet-200 dark:border-violet-900 rounded-xl p-4">
+          <form onSubmit={handleCommit} className="flex flex-col space-y-3">
+            <div className="flex items-center space-x-2">
+              <GitCommitVertical className="w-4 h-4 text-violet-500" />
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-200">提交 Commit</span>
+            </div>
+            <input
+              autoFocus
+              type="text"
+              placeholder="请输入 commit message…"
+              value={commitMessage}
+              onChange={(e) => setCommitMessage(e.target.value)}
+              disabled={isCommitting}
+              className="w-full px-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:border-violet-400 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 disabled:opacity-50"
+            />
+            <div className="flex space-x-2 justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCommitInput(false);
+                  setCommitMessage('');
+                }}
+                disabled={isCommitting}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={!commitMessage.trim() || isCommitting}
+                className="px-4 py-1.5 text-xs font-semibold bg-violet-600 text-white hover:bg-violet-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50"
+              >
+                {isCommitting ? '提交中…' : '确认提交'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Diff content */}
       <div className="flex-1 overflow-y-auto p-6">
         {!diff ? (
           <div className="h-full flex flex-col items-center justify-center text-center space-y-3">
             <GitBranch className="w-10 h-10 text-slate-300 dark:text-slate-600" />
             <p className="text-sm text-slate-400 dark:text-slate-500">暂无变更</p>
-            <p className="text-xs text-slate-400 dark:text-slate-500">点击"刷新 Diff"获取当前会话的工作区差异</p>
+            <p className="text-xs text-slate-400 dark:text-slate-500">点击"刷新"获取当前会话的工作区差异</p>
           </div>
         ) : (
           <div className="max-w-5xl mx-auto space-y-6">
