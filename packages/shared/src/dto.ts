@@ -85,11 +85,13 @@ export type SessionInfoDTO = {
 
 export type ChatMessageDTO = {
   id: string;
-  role: keyof typeof MessageRole;
-  message_kind: keyof typeof MessageKind;
+  role: keyof typeof MessageRole | 'tool';
+  message_kind: keyof typeof MessageKind | 'tool_call' | 'tool';
   source_session_id: string | null;
   content_text: string;
   created_at: string;
+  tool_name?: string | null;
+  tool_args_json?: string | null;
 };
 
 export type SessionFileTreeNodeDTO = {

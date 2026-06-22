@@ -391,6 +391,7 @@ export default function App() {
     (projectId: string, sessionId: string) => {
       setSelectedProjectId(projectId);
       setSelectedSessionId(sessionId);
+      setActiveTab('chat');
       const targetPath = getSessionPath(sessionId);
       if (window.location.pathname !== targetPath) {
         window.history.pushState(null, '', targetPath);
@@ -542,7 +543,7 @@ export default function App() {
   const modelDisabled = runtimeStatus !== 'idle';
 
   return (
-    <div className={`flex h-screen w-screen overflow-hidden bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
+    <div className={`flex h-screen w-full overflow-hidden bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
       <Sidebar
         projects={tree}
         activeSessionId={selectedSessionId}
@@ -563,7 +564,7 @@ export default function App() {
       />
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 relative">
+      <div className="flex-1 min-w-0 flex flex-col h-full bg-white dark:bg-slate-900 relative">
         {/* Top header bar */}
         <header className="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
           {sessionInfo && (

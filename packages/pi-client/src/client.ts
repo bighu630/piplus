@@ -56,13 +56,6 @@ function mapAgentSessionEvent(
   return null;
 }
 
-function decodeCursor(cursor: string | null | undefined, total: number) {
-  if (!cursor) return total;
-  const value = Number.parseInt(cursor, 10);
-  if (!Number.isFinite(value) || value <= 0) return total;
-  return Math.min(value, total);
-}
-
 function sessionFileHasModelChange(sessionManager: SessionManager, provider: string, modelId: string) {
   const entries = sessionManager.getEntries() as SessionEntry[];
   return entries.some((entry) => entry.type === 'model_change' && entry.provider === provider && entry.modelId === modelId);
@@ -189,23 +182,7 @@ export function createPiClient(): PiClient {
         session.listeners.delete(listener);
       };
     },
-    async getHistory(sessionId, locator, cursor, limit = 50): Promise<PiHistoryPage> {
-      const session = runtimeRegistry.get(sessionId);
-      if (session?.messages.length) {
-        const end = decodeCursor(cursor, session.messages.length);
-        const start = Math.max(end - limit, 0);
-        const page = session.messages.slice(start, end);
-        const nextCursor = start > 0 ? String(start) : null;
-        return {
-          messages: page.map((message) => ({
-            id: message.id,
-            role: message.role,
-            text: message.text,
-            createdAt: null,
-          })),
-          nextCursor,
-        };
-      }
+    async getHistory(_sessionId, locator, cursor, limit = 50): Promise<PiHistoryPage> {
       return readHistory(locator, cursor, limit);
     },
     async sendMessage(sessionId, content): Promise<PiRunAccepted> {

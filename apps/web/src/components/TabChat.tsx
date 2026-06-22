@@ -13,6 +13,10 @@ import {
   ScrollText,
   LoaderCircle,
   OctagonX,
+  Wrench,
+  ChevronDown,
+  ChevronRight,
+  Terminal,
 } from 'lucide-react';
 
 interface TabChatProps {
@@ -69,8 +73,10 @@ export default function TabChat({
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const prevDisplayMessagesRef = useRef<ChatMessageDTO[]>([]);
   const prevScrollHeightRef = useRef<number | null>(null);
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
@@ -141,6 +147,30 @@ export default function TabChat({
     prevScrollHeightRef.current = container.scrollHeight;
   }, [displayMessages]);
 
+  // Auto-load more when scrolling to the top (sentinel becomes visible)
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasMore || !onLoadMore) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting && hasMore && !loadingMore) {
+            onLoadMore();
+          }
+        }
+      },
+      {
+        root: scrollContainerRef.current,
+        rootMargin: '100px 0px 0px 0px',
+        threshold: 0,
+      },
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, onLoadMore]);
+
   useEffect(() => {
     scrollToBottom('auto');
   }, [selectedSessionId]);
@@ -201,6 +231,9 @@ export default function TabChat({
     <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative">
       {/* Messages */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+        {/* Sentinel for IntersectionObserver auto-load */}
+        <div ref={sentinelRef} className="h-0.5" />
+
         {hasMore && (
           <div className="flex justify-center">
             <button
@@ -216,9 +249,104 @@ export default function TabChat({
 
         {displayMessages.map((msg) => {
           const isUser = msg.role === 'user';
+          const isToolCall = msg.message_kind === 'tool_call';
+          const isTool = msg.message_kind === 'tool' || msg.role === 'tool';
+
+          // Tool call message: collapsible card
+          if (isToolCall) {
+            const toolName = msg.tool_name || 'unknown';
+            const isExpanded = expandedToolIds.has(msg.id);
+            const toggleExpand = () => {
+              setExpandedToolIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(msg.id)) next.delete(msg.id);
+                else next.add(msg.id);
+                return next;
+              });
+            };
+
+            let argsStr = '';
+            if (msg.tool_args_json) {
+              try {
+                argsStr = JSON.stringify(JSON.parse(msg.tool_args_json), null, 2);
+              } catch {
+                argsStr = msg.tool_args_json;
+              }
+            }
+
+            return (
+              <div key={msg.id} className="flex justify-start items-start w-full">
+                <div className="flex flex-col items-start max-w-full flex-1">
+                  <div
+                    className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden cursor-pointer select-none transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
+                    onClick={toggleExpand}
+                  >
+                    <div className="px-3 py-2 flex items-center gap-2">
+                      {isExpanded ? (
+                        <ChevronDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                      )}
+                      <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                      <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 font-mono">
+                        {toolName}
+                      </span>
+                    </div>
+                    {isExpanded && argsStr && (
+                      <div className="border-t border-amber-200 dark:border-amber-800 px-3 py-2">
+                        <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                          {argsStr}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+                    {new Date(msg.created_at).toLocaleTimeString()}
+                  </span>
+                </div>
+              </div>
+            );
+          }
+
+          // Tool result message: compact result card
+          if (isTool) {
+            const toolName = msg.tool_name || 'unknown';
+            const summary = msg.content_text
+              ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
+              : '(empty result)';
+
+            return (
+              <div key={msg.id} className="flex justify-start items-start w-full">
+                <div className="flex flex-col items-start max-w-full flex-1">
+                  <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl overflow-hidden">
+                    <div className="px-3 py-2 flex items-center gap-2">
+                      <Terminal className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300 font-mono">
+                        {toolName}
+                      </span>
+                      <span className="text-[10px] text-emerald-600/60 dark:text-emerald-400/60 ml-1">
+                        结果
+                      </span>
+                    </div>
+                    {msg.content_text && (
+                      <div className="border-t border-emerald-200 dark:border-emerald-800 px-3 py-2">
+                        <div className="text-[11px] text-emerald-900 dark:text-emerald-200 font-mono whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto">
+                          {summary}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+                    {new Date(msg.created_at).toLocaleTimeString()}
+                  </span>
+                </div>
+              </div>
+            );
+          }
+
           return (
-            <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start w-full`}>
-              <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} ${isUser ? 'max-w-[85%]' : 'max-w-full flex-1'}`}>
+            <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start w-full min-w-0`}>
+              <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0 ${isUser ? 'max-w-[85%]' : 'max-w-full flex-1'}`}>
                 {isUser ? (
                   <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed">
                     {msg.content_text}
@@ -329,8 +457,8 @@ export default function TabChat({
 
         {/* Streaming content */}
         {streamingContent && (
-          <div className="flex justify-start items-start w-full">
-            <div className="flex flex-col items-start max-w-full flex-1">
+          <div className="flex justify-start items-start w-full min-w-0">
+            <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
               <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
                 <div className="markdown-body">
                   <ReactMarkdown
@@ -478,23 +606,35 @@ export default function TabChat({
               disabled={isRunning || sending}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+
                 if (sendShortcutMode === 'mod_enter') {
                   // Ctrl/Cmd+Enter 发送，Enter 换行
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                  if (e.metaKey || e.ctrlKey) {
                     e.preventDefault();
                     handleSubmit();
+                    return;
                   }
+                  // 回车（无修饰键）→ 换行
                 } else {
                   // Enter 发送，Ctrl/Cmd+Enter 换行（默认）
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    if (e.metaKey || e.ctrlKey) {
-                      // Ctrl/Cmd+Enter → 换行
-                      return;
-                    }
+                  if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
                     e.preventDefault();
                     handleSubmit();
+                    return;
                   }
+                  // Shift+Enter / Ctrl+Enter → 换行
                 }
+
+                // 在光标处插入换行（跨浏览器可靠方案）
+                e.preventDefault();
+                const textarea = e.target as HTMLTextAreaElement;
+                const start = textarea.selectionStart;
+                const end = textarea.selectionEnd;
+                setDraft((prev) => prev.slice(0, start) + '\n' + prev.slice(end));
+                requestAnimationFrame(() => {
+                  textarea.selectionStart = textarea.selectionEnd = start + 1;
+                });
               }}
               placeholder="向当前会话发送消息…"
               value={draft}

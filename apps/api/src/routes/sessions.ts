@@ -239,10 +239,12 @@ export function registerSessionRoutes(app: Hono) {
       messages: pageRows.map((row: typeof pageRows[number]) => ({
         id: row.id,
         role: row.role,
-        message_kind: 'normal',
+        message_kind: row.messageKind ?? 'normal',
         source_session_id: null,
         content_text: row.text,
         created_at: row.createdAt,
+        tool_name: row.toolName ?? null,
+        tool_args_json: row.toolArgs ? JSON.stringify(row.toolArgs) : null,
       })),
     });
   });

@@ -1,6 +1,6 @@
 import type { PiSessionLocator } from './locator';
 
-export type PiMessageRole = 'user' | 'assistant' | 'system';
+export type PiMessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
 export type PiToolDef = {
   name: string;
@@ -32,6 +32,9 @@ export type PiHistoryMessage = {
   role: PiMessageRole;
   text: string;
   createdAt: string | null;
+  messageKind?: 'normal' | 'tool_call' | 'tool';
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
 };
 
 export type PiHistoryPage = {
