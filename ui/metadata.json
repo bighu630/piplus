@@ -1,0 +1,6 @@
+{
+  "name": "Pi Session Manager",
+  "description": "A powerful workspace and session manager for AI-assisted development, featuring hierarchical project trees, active context tools, and smart code-centric chat.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

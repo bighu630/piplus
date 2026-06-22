@@ -7,6 +7,17 @@ import { verifyToken } from '../auth/token';
 const socketHub = registerSocket();
 
 export function registerWebSocketRoutes(app: Hono) {
+  /**
+   * @swagger
+   * /ws:
+   *   get:
+   *     summary: 建立 WebSocket 实时连接
+   *     tags: [WebSocket]
+   *     description: |
+   *       连接建立后会立即下发 connection.opened 事件。
+   *       客户端可发送 hello、set_context、ping 三类消息。
+   *       服务端会下发 event 与 chat_stream 两类消息。
+   */
   app.get('/ws', upgradeWebSocket((c) => ({
     async onOpen(_evt, ws) {
       const rawHeaders = c.req.raw.headers;

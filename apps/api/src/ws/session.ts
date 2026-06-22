@@ -3,7 +3,7 @@ import type { ClientMessage, ServerMessage } from '@piplus/shared/ws';
 type ConnectionContext = {
   project_id?: string;
   session_id?: string;
-  current_tab?: 'chat' | 'session_info';
+  current_tab?: 'chat' | 'session_info' | 'git_diff';
 };
 
 type AttachedSocket = {

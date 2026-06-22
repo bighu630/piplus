@@ -20,6 +20,21 @@ type TreeNode = {
 };
 
 export function registerTreeRoutes(app: Hono) {
+  /**
+   * @swagger
+   * /api/v1/tree:
+   *   get:
+   *     summary: 获取项目树与会话树
+   *     tags: [Tree]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 返回当前用户的项目列表，以及每个项目下按层级组织的会话树。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       401:
+   *         description: 未认证。
+   */
   app.get('/api/v1/tree', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const userId = (c as any).get('userId') as string;

@@ -57,7 +57,7 @@ API_PID=$!
 sleep 1
 
 echo "[piplus] starting Web on port ${WEB_PORT} ..."
-NEXT_PUBLIC_API_PORT="${API_PORT}" bun --cwd apps/web dev -p "${WEB_PORT}" &
+cd apps/web && npx vite --host 0.0.0.0 --port "${WEB_PORT}" &
 WEB_PID=$!
 
 trap 'echo; echo "[piplus] shutting down..."; kill '"$API_PID"' '"$WEB_PID"' 2>/dev/null; exit' INT TERM

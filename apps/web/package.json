@@ -1,45 +1,32 @@
 {
-  "name": "@piplus/web",
+  "name": "piplus-web",
   "private": true,
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start -p 3000",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test --preload ./src/test-setup.ts"
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@piplus/shared": "workspace:*",
-    "@piplus/ui": "workspace:*",
-    "@radix-ui/react-slot": "^1.2.4",
-    "@tanstack/react-query": "*",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "framer-motion": "*",
-    "highlight.js": "^11.11.1",
-    "lucide-react": "^1.17.0",
-    "next": "*",
-    "radix-ui": "^1.4.3",
-    "react": "*",
-    "react-dom": "*",
+    "@tailwindcss/vite": "^4.1.14",
+    "@tanstack/react-query": "^5.60.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
     "react-markdown": "^10.1.0",
-    "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.6.0"
+    "rehype-highlight": "^7.0.0",
+    "remark-gfm": "^4.0.0",
+    "tailwindcss": "^4.1.14"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.0",
-    "@testing-library/jest-dom": "*",
-    "@testing-library/react": "*",
-    "@types/node": "*",
-    "@types/react": "*",
-    "@types/react-dom": "*",
-    "autoprefixer": "*",
-    "happy-dom": "*",
-    "postcss": "*",
-    "shadcn": "^4.10.0",
-    "tailwindcss": "*",
-    "typescript": "*"
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.3"
   }
 }

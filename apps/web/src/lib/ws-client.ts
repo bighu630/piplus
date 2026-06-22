@@ -1,7 +1,5 @@
-'use client';
-
 import type { ClientMessage } from '@piplus/shared';
-import { getWsBaseUrl } from './runtime-endpoints';
+import { getWsBaseUrl } from './constants';
 
 const RECONNECT_DELAY = 2000;
 
@@ -23,19 +21,17 @@ export function createWorkspaceSocket({
     ws.addEventListener('message', onMessage);
 
     ws.addEventListener('open', () => {
-      console.log('[ws-client] connected');
       onOpen?.();
     });
 
     ws.addEventListener('close', () => {
       if (!closed) {
-        console.log('[ws-client] disconnected, reconnecting in', RECONNECT_DELAY);
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
       }
     });
 
     ws.addEventListener('error', () => {
-      // close 事件会紧随 error 触发，所以只需处理 close
+      // close event follows error, handled above
     });
   }
 
@@ -48,13 +44,25 @@ export function createWorkspaceSocket({
 
   return {
     hello() {
-      safeSend({ kind: 'client', type: 'hello', payload: { user_agent: navigator.userAgent } } satisfies ClientMessage);
+      safeSend({
+        kind: 'client',
+        type: 'hello',
+        payload: { user_agent: navigator.userAgent },
+      } satisfies ClientMessage);
     },
-    setContext(payload: { project_id?: string; session_id?: string; current_tab?: 'chat' | 'session_info' }) {
+    setContext(payload: {
+      project_id?: string;
+      session_id?: string;
+      current_tab?: 'chat' | 'session_info' | 'git_diff';
+    }) {
       safeSend({ kind: 'client', type: 'set_context', payload } satisfies ClientMessage);
     },
     ping() {
-      safeSend({ kind: 'client', type: 'ping', payload: { timestamp: new Date().toISOString() } } satisfies ClientMessage);
+      safeSend({
+        kind: 'client',
+        type: 'ping',
+        payload: { timestamp: new Date().toISOString() },
+      } satisfies ClientMessage);
     },
     close() {
       closed = true;

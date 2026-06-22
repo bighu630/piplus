@@ -10,6 +10,7 @@ import { createChatStreamFrame, createEvent } from '../ws/protocol';
 import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
 import { createAuditService } from '@piplus/domain';
+import { execSync } from 'node:child_process';
 import { buildAllToolDefs, invokePlatformTool } from '@piplus/domain/extensions/registry';
 
 function randomId(prefix: string) {
@@ -47,6 +48,21 @@ const log = createLogger('routes.sessions');
 export function registerSessionRoutes(app: Hono) {
   const piClient = createPiClient();
 
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/info:
+   *   get:
+   *     summary: 获取会话聚合详情
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 返回会话、项目、血缘、角色模板、提示词快照、同步状态和最近事件。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
   app.get('/api/v1/sessions/:sessionId/info', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const userId = (c as any).get('userId') as string;
@@ -114,6 +130,21 @@ export function registerSessionRoutes(app: Hono) {
     });
   });
 
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/chat/messages:
+   *   get:
+   *     summary: 获取会话消息历史
+   *     tags: [Sessions, Chat]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 从 Pi 会话历史中按游标分页读取消息。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
   app.get('/api/v1/sessions/:sessionId/chat/messages', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const userId = (c as any).get('userId') as string;
@@ -144,6 +175,23 @@ export function registerSessionRoutes(app: Hono) {
     });
   });
 
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/chat/messages:
+   *   post:
+   *     summary: 发送会话消息
+   *     tags: [Sessions, Chat]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 受理用户消息并异步启动 LLM；生成结果通过 WebSocket chat_stream 推送。
+   *     responses:
+   *       202:
+   *         description: 已受理，返回 run_id 与 message_id。
+   *       400:
+   *         description: 消息内容为空。
+   *       409:
+   *         description: 会话繁忙。
+   */
   app.post('/api/v1/sessions/:sessionId/chat/messages', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const userId = (c as any).get('userId') as string;
@@ -242,6 +290,23 @@ export function registerSessionRoutes(app: Hono) {
     return c.json({ accepted: true, session_id: sessionId, run_id: runId, message_id: messageId }, 202);
   });
 
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/model:
+   *   post:
+   *     summary: 设置会话模型
+   *     tags: [Sessions, Models]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 仅允许在会话 idle 时切换模型。
+   *     responses:
+   *       200:
+   *         description: 设置成功。
+   *       404:
+   *         description: 会话不存在或模型不存在。
+   *       409:
+   *         description: 会话繁忙。
+   */
   app.post('/api/v1/sessions/:sessionId/model', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const sessionId = decodeURIComponent(c.req.param('sessionId'));
@@ -276,6 +341,20 @@ export function registerSessionRoutes(app: Hono) {
     }
   });
 
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/stop:
+   *   post:
+   *     summary: 停止会话运行
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       202:
+   *         description: 已进入 stopping 状态。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
   app.post('/api/v1/sessions/:sessionId/stop', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const userId = (c as any).get('userId') as string;
@@ -296,6 +375,20 @@ export function registerSessionRoutes(app: Hono) {
     return c.json({ session_id: sessionId, status: 'stopping' }, 202);
   });
 
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/archive:
+   *   post:
+   *     summary: 归档会话
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       200:
+   *         description: 归档成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
   app.post('/api/v1/sessions/:sessionId/archive', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const sessionId = decodeURIComponent(c.req.param('sessionId'));
@@ -315,10 +408,65 @@ export function registerSessionRoutes(app: Hono) {
     return c.json({ session_id: sessionId, status: 'archived' }, 200);
   });
 
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git-diff:
+   *   get:
+   *     summary: 获取会话所属项目的 Git Diff
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 在会话所属项目目录执行 git diff，并返回当前工作区差异文本。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/git-diff', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ projectPath: projects.projectPath, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const cwd = project.projectPath || process.cwd();
+    let diff = '';
+    try {
+      diff = execSync('git diff', { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).toString();
+    } catch (err: unknown) {
+      if (err instanceof Error && 'stdout' in err) {
+        diff = String((err as any).stdout ?? '');
+      }
+    }
+
+    return c.json({ session_id: sessionId, diff, cwd });
+  });
+
   registerWebSocketRoutes(app);
 }
 
 export function registerSessionMutationRoutes(app: Hono) {
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}:
+   *   patch:
+   *     summary: 更新会话标题
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 更新标题并将 title_source 标记为 user。
+   *     responses:
+   *       200:
+   *         description: 更新成功。
+   *       400:
+   *         description: 标题长度不合法。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
   app.patch('/api/v1/sessions/:sessionId', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const sessionId = decodeURIComponent(c.req.param('sessionId'));

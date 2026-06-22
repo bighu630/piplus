@@ -1,5 +1,3 @@
-'use client';
-
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getTree,
@@ -17,10 +15,11 @@ import {
   stopSession,
   archiveSession,
   updateSessionTitle,
-  type SessionMessagesPage,
+  getSessionGitDiff,
+  type ModelInfo,
 } from './api';
-import type { SessionInfoDTO, TreeResponse } from '@piplus/shared';
 
+// Auth
 export function useAuthSession() {
   return useQuery({
     queryKey: ['auth', 'session'],
@@ -31,67 +30,6 @@ export function useAuthSession() {
     },
     retry: false,
     staleTime: 5 * 60_000,
-  });
-}
-
-export function useModels() {
-  return useQuery({
-    queryKey: ['models'],
-    queryFn: async () => (await getModels()).models,
-    staleTime: 60_000,
-  });
-}
-
-export function useSetSessionModelMutation() {
-  return useMutation({
-    mutationFn: ({ sessionId, provider, id }: { sessionId: string; provider: string; id: string }) =>
-      setSessionModel(sessionId, { provider, id }),
-  });
-}
-
-export function useArchiveProjectMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (projectId: string) => archiveProject(projectId),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['tree'] }),
-  });
-}
-
-export function useDeleteProjectMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (projectId: string) => deleteProject(projectId),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['tree'] }),
-  });
-}
-
-export function useTree() {
-  return useQuery({
-    queryKey: ['tree'],
-    queryFn: getTree,
-  });
-}
-
-export function useSessionInfo(sessionId: string | null) {
-  return useQuery({
-    queryKey: ['session', 'info', sessionId],
-    queryFn: () => getSessionInfo(sessionId!),
-    enabled: Boolean(sessionId),
-    staleTime: 10_000,
-  });
-}
-
-export function useSessionMessages(
-  sessionId: string | null,
-  limit = 20,
-) {
-  return useInfiniteQuery({
-    queryKey: ['session', 'messages', sessionId],
-    queryFn: ({ pageParam }) => getSessionMessages(sessionId!, { cursor: pageParam, limit }),
-    initialPageParam: '0',
-    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
-    enabled: Boolean(sessionId),
-    staleTime: 0,
   });
 }
 
@@ -118,6 +56,63 @@ export function useLogoutMutation() {
   });
 }
 
+// Models
+export function useModels() {
+  return useQuery({
+    queryKey: ['models'],
+    queryFn: async () => (await getModels()).models,
+    staleTime: 60_000,
+  });
+}
+
+export function useSetSessionModelMutation() {
+  return useMutation({
+    mutationFn: ({ sessionId, provider, id }: { sessionId: string; provider: string; id: string }) =>
+      setSessionModel(sessionId, { provider, id }),
+  });
+}
+
+// Tree
+export function useTree() {
+  return useQuery({
+    queryKey: ['tree'],
+    queryFn: getTree,
+  });
+}
+
+// Session info
+export function useSessionInfo(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'info', sessionId],
+    queryFn: () => getSessionInfo(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
+// Messages
+export function useSessionMessages(sessionId: string | null, limit = 20) {
+  return useInfiniteQuery({
+    queryKey: ['session', 'messages', sessionId],
+    queryFn: ({ pageParam }) => getSessionMessages(sessionId!, { cursor: pageParam, limit }),
+    initialPageParam: '0',
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    enabled: Boolean(sessionId),
+    staleTime: 0,
+  });
+}
+
+// Git diff
+export function useSessionGitDiff(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'git-diff', sessionId],
+    queryFn: () => getSessionGitDiff(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
+// Mutations
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -132,7 +127,7 @@ export function useCreateProjectMutation() {
 export function useCreateSessionMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { projectId: string; inheritModel?: { provider: string; id: string } | null }) =>
+    mutationFn: (input: { projectId: string; inheritModel?: ModelInfo | null }) =>
       createProjectSession(input.projectId, input.inheritModel),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
@@ -181,5 +176,21 @@ export function useUpdateSessionTitleMutation() {
       queryClient.invalidateQueries({ queryKey: ['session', 'info', vars.sessionId] });
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },
+  });
+}
+
+export function useArchiveProjectMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => archiveProject(projectId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['tree'] }),
+  });
+}
+
+export function useDeleteProjectMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => deleteProject(projectId),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['tree'] }),
   });
 }

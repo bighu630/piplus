@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "bash scripts/dev.sh",
     "dev:api": "bun run apps/api/src/index.ts",
-    "dev:web": "bun --cwd apps/web dev -p 3002",
-    "typecheck": "bun --cwd apps/api run typecheck && bun --cwd apps/web run typecheck && bun --cwd packages/domain run typecheck && bun --cwd packages/pi-client run typecheck && bun --cwd packages/shared run typecheck",
-    "test": "bun --cwd apps/api test && bun --cwd apps/web test",
+    "dev:web": "bun --cwd apps/web run dev",
+    "typecheck": "bun --cwd apps/api run typecheck && bun --cwd apps/web run lint && bun --cwd packages/db run typecheck && bun --cwd packages/domain run typecheck && bun --cwd packages/pi-client run typecheck && bun --cwd packages/shared run typecheck",
+    "test": "bun --cwd apps/api test",
     "test:api": "bun --cwd apps/api test",
     "test:web": "bun --cwd apps/web test"
   },

@@ -15,6 +15,23 @@ import { and, eq, inArray } from 'drizzle-orm';
 export function registerProjectRoutes(app: Hono) {
   const piClient = createPiClient();
 
+  /**
+   * @swagger
+   * /api/v1/projects:
+   *   post:
+   *     summary: 创建项目并自动创建 planner 会话
+   *     tags: [Projects]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 支持 existing 模式导入本地目录，或 git_clone 模式克隆远端仓库。
+   *     responses:
+   *       201:
+   *         description: 返回 projectId 与自动创建的 sessionId。
+   *       400:
+   *         description: 参数错误或路径不存在。
+   *       409:
+   *         description: clone 目标目录已存在。
+   */
   app.post('/api/v1/projects', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const body = await c.req.json().catch(() => ({}));
@@ -63,6 +80,26 @@ export function registerProjectRoutes(app: Hono) {
     return c.json(result, 201);
   });
 
+  /**
+   * @swagger
+   * /api/v1/projects/{projectId}/sessions:
+   *   post:
+   *     summary: 在项目下创建新的顶层会话
+   *     tags: [Projects, Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     parameters:
+   *       - in: path
+   *         name: projectId
+   *         required: true
+   *         schema:
+   *           type: string
+   *     responses:
+   *       201:
+   *         description: 返回新创建的 session_id 和 project_id。
+   *       404:
+   *         description: 项目不存在。
+   */
   app.post('/api/v1/projects/:projectId/sessions', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const projectId = c.req.param('projectId');
@@ -87,6 +124,21 @@ export function registerProjectRoutes(app: Hono) {
     return c.json({ session_id: result.sessionId, project_id: result.projectId }, 201);
   });
 
+  /**
+   * @swagger
+   * /api/v1/projects/{projectId}/archive:
+   *   post:
+   *     summary: 归档项目
+   *     tags: [Projects]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 归档项目，同时归档该项目下所有会话。
+   *     responses:
+   *       200:
+   *         description: 归档成功。
+   *       404:
+   *         description: 项目不存在。
+   */
   app.post('/api/v1/projects/:projectId/archive', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const projectId = c.req.param('projectId');
@@ -102,6 +154,21 @@ export function registerProjectRoutes(app: Hono) {
     return c.json({ project_id: projectId, status: 'archived' }, 200);
   });
 
+  /**
+   * @swagger
+   * /api/v1/projects/{projectId}:
+   *   delete:
+   *     summary: 删除项目
+   *     tags: [Projects]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 删除项目及其关联会话、消息、会话事件和同步状态。
+   *     responses:
+   *       200:
+   *         description: 删除成功。
+   *       404:
+   *         description: 项目不存在。
+   */
   app.delete('/api/v1/projects/:projectId', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const projectId = c.req.param('projectId');

@@ -10,7 +10,7 @@ export type ClientSetContext = {
   payload: {
     project_id?: string;
     session_id?: string;
-    current_tab?: 'chat' | 'session_info';
+    current_tab?: 'chat' | 'session_info' | 'git_diff';
   };
 };
 
