@@ -45,15 +45,16 @@ function roleLabel(key: string): string {
   return map[key] ?? key;
 }
 
-function runtimeColor(status: string): string {
+function runtimeColor(status: string): string | null {
   switch (status) {
     case 'running':
-      return 'bg-blue-500';
+      return 'bg-emerald-500';
     case 'stopping':
+    case 'error':
       return 'bg-amber-500';
     case 'idle':
     default:
-      return 'bg-emerald-500';
+      return null;
   }
 }
 
@@ -108,6 +109,7 @@ export default function Sidebar({
     const hasChildren = session.children.length > 0;
     const isCollapsed = collapsedSessions[session.id];
     const isArchived = Boolean(session.archived_at);
+    const statusDotColor = runtimeColor(session.runtime_status);
 
     if (!showArchived && isArchived) return null;
 
@@ -153,13 +155,13 @@ export default function Sidebar({
 
 
           {!isSidebarCollapsed && (
-            <div className="flex items-center space-x-1.5 shrink-0 select-none">
+            <div className="flex items-center gap-1 shrink-0 select-none">
               <span className="text-[9px] text-slate-400 dark:text-slate-500 font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity">
                 {roleLabel(session.role_template_key)}
               </span>
-              <div
-                className={`w-2 h-2 rounded-full shrink-0 ${runtimeColor(session.runtime_status)}`}
-              />
+              {statusDotColor ? (
+                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor}`} />
+              ) : null}
             </div>
           )}
         </div>

@@ -1,5 +1,9 @@
 import { createSeedDb } from '@piplus/db/init';
 import { describe, expect, test } from 'bun:test';
+import { eq } from 'drizzle-orm';
+import { createDb } from '@piplus/db/client';
+import { sessions } from '@piplus/db/schema';
+import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
 
 function makeDbPath() {
@@ -51,6 +55,51 @@ describe('session routes', () => {
     expect(pageRes.status).toBe(200);
     const page = await pageRes.json();
     expect(Array.isArray(page.messages)).toBe(true);
+  });
+
+  test('create top-level session inherits project planner model', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+    const models = await createPiClient().listAvailableModels();
+    const target = models.at(-1) ?? models[0];
+    expect(target).toBeTruthy();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        name: 'Inherited Session Project',
+        mode: 'existing',
+        path: '/tmp',
+        model: { provider: target.provider, id: target.id },
+      }),
+    });
+    const projectBody = await projectRes.json();
+
+    const createSessionRes = await app.request(`/api/v1/projects/${projectBody.projectId}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({}),
+    });
+    expect(createSessionRes.status).toBe(201);
+    const createdSession = await createSessionRes.json();
+
+    const infoRes = await app.request(`/api/v1/sessions/${createdSession.session_id}/info`, {
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(infoRes.status).toBe(200);
+    const info = await infoRes.json();
+    expect(info.session.current_model).toMatchObject({
+      provider: target.provider,
+      id: target.id,
+    });
+
+    const db = createDb(`file:${path}`);
+    const [createdRow] = await db.select().from(sessions).where(eq(sessions.id, createdSession.session_id)).limit(1);
+    expect(createdRow?.currentModelProvider).toBe(target.provider);
+    expect(createdRow?.currentModelId).toBe(target.id);
   });
 
   test('set session model persists DB mirror and is returned by session info', async () => {

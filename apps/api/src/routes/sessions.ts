@@ -6,12 +6,11 @@ import { createPiClient } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import { getDbPath } from '../db-context';
 import { registerWebSocketRoutes, socketHub } from '../ws/server';
-import { createChatStreamFrame, createEvent } from '../ws/protocol';
+import { createEvent } from '../ws/protocol';
 import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
-import { createAuditService } from '@piplus/domain';
+import { createAuditService, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
-import { buildAllToolDefs, invokePlatformTool } from '@piplus/domain/extensions/registry';
 
 function randomId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
@@ -248,53 +247,28 @@ export function registerSessionRoutes(app: Hono) {
       createdAt: now,
     } as any);
 
-    const locator = parseLocator(session.piSessionLocatorJson);
-    await piClient.restoreRuntime(sessionId, locator, project.projectPath);
-
-    const toolDefs = await buildAllToolDefs(db);
-    await piClient.bindToolRuntime(sessionId, toolDefs, async (toolName, args) => {
-      return invokePlatformTool(toolName, args, {
-        db,
-        piClient,
-        sessionId,
-        userId,
-      });
+    const run = await startSessionRun({
+      db,
+      piClient,
+      sessionId,
+      userId,
+      content,
+      startedAt: now,
+      onStreamEvent: async (event) => {
+        console.log('[api/ws] stream event', { sessionId, type: event.type, delta: (event as any).delta ?? null });
+        for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
+          socketHub.sendToSession(sessionId, frame);
+        }
+      },
+      onRuntimeStatusChange: async ({ projectId, runtimeStatus }) => {
+        socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus }, { project_id: projectId, session_id: sessionId }));
+      },
     });
-
-    const unsubscribe = await piClient.subscribeSession(sessionId, async (event) => {
-      console.log('[api/ws] stream event', { sessionId, type: event.type, delta: (event as any).delta ?? null });
-      for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
-        socketHub.sendToSession(sessionId, frame);
-      }
-    });
-
-    // 异步启动 LLM，不阻塞 HTTP 响应
-    const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
-    let cleanupDone = false;
-    const doCleanup = () => {
-      if (cleanupDone) return;
-      cleanupDone = true;
-      try {
-        const dbClean = createDb(`file:${getDbPath()}`);
-        dbClean.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date() }).where(eq(sessions.id, sessionId)).run();
-      } catch { /* ignore */ }
-      try { socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: 'idle' }, { project_id: session.projectId, session_id: sessionId })); } catch { /* ignore */ }
-      unsubscribe();
-    };
-
-    const sendPromise = piClient.sendMessage(sessionId, content);
-    sendPromise.then(doCleanup).catch(doCleanup);
-
-    // 安全兜底：5 分钟后强制恢复，防止死锁
-    setTimeout(doCleanup, 5 * 60 * 1000);
-
-    await db.update(sessions).set({ runtimeStatus: 'running', lastActivityAt: now, lastRunAt: now, updatedAt: now }).where(eq(sessions.id, sessionId));
 
     socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
     socketHub.broadcast(createEvent('tree.changed', { project_id: session.projectId }, { project_id: session.projectId }));
-    socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: 'running' }, { project_id: session.projectId, session_id: sessionId }));
 
-    return c.json({ accepted: true, session_id: sessionId, run_id: runId, message_id: messageId }, 202);
+    return c.json({ accepted: true, session_id: sessionId, run_id: run.runId, message_id: messageId }, 202);
   });
 
   /**

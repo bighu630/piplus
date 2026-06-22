@@ -84,7 +84,13 @@ export function createPiClient(): PiClient {
 
   return {
     async createSession(input): Promise<PiCreateSessionResult> {
-      const model = await ensureModel();
+      const available = await modelRegistry.getAvailable();
+      const model = input.model
+        ? available.find((candidate) => candidate.provider === input.model!.provider && candidate.id === input.model!.id)
+        : await ensureModel();
+      if (!model) {
+        throw new Error('pi_model_not_found');
+      }
       const cwd = input.cwd ?? process.cwd();
       const { session } = await createAgentSession({
         cwd,
@@ -95,6 +101,12 @@ export function createPiClient(): PiClient {
         piSessionId: session.sessionId,
         sessionFile: session.sessionFile ?? '',
       };
+      if (input.model && locator.sessionFile) {
+        const sessionManager = SessionManager.open(locator.sessionFile);
+        if (!sessionFileHasModelChange(sessionManager, model.provider, model.id)) {
+          sessionManager.appendModelChange(model.provider, model.id);
+        }
+      }
       const active = runtimeRegistry.ensure(session.sessionId, locator, cwd);
       active.prompt = input.prompt;
       active.title = input.title ?? null;

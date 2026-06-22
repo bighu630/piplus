@@ -5,3 +5,4 @@ dist
 .env.local
 bun.lock
 *.log
+/.codegraph/daemon.pid

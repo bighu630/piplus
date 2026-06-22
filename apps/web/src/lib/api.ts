@@ -130,17 +130,29 @@ export function gitCommit(sessionId: string, message: string) {
 }
 
 // Projects
-export function createProject(name: string, mode?: string, path?: string, repoUrl?: string) {
+export function createProject(
+  name: string,
+  mode?: string,
+  path?: string,
+  repoUrl?: string,
+  model?: { provider: string; id: string } | null,
+) {
   return request<{ projectId: string; sessionId?: string; piSessionId?: string }>('/api/v1/projects', {
     method: 'POST',
-    body: JSON.stringify({ name, mode: mode ?? 'existing', path: path ?? '', repo_url: repoUrl ?? '' }),
+    body: JSON.stringify({
+      name,
+      mode: mode ?? 'existing',
+      path: path ?? '',
+      repo_url: repoUrl ?? '',
+      model: model ?? null,
+    }),
   });
 }
 
-export function createProjectSession(projectId: string, inheritModel?: { provider: string; id: string } | null) {
+export function createProjectSession(projectId: string) {
   return request<{ session_id: string; project_id: string }>(`/api/v1/projects/${projectId}/sessions`, {
     method: 'POST',
-    body: JSON.stringify({ inherit_model: inheritModel ?? null }),
+    body: JSON.stringify({}),
   });
 }
 

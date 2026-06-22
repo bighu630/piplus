@@ -119,8 +119,8 @@ export function useSessionGitDiff(sessionId: string | null) {
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (params: { name: string; mode?: string; path?: string; repoUrl?: string }) =>
-      createProject(params.name, params.mode, params.path, params.repoUrl),
+    mutationFn: (params: { name: string; mode?: string; path?: string; repoUrl?: string; model?: ModelInfo | null }) =>
+      createProject(params.name, params.mode, params.path, params.repoUrl, params.model ?? null),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },
@@ -130,8 +130,8 @@ export function useCreateProjectMutation() {
 export function useCreateSessionMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { projectId: string; inheritModel?: ModelInfo | null }) =>
-      createProjectSession(input.projectId, input.inheritModel),
+    mutationFn: (input: { projectId: string }) =>
+      createProjectSession(input.projectId),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },

@@ -5,4 +5,5 @@ export * from './extensions/registry';
 export * from './project/service';
 export * from './role-manager/service';
 export * from './session/service';
+export * from './session/runtime';
 export * from './audit/service';

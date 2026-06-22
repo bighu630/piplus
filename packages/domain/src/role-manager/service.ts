@@ -12,15 +12,15 @@ export type CreateProjectInput = {
   projectPath?: string;
   sourceType?: string;
   sourceUrl?: string;
+  plannerModel?: {
+    provider: string;
+    id: string;
+  } | null;
 };
 
 export type CreateSessionInput = {
   projectId: string;
   createdBy: string;
-  inheritModel?: {
-    provider: string;
-    id: string;
-  } | null;
 };
 
 export type SpawnSessionInput = {
@@ -148,6 +148,38 @@ async function touchProject(db: RoleManagerDb, projectId: string) {
   await db.update(projects).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(projects.id, projectId));
 }
 
+async function findProjectResponsibleModel(db: RoleManagerDb, projectId: string) {
+  const [planner] = await db
+    .select({
+      provider: sessions.currentModelProvider,
+      id: sessions.currentModelId,
+    })
+    .from(sessions)
+    .innerJoin(roleTemplates, eq(roleTemplates.id, sessions.roleTemplateId))
+    .where(eq(sessions.projectId, projectId))
+    .limit(1);
+
+  const plannerMatch = planner?.provider && planner?.id
+    ? { provider: planner.provider, id: planner.id }
+    : null;
+  if (plannerMatch) return plannerMatch;
+
+  const [root] = await db
+    .select({
+      provider: sessions.currentModelProvider,
+      id: sessions.currentModelId,
+    })
+    .from(sessions)
+    .where(eq(sessions.projectId, projectId))
+    .limit(1);
+
+  if (root?.provider && root?.id) {
+    return { provider: root.provider, id: root.id };
+  }
+
+  return null;
+}
+
 export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) {
   return {
     async createProjectWithPlanner(input: CreateProjectInput) {
@@ -176,12 +208,13 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         projectPath: input.projectPath ?? '',
         createdBy: input.createdBy,
         plannerTemplate,
+        model: input.plannerModel ?? null,
       });
 
       return { projectId, sessionId, piSessionId };
     },
 
-    async createTopLevelPlannerSession(input: { projectId: string; projectName: string; projectPath: string; createdBy: string; plannerTemplate?: SessionTemplateRow }) {
+    async createTopLevelPlannerSession(input: { projectId: string; projectName: string; projectPath: string; createdBy: string; plannerTemplate?: SessionTemplateRow; model?: { provider: string; id: string } | null }) {
       const plannerTemplate = input.plannerTemplate ?? await findRoleTemplate(db, 'planner');
       const sessionId = id('session');
       const title = `${input.projectName} · 负责人`;
@@ -192,6 +225,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         title,
         prompt: compiledPrompt,
         cwd: input.projectPath,
+        model: input.model ?? undefined,
       });
       const piSessionId = piSession.locator.piSessionId ?? piSession.sessionId;
 
@@ -221,6 +255,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
     async createTopLevelBlankSession(input: CreateSessionInput) {
       const blankTemplate = await findRoleTemplate(db, 'blank');
       const [project] = await db.select({ projectPath: projects.projectPath }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
+      const inheritedModel = await findProjectResponsibleModel(db, input.projectId);
       const sessionId = id('session');
       const title = 'Blank Session';
       const compiledPrompt = compilePrompt({
@@ -231,14 +266,9 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         title,
         prompt: compiledPrompt,
         cwd,
+        model: inheritedModel ?? undefined,
       });
       const piSessionId = piSession.locator.piSessionId ?? piSession.sessionId;
-
-      if (input.inheritModel) {
-        await piClient.setSessionModel(piSessionId, piSession.locator, input.inheritModel, cwd);
-      }
-
-      // 读取 setSessionModel 更新后的模型（已在 registry 中缓存），或用 createSession 的默认模型
       const currentModel = await piClient.getCurrentModel(piSessionId);
 
       await insertSession(db, {
@@ -281,12 +311,19 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         task: input.task,
         constraints: input.constraints,
       });
+      const cwd = project?.projectPath ?? process.cwd();
+      const inheritedModel = parent.currentModelProvider && parent.currentModelId
+        ? { provider: parent.currentModelProvider, id: parent.currentModelId }
+        : null;
       const piSession = await piClient.createSession({
         title,
         prompt: compiledPrompt,
-        cwd: project?.projectPath ?? process.cwd(),
+        cwd,
+        model: inheritedModel ?? undefined,
       });
       const piSessionId = piSession.locator.piSessionId ?? piSession.sessionId;
+
+      const currentModel = await piClient.getCurrentModel(piSessionId);
 
       const sessionId = id('session');
       await insertSession(db, {
@@ -304,14 +341,15 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         userSuppliedPrompt: '',
         parentSuppliedPrompt: '',
         compiledPrompt,
-        currentModelProvider: piSession.model?.provider ?? null,
-        currentModelId: piSession.model?.id ?? null,
+        currentModelProvider: currentModel?.provider ?? piSession.model?.provider ?? null,
+        currentModelId: currentModel?.id ?? piSession.model?.id ?? null,
       });
 
       await touchProject(db, input.projectId);
       console.log('[role-manager] spawnSession done', { sessionId, piSessionId, locatorFile: piSession.locator.sessionFile });
       return { sessionId, piSessionId, locator: piSession.locator };
     },
+
 
     async writebackToParent(input: WritebackToParentInput) {
       const [child] = await db.select().from(sessions).where(eq(sessions.id, input.childSessionId)).limit(1);

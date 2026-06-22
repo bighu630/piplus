@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ServerMessage } from '@piplus/shared';
 import Sidebar from './components/Sidebar';
@@ -43,6 +43,17 @@ import {
 } from 'lucide-react';
 
 type Tab = 'chat' | 'info' | 'diff';
+
+const WORKSPACE_ROOT_PATH = '/workspace';
+
+function getSessionPath(sessionId: string | null): string {
+  return sessionId ? `${WORKSPACE_ROOT_PATH}/session/${sessionId}` : WORKSPACE_ROOT_PATH;
+}
+
+function getSessionIdFromPath(pathname: string): string | null {
+  const match = pathname.match(/^\/workspace\/session\/([^/]+)$/);
+  return match?.[1] ?? null;
+}
 
 function findFirstSession(projects: ProjectDTO[]): { projectId: string; sessionId: string } | null {
   for (const project of projects) {
@@ -102,6 +113,7 @@ export default function App() {
   const [createMode, setCreateMode] = useState<'existing' | 'git_clone'>('existing');
   const [createPath, setCreatePath] = useState('');
   const [createRepoUrl, setCreateRepoUrl] = useState('');
+  const [createProjectModelKey, setCreateProjectModelKey] = useState('');
 
   // Stream state
   const [streamNote, setStreamNote] = useState('');
@@ -112,6 +124,8 @@ export default function App() {
   const [wsConnected, setWsConnected] = useState(false);
 
   // Theme
+  const initialUrlSessionId = useMemo(() => getSessionIdFromPath(window.location.pathname), []);
+
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
       const saved = localStorage.getItem('pi-workspace-theme');
@@ -165,15 +179,36 @@ export default function App() {
     setStreamNote('');
   }, [selectedSessionId]);
 
-  // Auto-select first session on tree load
+  // Restore session from URL first, then fallback to first available session.
   useEffect(() => {
-    if (!tree.length || selectedSessionId) return;
-    const fallback = findFirstSession(tree);
-    if (fallback) {
-      setSelectedProjectId(fallback.projectId);
-      setSelectedSessionId(fallback.sessionId);
+    if (!tree.length) return;
+
+    const requestedSessionId = getSessionIdFromPath(window.location.pathname) ?? initialUrlSessionId;
+    const resolvedSessionId = selectedSessionId ?? requestedSessionId;
+
+    if (resolvedSessionId) {
+      const pid = findProjectId(tree, resolvedSessionId);
+      if (pid) {
+        if (selectedSessionId !== resolvedSessionId) setSelectedSessionId(resolvedSessionId);
+        if (selectedProjectId !== pid) setSelectedProjectId(pid);
+        return;
+      }
     }
-  }, [tree, selectedSessionId]);
+
+    const fallback = findFirstSession(tree);
+    if (!fallback) return;
+
+    if (selectedSessionId !== fallback.sessionId) setSelectedSessionId(fallback.sessionId);
+    if (selectedProjectId !== fallback.projectId) setSelectedProjectId(fallback.projectId);
+  }, [tree, selectedSessionId, selectedProjectId, initialUrlSessionId]);
+
+  // Keep URL in sync with current session selection.
+  useEffect(() => {
+    const targetPath = getSessionPath(selectedSessionId);
+    if (window.location.pathname !== targetPath) {
+      window.history.replaceState(null, '', targetPath);
+    }
+  }, [selectedSessionId]);
 
   // Resolve projectId from tree
   useEffect(() => {
@@ -307,6 +342,10 @@ export default function App() {
     (projectId: string, sessionId: string) => {
       setSelectedProjectId(projectId);
       setSelectedSessionId(sessionId);
+      const targetPath = getSessionPath(sessionId);
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState(null, '', targetPath);
+      }
     },
     [],
   );
@@ -321,11 +360,18 @@ export default function App() {
           mode: createMode,
           path: createMode === 'existing' ? createPath : undefined,
           repoUrl: createMode === 'git_clone' ? createRepoUrl : undefined,
+          model: createProjectModelKey
+            ? (() => {
+                const [provider, id] = createProjectModelKey.split('/');
+                return provider && id ? { provider, id, label: createProjectModelKey } : null;
+              })()
+            : null,
         });
         setShowCreateProject(false);
         setCreateName('');
         setCreatePath('');
         setCreateRepoUrl('');
+        setCreateProjectModelKey('');
         if (result.sessionId) {
           setSelectedProjectId(result.projectId);
           setSelectedSessionId(result.sessionId);
@@ -333,7 +379,7 @@ export default function App() {
         await treeQuery.refetch();
       } catch { /* ignore */ }
     },
-    [createName, createMode, createPath, createRepoUrl, createProjectMut, treeQuery],
+    [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, treeQuery],
   );
 
   const handleCreateSession = useCallback(async () => {
@@ -341,12 +387,11 @@ export default function App() {
     try {
       const result = await createSessionMut.mutateAsync({
         projectId: selectedProjectId,
-        inheritModel: sessionInfo?.session.current_model ?? null,
       });
       setSelectedSessionId(result.session_id);
       await treeQuery.refetch();
     } catch { /* ignore */ }
-  }, [selectedProjectId, sessionInfo, createSessionMut, treeQuery]);
+  }, [selectedProjectId, createSessionMut, treeQuery]);
 
   const handleSend = useCallback(
     async (content: string) => {
@@ -572,6 +617,7 @@ export default function App() {
                   streamingContent={streamingContent}
                   sessionTitle={sessionInfo?.session.title}
                   wsConnected={wsConnected}
+                  selectedSessionId={selectedSessionId}
                 />
               )}
 
@@ -691,6 +737,27 @@ export default function App() {
               />
             </div>
           )}
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
+              负责人模型
+            </label>
+            <div className="relative">
+              <select
+                value={createProjectModelKey}
+                onChange={(e) => setCreateProjectModelKey(e.target.value)}
+                className="w-full appearance-none px-3 py-2 pr-8 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+              >
+                <option value="">使用默认模型</option>
+                {(modelsQuery.data ?? []).map((m) => (
+                  <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                    {m.provider} / {m.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-3.5 h-3.5 absolute right-2.5 top-2.5 pointer-events-none text-slate-500" />
+            </div>
+          </div>
 
           <div className="flex space-x-2 pt-3 justify-end border-t border-slate-150 dark:border-slate-800">
             <button

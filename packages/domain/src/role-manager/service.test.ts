@@ -24,7 +24,7 @@ function makeRecordingPiClient() {
 
   return {
     state,
-    async createSession(input: { title?: string; prompt: string; tools?: unknown[]; metadata?: Record<string, unknown>; cwd?: string }) {
+    async createSession(input: { title?: string; prompt: string; tools?: unknown[]; metadata?: Record<string, unknown>; cwd?: string; model?: { provider: string; id: string } }) {
       state.createSessionInput = input;
       state.createdSessionId = `pi_${crypto.randomUUID().slice(0, 8)}`;
       state.locatorSessionFile = `/tmp/pi-${crypto.randomUUID()}.jsonl`;
@@ -34,6 +34,9 @@ function makeRecordingPiClient() {
           piSessionId: state.createdSessionId,
           sessionFile: state.locatorSessionFile,
         },
+        model: input.model
+          ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` }
+          : undefined,
       };
     },
     async restoreRuntime() {
@@ -61,6 +64,14 @@ function makeRecordingPiClient() {
       return [{ provider: 'stub', id: 'stub', label: 'Stub Model' }];
     },
     async getCurrentModel() {
+      const input = state.createSessionInput as { model?: { provider: string; id: string } } | null;
+      if (input?.model) {
+        return {
+          provider: input.model.provider,
+          id: input.model.id,
+          label: `${input.model.provider}/${input.model.id}`,
+        };
+      }
       return null;
     },
     async setSessionModel(sessionId: string, _locator: unknown, modelRef: { provider: string; id: string }, cwd?: string) {
@@ -80,12 +91,13 @@ async function setupDomain() {
 }
 
 describe('role manager service', () => {
-  test('creates a project and auto-spawns a planner session', async () => {
+  test('creates a project and auto-spawns a planner session with requested model', async () => {
     const { db, roleManager, piClient } = await setupDomain();
 
     const result = await roleManager.createProjectWithPlanner({
       name: 'Launch Plan',
       createdBy: 'user_seed',
+      plannerModel: { provider: 'openai', id: 'gpt-4.1' },
     });
 
     expect(result.projectId).toMatch(/^project_/);
@@ -104,45 +116,45 @@ describe('role manager service', () => {
     expect(session?.roleTemplateId).toBe(template?.id);
     expect(session?.title).toContain('负责人');
     expect(session?.compiledPrompt).toContain('structured plan');
+    expect(session?.currentModelProvider).toBe('openai');
+    expect(session?.currentModelId).toBe('gpt-4.1');
     expect(session?.piSessionLocatorJson).toContain('sessionFile');
     expect(piClient.state.createSessionInput).toEqual({
       title: 'Launch Plan · 负责人',
       prompt: session?.compiledPrompt,
       cwd: '',
+      model: { provider: 'openai', id: 'gpt-4.1' },
     });
   });
 
-  test('creates a top-level blank session with inherited model when provided', async () => {
+  test('creates a top-level blank session with project planner model inheritance', async () => {
     const { db, roleManager, piClient } = await setupDomain();
     const { projectId } = await roleManager.createProjectWithPlanner({
       name: 'Inherited Model',
       createdBy: 'user_seed',
+      plannerModel: { provider: 'openai', id: 'gpt-4.1' },
     });
 
     await roleManager.createTopLevelBlankSession({
       projectId,
       createdBy: 'user_seed',
-      inheritModel: { provider: 'openai', id: 'gpt-4.1' },
     });
 
     expect(piClient.state.createSessionInput).toEqual({
       title: 'Blank Session',
       prompt: expect.any(String),
       cwd: '',
+      model: { provider: 'openai', id: 'gpt-4.1' },
     });
-    expect(piClient.state.setSessionModelInput).toEqual({
-      sessionId: expect.stringMatching(/^pi_/),
-      provider: 'openai',
-      id: 'gpt-4.1',
-      cwd: '',
-    });
+    expect(piClient.state.setSessionModelInput).toBeNull();
   });
 
-  test('spawns a child session without exposing parent or role manager internals to PI input', async () => {
+  test('spawns a child session inheriting the parent model', async () => {
     const { db, roleManager, piClient } = await setupDomain();
     const { projectId, sessionId: parentSessionId } = await roleManager.createProjectWithPlanner({
       name: 'Child Spawn',
       createdBy: 'user_seed',
+      plannerModel: { provider: 'anthropic', id: 'claude-sonnet-4-20250514' },
     });
 
     const result = await roleManager.spawnSession({
@@ -163,6 +175,7 @@ describe('role manager service', () => {
       title: 'review the API boundary',
       prompt: child?.compiledPrompt,
       cwd: '',
+      model: { provider: 'anthropic', id: 'claude-sonnet-4-20250514' },
     });
     expect(child?.compiledPrompt).toContain('Objective:');
     expect(child?.compiledPrompt).toContain('review the API boundary');
@@ -175,6 +188,8 @@ describe('role manager service', () => {
     expect(child?.parentSessionId).toBe(parentSessionId);
     expect(child?.rootSessionId).toBe(parent?.rootSessionId);
     expect(child?.depth).toBe((parent?.depth ?? 0) + 1);
+    expect(child?.currentModelProvider).toBe('anthropic');
+    expect(child?.currentModelId).toBe('claude-sonnet-4-20250514');
   });
 
   test('writes back to the resolved parent session internally', async () => {

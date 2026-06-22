@@ -40,6 +40,10 @@ export function registerProjectRoutes(app: Hono) {
     const mode = (body as { mode?: string }).mode ?? 'existing';
     const path = (body as { path?: string }).path ?? '';
     const repoUrl = (body as { repo_url?: string }).repo_url ?? '';
+    const requestedModel = (body as { model?: { provider?: string; id?: string } | null }).model;
+    const plannerModel = requestedModel?.provider && requestedModel?.id
+      ? { provider: requestedModel.provider, id: requestedModel.id }
+      : null;
 
     if (mode === 'existing') {
       if (!path) return c.json({ error: { code: 'INVALID_PATH', message: 'Path is required' } }, 400);
@@ -60,7 +64,7 @@ export function registerProjectRoutes(app: Hono) {
       if (proc.exitCode !== 0) {
         return c.json({ error: { code: 'CLONE_FAILED', message: 'Git clone failed' } }, 500);
       }
-      const result = await createProjectWithPlanner(db, piClient, repoName, userId, targetPath, 'git_clone', repoUrl);
+      const result = await createProjectWithPlanner(db, piClient, repoName, userId, targetPath, 'git_clone', repoUrl, plannerModel);
       await createAuditService(db).record(userId, "project.created", "project", result.projectId, { name: repoName, path: targetPath, sourceType: 'git_clone', sourceUrl: repoUrl });
       await createAuditService(db).record(userId, "session.created", "session", result.sessionId, { role: "planner", project_id: result.projectId });
       socketHub.broadcast(createEvent('project.created', { project_id: result.projectId }, { project_id: result.projectId }));
@@ -70,7 +74,7 @@ export function registerProjectRoutes(app: Hono) {
     }
 
     // existing mode
-    const result = await createProjectWithPlanner(db, piClient, name, userId, path, 'existing', '');
+    const result = await createProjectWithPlanner(db, piClient, name, userId, path, 'existing', '', plannerModel);
     await createAuditService(db).record(userId, "project.created", "project", result.projectId, { name });
     await createAuditService(db).record(userId, "session.created", "session", result.sessionId, { role: "planner", project_id: result.projectId });
     socketHub.broadcast(createEvent('project.created', { project_id: result.projectId }, { project_id: result.projectId }));
@@ -113,9 +117,6 @@ export function registerProjectRoutes(app: Hono) {
     const result = await createTopLevelSession(db, piClient, {
       projectId,
       createdBy: userId,
-      inheritModel: inheritModel?.provider && inheritModel?.id
-        ? { provider: inheritModel.provider, id: inheritModel.id }
-        : null,
     });
     await createAuditService(db).record(userId, "session.created", "session", result.sessionId, { role: "blank", project_id: projectId });
     socketHub.broadcast(createEvent('session.created', { session_id: result.sessionId }, { project_id: result.projectId, session_id: result.sessionId }));

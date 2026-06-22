@@ -15,6 +15,10 @@ export type PiCreateSessionInput = {
   tools?: PiToolDef[];
   metadata?: Record<string, unknown>;
   cwd?: string;
+  model?: {
+    provider: string;
+    id: string;
+  };
 };
 
 export type PiCreateSessionResult = {

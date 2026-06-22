@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -29,6 +29,7 @@ interface TabChatProps {
   streamingContent: string;
   sessionTitle?: string;
   wsConnected?: boolean;
+  selectedSessionId?: string | null;
 }
 
 function sanitizeStreamingContent(content: string): string {
@@ -62,44 +63,20 @@ export default function TabChat({
   streamingContent,
   sessionTitle,
   wsConnected,
+  selectedSessionId,
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const prevDisplayMessagesRef = useRef<ChatMessageDTO[]>([]);
+  const prevScrollHeightRef = useRef<number | null>(null);
+  const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
 
-  useEffect(() => {
-    // Always scroll to bottom while streaming new content
-    if (streamingContent) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      return;
-    }
-
-    // For messages changes, only scroll if user is already near the bottom.
-    // This prevents jumping when prepending older messages via "加载更早消息".
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    const isNearBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < 150;
-    if (isNearBottom) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [messages, streamingContent]);
-
-  const handleSubmit = () => {
-    const content = draft.trim();
-    if (!content || sending) return;
-    setDraft('');
-    onSend(content);
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
-  const handleCopyCode = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
-  const isRunning = runtimeStatus === 'running';
   const allMessages = [...messages];
   // Append pending user messages that haven't been confirmed.
   // The optimistic message id differs from the persisted backend id,
@@ -128,6 +105,79 @@ export default function TabChat({
           created_at: new Date().toISOString(),
         },
       ];
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const prevMessages = prevDisplayMessagesRef.current;
+    const currentMessages = displayMessages;
+
+    const prevFirstId = prevMessages[0]?.id;
+    const prevLastId = prevMessages[prevMessages.length - 1]?.id;
+    const currentFirstId = currentMessages[0]?.id;
+    const currentLastId = currentMessages[currentMessages.length - 1]?.id;
+
+    const prepended =
+      prevMessages.length > 0 &&
+      currentMessages.length > prevMessages.length &&
+      prevFirstId !== currentFirstId &&
+      prevLastId === currentLastId;
+
+    const appended =
+      currentMessages.length > prevMessages.length ||
+      (prevLastId !== currentLastId && currentLastId !== undefined);
+
+    lastChangeTypeRef.current = prepended ? 'prepend' : appended ? 'append' : 'none';
+
+    if (prepended && prevScrollHeightRef.current !== null) {
+      const heightDelta = container.scrollHeight - prevScrollHeightRef.current;
+      container.scrollTop += heightDelta;
+    }
+
+    prevDisplayMessagesRef.current = currentMessages;
+    prevScrollHeightRef.current = container.scrollHeight;
+  }, [displayMessages]);
+
+  useEffect(() => {
+    scrollToBottom('auto');
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (streamingContent) {
+      scrollToBottom('smooth');
+      return;
+    }
+
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    if (lastChangeTypeRef.current === 'prepend') {
+      return;
+    }
+
+    const isNearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+
+    if (lastChangeTypeRef.current === 'append' || isNearBottom) {
+      scrollToBottom('smooth');
+    }
+  }, [displayMessages, streamingContent, selectedSessionId]);
+
+  const handleSubmit = () => {
+    const content = draft.trim();
+    if (!content || sending) return;
+    setDraft('');
+    onSend(content);
+  };
+
+  const handleCopyCode = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const isRunning = runtimeStatus === 'running';
 
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative">

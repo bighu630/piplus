@@ -5,6 +5,7 @@ import type { RoleManagerDb } from '../role-manager/service';
 import { sessions } from '@piplus/db/schema';
 import { eq } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
+import { startSessionRun } from '../session/runtime';
 
 function labelForRole(key: string) {
   const map: Record<string, string> = {
@@ -99,14 +100,17 @@ export async function invokeRoleManagerTool(
       constraints: Array.isArray(args.constraints) ? args.constraints.map(String) : [],
     });
 
+
     // 后台异步启动子 session
     const kickOffMsg = `请开始执行你的任务。目标：${String(args.objective ?? '')}。范围：${args.scope ? String(args.scope) : '无限制'}。具体任务：${args.task ? String(args.task) : String(args.objective ?? '')}`;
     console.log('[role-manager-tools] kickoff start', { sessionId: result.sessionId, locatorFile: result.locator.sessionFile, kickOffMsg });
-    ctx.piClient.restoreRuntime(result.sessionId, result.locator)
-      .then(() => {
-        console.log('[role-manager-tools] kickoff runtime restored, sending message...');
-        return ctx.piClient.sendMessage(result.sessionId, kickOffMsg);
-      })
+    void startSessionRun({
+      db: ctx.db,
+      piClient: ctx.piClient,
+      sessionId: result.sessionId,
+      userId: ctx.userId,
+      content: kickOffMsg,
+    })
       .then((run) => {
         console.log('[role-manager-tools] kickoff message sent', { runId: run.runId });
       })
