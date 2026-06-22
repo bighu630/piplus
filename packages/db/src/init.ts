@@ -21,6 +21,15 @@ function ensureSessionLocatorColumn(sqlite: Database) {
   }
 }
 
+function ensureSessionModelColumns(sqlite: Database) {
+  const columns = sqlite.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>;
+  for (const col of ['current_model_provider', 'current_model_id']) {
+    if (!columns.some((c) => c.name === col)) {
+      sqlite.exec(`ALTER TABLE sessions ADD COLUMN ${col} TEXT`);
+    }
+  }
+}
+
 function ensureProjectPathColumns(sqlite: Database) {
   const columns = sqlite.prepare("SELECT name FROM pragma_table_info('projects')").all() as Array<{ name: string }>;
   for (const col of ['project_path', 'source_type', 'source_url']) {
@@ -115,6 +124,7 @@ export function createSeedDb(path: string) {
   }
 
   ensureSessionLocatorColumn(sqlite);
+  ensureSessionModelColumns(sqlite);
   ensureProjectPathColumns(sqlite);
   ensureBuiltinRows(sqlite);
   sqlite.close();

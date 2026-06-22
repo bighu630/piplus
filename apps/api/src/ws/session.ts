@@ -13,14 +13,8 @@ type AttachedSocket = {
 const sockets = new Set<AttachedSocket>();
 const contexts = new WeakMap<AttachedSocket, ConnectionContext>();
 
-function shouldDeliver(message: ServerMessage, context?: ConnectionContext) {
-  if (message.kind === 'chat_stream') {
-    if (context?.current_tab !== 'chat') return false;
-    if (!context?.session_id) return false;
-    if (message.scope.session_id !== context.session_id) return false;
-    return true;
-  }
-
+function shouldDeliver(_message: ServerMessage, _context?: ConnectionContext) {
+  // 所有消息广播到所有已连接 socket，由前端自行按 session_id / tab 过滤
   return true;
 }
 

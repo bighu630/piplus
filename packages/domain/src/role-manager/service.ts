@@ -107,6 +107,8 @@ async function insertSession(db: RoleManagerDb, input: {
   userSuppliedPrompt: string;
   parentSuppliedPrompt: string;
   compiledPrompt: string;
+  currentModelProvider?: string | null;
+  currentModelId?: string | null;
 }) {
   const timestamp = now();
   await db.insert(sessions).values({
@@ -123,6 +125,8 @@ async function insertSession(db: RoleManagerDb, input: {
     titleSource: 'default',
     status: 'active',
     runtimeStatus: 'idle',
+    currentModelProvider: input.currentModelProvider ?? null,
+    currentModelId: input.currentModelId ?? null,
     lastActivityAt: timestamp,
     lastRunAt: null,
     lastStopAt: null,
@@ -206,6 +210,8 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         userSuppliedPrompt: '',
         parentSuppliedPrompt: '',
         compiledPrompt,
+        currentModelProvider: piSession.model?.provider ?? null,
+        currentModelId: piSession.model?.id ?? null,
       });
 
       await touchProject(db, input.projectId);
@@ -232,6 +238,9 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         await piClient.setSessionModel(piSessionId, piSession.locator, input.inheritModel, cwd);
       }
 
+      // 读取 setSessionModel 更新后的模型（已在 registry 中缓存），或用 createSession 的默认模型
+      const currentModel = await piClient.getCurrentModel(piSessionId);
+
       await insertSession(db, {
         id: sessionId,
         projectId: input.projectId,
@@ -247,6 +256,8 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         userSuppliedPrompt: '',
         parentSuppliedPrompt: '',
         compiledPrompt,
+        currentModelProvider: currentModel?.provider ?? piSession.model?.provider ?? null,
+        currentModelId: currentModel?.id ?? piSession.model?.id ?? null,
       });
 
       await touchProject(db, input.projectId);
@@ -293,6 +304,8 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         userSuppliedPrompt: '',
         parentSuppliedPrompt: '',
         compiledPrompt,
+        currentModelProvider: piSession.model?.provider ?? null,
+        currentModelId: piSession.model?.id ?? null,
       });
 
       await touchProject(db, input.projectId);

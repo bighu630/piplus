@@ -100,10 +100,13 @@ export default function App() {
   const [createPath, setCreatePath] = useState('');
   const [createRepoUrl, setCreateRepoUrl] = useState('');
 
-  // Streaming state
+  // Stream state
   const [streamNote, setStreamNote] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
+
+  // WS connection status
+  const [wsConnected, setWsConnected] = useState(false);
 
   // Theme
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -131,7 +134,9 @@ export default function App() {
   const gitDiffQuery = useSessionGitDiff(activeTab === 'diff' ? selectedSessionId : null);
 
   const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null);
-  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages) ?? [];
+  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => {
+    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+  }) ?? [];
   const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
   const loadingMoreMessages = messagesQuery.isFetchingNextPage;
 
@@ -249,6 +254,7 @@ export default function App() {
         }
       },
       onOpen() {
+        setWsConnected(true);
         socket.hello();
         socket.setContext({
           project_id: selectedProjectIdRef.current ?? undefined,
@@ -256,6 +262,9 @@ export default function App() {
           current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : 'chat',
         });
         socket.ping();
+      },
+      onClose() {
+        setWsConnected(false);
       },
     });
 
@@ -439,39 +448,6 @@ export default function App() {
       <div className="flex-1 flex flex-col h-full bg-white dark:bg-slate-900 relative">
         {/* Top header bar */}
         <header className="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
-          <div className="flex space-x-1">
-            <button
-              onClick={() => setActiveTab('chat')}
-              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
-                activeTab === 'chat'
-                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-              }`}
-            >
-              Chat
-            </button>
-            <button
-              onClick={() => setActiveTab('info')}
-              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
-                activeTab === 'info'
-                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-              }`}
-            >
-              Session Info
-            </button>
-            <button
-              onClick={() => setActiveTab('diff')}
-              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
-                activeTab === 'diff'
-                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-              }`}
-            >
-              Git Diff
-            </button>
-          </div>
-
           {sessionInfo && (
             <div className="flex items-center space-x-3 py-1">
               <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">
@@ -504,7 +480,7 @@ export default function App() {
                   >
                     {modelsQuery.data.map((m) => (
                       <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                        {m.label}
+                        {m.provider} / {m.label}
                       </option>
                     ))}
                   </select>
@@ -519,6 +495,39 @@ export default function App() {
               )}
             </div>
           )}
+
+          <div className="flex space-x-1">
+            <button
+              onClick={() => setActiveTab('chat')}
+              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
+                activeTab === 'chat'
+                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
+                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+              }`}
+            >
+              Chat
+            </button>
+            <button
+              onClick={() => setActiveTab('info')}
+              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
+                activeTab === 'info'
+                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
+                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+              }`}
+            >
+              Session Info
+            </button>
+            <button
+              onClick={() => setActiveTab('diff')}
+              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
+                activeTab === 'diff'
+                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
+                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+              }`}
+            >
+              Git Diff
+            </button>
+          </div>
         </header>
 
         {/* Tab content */}
@@ -539,6 +548,7 @@ export default function App() {
                   streamNote={streamNote}
                   streamingContent={streamingContent}
                   sessionTitle={sessionInfo?.session.title}
+                  wsConnected={wsConnected}
                 />
               )}
 

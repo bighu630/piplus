@@ -8,6 +8,7 @@ export type ActiveSessionRuntime = {
   locator: PiSessionLocator;
   cwd: string;
   agentSession?: AgentSession;
+  model?: { provider: string; id: string; label: string };
   toolHandler?: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>;
   toolDefs?: PiToolDef[];
   messages: PiMessage[];

@@ -97,7 +97,9 @@ export function registerSessionRoutes(app: Hono) {
         pi_session_locator_json: session.piSessionLocatorJson,
         status: session.status,
         runtime_status: session.runtimeStatus,
-        current_model: await piClient.getCurrentModel(sessionId),
+        current_model: session.currentModelProvider && session.currentModelId
+          ? { provider: session.currentModelProvider, id: session.currentModelId, label: `${session.currentModelProvider}/${session.currentModelId}` }
+          : await piClient.getCurrentModel(sessionId),
       },
       project: project
         ? { id: project.id, name: project.name }
@@ -242,7 +244,11 @@ export function registerSessionRoutes(app: Hono) {
     } as any);
 
     const locator = parseLocator(session.piSessionLocatorJson);
-    await piClient.restoreRuntime(sessionId, locator, project.projectPath);
+    // Restore with persisted model if available (survives server restart).
+    const modelOverride = session.currentModelProvider && session.currentModelId
+      ? { provider: session.currentModelProvider, id: session.currentModelId }
+      : undefined;
+    await piClient.restoreRuntime(sessionId, locator, project.projectPath, modelOverride);
 
     const toolDefs = await buildAllToolDefs(db);
     await piClient.bindToolRuntime(sessionId, toolDefs, async (toolName, args) => {
@@ -328,6 +334,12 @@ export function registerSessionRoutes(app: Hono) {
     const locator = parseLocator(session.piSessionLocatorJson);
     try {
       const model = await piClient.setSessionModel(sessionId, locator, { provider, id }, project.projectPath);
+      // Persist to DB so the model survives server restart.
+      await db.update(sessions).set({
+        currentModelProvider: model.provider,
+        currentModelId: model.id,
+        updatedAt: new Date(),
+      }).where(eq(sessions.id, sessionId));
       return c.json({ session_id: sessionId, model });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'unknown';

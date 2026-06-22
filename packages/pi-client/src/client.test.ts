@@ -10,6 +10,58 @@ describe('pi client gateway', () => {
     expect(result.locator.sessionFile).toContain('/.pi/agent/sessions/');
   });
 
+  test('getHistory starts from the most recent page and paginates backward', async () => {
+    const manager = SessionManager.create(process.cwd());
+    for (const [role, text] of [
+      ['user', 'u1'],
+      ['assistant', 'a1'],
+      ['user', 'u2'],
+      ['assistant', 'a2'],
+      ['user', 'u3'],
+      ['assistant', 'a3'],
+    ] as const) {
+      if (role === 'user') {
+        manager.appendMessage({
+          role,
+          content: text,
+          timestamp: Date.now(),
+        });
+      } else {
+        manager.appendMessage({
+          role,
+          content: [{ type: 'text', text }],
+          api: 'test',
+          provider: 'test',
+          model: 'test',
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: 'stop',
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    const locator = {
+      piSessionId: manager.getSessionId(),
+      sessionFile: manager.getSessionFile()!,
+    };
+
+    const client = createPiClient();
+    const latestPage = await client.getHistory('persisted_history', locator, null, 2);
+    expect(latestPage.messages.map((message) => message.text)).toEqual(['u3', 'a3']);
+    expect(latestPage.nextCursor).toBe('4');
+
+    const olderPage = await client.getHistory('persisted_history', locator, latestPage.nextCursor, 2);
+    expect(olderPage.messages.map((message) => message.text)).toEqual(['u2', 'a2']);
+    expect(olderPage.nextCursor).toBe('2');
+  });
+
   test('restoreRuntime rejects invalid locators', async () => {
     const client = createPiClient();
     await expect(
@@ -124,4 +176,3 @@ describe('pi client gateway', () => {
     expect(result.id).toBe(target.id);
   });
 });
-

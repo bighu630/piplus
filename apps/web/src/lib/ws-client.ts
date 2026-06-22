@@ -6,9 +6,11 @@ const RECONNECT_DELAY = 2000;
 export function createWorkspaceSocket({
   onMessage,
   onOpen,
+  onClose,
 }: {
   onMessage: (event: MessageEvent) => void;
   onOpen?: () => void;
+  onClose?: () => void;
 }) {
   let ws: WebSocket;
   let closed = false;
@@ -25,6 +27,7 @@ export function createWorkspaceSocket({
     });
 
     ws.addEventListener('close', () => {
+      onClose?.();
       if (!closed) {
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
       }

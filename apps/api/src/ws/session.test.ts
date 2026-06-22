@@ -12,28 +12,26 @@ function createMockSocket() {
 }
 
 describe('ws session hub', () => {
-  test('sends chat streams only when the tab is chat', () => {
+  test('broadcasts chat streams regardless of client tab context', () => {
     const hub = registerSocket();
     const socket = createMockSocket();
     hub.attach(socket);
     hub.setContext(socket, { session_id: 'session_1', current_tab: 'session_info' });
 
-    hub.sendToSession('session_1', createChatStreamFrame('session_1', 'delta', 'stream_1', 'msg_1', 'hello'));
-    expect(socket.sent).toHaveLength(0);
-
-    hub.setContext(socket, { session_id: 'session_1', current_tab: 'chat' });
+    // chat_stream 现在无条件广播，由前端自行按 session_id / tab 过滤
     hub.sendToSession('session_1', createChatStreamFrame('session_1', 'delta', 'stream_1', 'msg_1', 'hello'));
     expect(socket.sent).toHaveLength(1);
   });
 
-  test('does not send chat streams to a different active session', () => {
+  test('broadcasts chat streams to all connected sockets regardless of session context', () => {
     const hub = registerSocket();
     const socket = createMockSocket();
     hub.attach(socket);
     hub.setContext(socket, { session_id: 'session_2', current_tab: 'chat' });
 
+    // chat_stream 现在无条件广播，由前端自行按 session_id 过滤
     hub.sendToSession('session_1', createChatStreamFrame('session_1', 'delta', 'stream_1', 'msg_1', 'hello'));
-    expect(socket.sent).toHaveLength(0);
+    expect(socket.sent).toHaveLength(1);
   });
 
   test('broadcasts event messages even when no context is set', () => {

@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test';
 import { createSeedDb } from '@piplus/db/init';
+import { describe, expect, test } from 'bun:test';
 import { createApp } from '../app';
 
 function makeDbPath() {

@@ -110,6 +110,30 @@ export default function TabChat({
             blockquote({ children, ...props }) {
               return <blockquote className="border-l-4 border-slate-350 dark:border-slate-700 bg-slate-50 dark:bg-slate-804/50 pl-3.5 py-1.5 my-3 italic text-slate-600 dark:text-slate-400 rounded-r-lg" {...props}>{children}</blockquote>;
             },
+            table({ children, ...props }) {
+              return (
+                <div className="overflow-x-auto my-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <table className="min-w-full text-xs border-collapse" {...props}>
+                    {children}
+                  </table>
+                </div>
+              );
+            },
+            thead({ children, ...props }) {
+              return <thead className="bg-slate-50 dark:bg-slate-800" {...props}>{children}</thead>;
+            },
+            tbody({ children, ...props }) {
+              return <tbody className="divide-y divide-slate-200 dark:divide-slate-700" {...props}>{children}</tbody>;
+            },
+            tr({ children, ...props }) {
+              return <tr className="even:bg-slate-50/50 dark:even:bg-slate-800/50" {...props}>{children}</tr>;
+            },
+            th({ children, ...props }) {
+              return <th className="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[12px]" {...props}>{children}</th>;
+            },
+            td({ children, ...props }) {
+              return <td className="px-3 py-2 text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 text-[12px]" {...props}>{children}</td>;
+            },
             a({ children, ...props }) {
               return <a className="text-blue-600 hover:underline hover:text-blue-700 font-medium cursor-pointer" {...props}>{children}</a>;
             },

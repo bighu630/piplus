@@ -69,6 +69,8 @@ export const sessions = sqliteTable('sessions', {
   userSuppliedPrompt: text('user_supplied_prompt').notNull().default(''),
   parentSuppliedPrompt: text('parent_supplied_prompt').notNull().default(''),
   compiledPrompt: text('compiled_prompt').notNull().default(''),
+  currentModelProvider: text('current_model_provider'),
+  currentModelId: text('current_model_id'),
 });
 
 export const messages = sqliteTable('messages', {

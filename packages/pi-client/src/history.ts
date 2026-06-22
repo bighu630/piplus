@@ -12,10 +12,11 @@ type SessionMessageEntry = {
   timestamp?: string;
 };
 
-function decodeCursor(cursor: string | null | undefined) {
-  if (!cursor) return 0;
+function decodeCursor(cursor: string | null | undefined, total: number) {
+  if (!cursor) return total;
   const value = Number.parseInt(cursor, 10);
-  return Number.isFinite(value) && value >= 0 ? value : 0;
+  if (!Number.isFinite(value) || value <= 0) return total;
+  return Math.min(value, total);
 }
 
 function toText(content: string | Array<{ type?: string; text?: string }> | undefined) {
@@ -40,9 +41,10 @@ export function readHistory(locator: PiSessionLocator, cursor?: string | null, l
       createdAt: entry.timestamp ?? null,
     }));
 
-  const offset = decodeCursor(cursor);
-  const page = messages.slice(offset, offset + limit);
-  const nextCursor = offset + page.length < messages.length ? String(offset + page.length) : null;
+  const end = decodeCursor(cursor, messages.length);
+  const start = Math.max(end - limit, 0);
+  const page = messages.slice(start, end);
+  const nextCursor = start > 0 ? String(start) : null;
 
   return {
     messages: page,

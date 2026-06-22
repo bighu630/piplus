@@ -106,7 +106,7 @@ export default function TabSessionInfo({ sessionInfo, isLoading }: TabSessionInf
               <Cpu className="w-3.5 h-3.5" />
             </div>
             <div className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate">
-              {s.current_model?.label ?? '未设置'}
+              {s.current_model ? `${s.current_model.provider} / ${s.current_model.label}` : '未设置'}
             </div>
           </div>
 

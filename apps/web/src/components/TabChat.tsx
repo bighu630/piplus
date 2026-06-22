@@ -28,6 +28,7 @@ interface TabChatProps {
   streamNote: string;
   streamingContent: string;
   sessionTitle?: string;
+  wsConnected?: boolean;
 }
 
 function sanitizeStreamingContent(content: string): string {
@@ -60,6 +61,7 @@ export default function TabChat({
   streamNote,
   streamingContent,
   sessionTitle,
+  wsConnected,
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -171,7 +173,7 @@ export default function TabChat({
                                     </button>
                                   </div>
                                   <pre className="p-4 overflow-x-auto text-[11.5px] leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950">
-                                    <code>{codeText}</code>
+                                    <code className="font-mono">{codeText}</code>
                                   </pre>
                                 </div>
                               );
@@ -194,6 +196,30 @@ export default function TabChat({
                           },
                           blockquote({ children, ...props }) {
                             return <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-1.5 my-3 italic text-slate-600 dark:text-slate-400 rounded-r-lg" {...props}>{children}</blockquote>;
+                          },
+                          table({ children, ...props }) {
+                            return (
+                              <div className="overflow-x-auto my-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                                <table className="min-w-full text-xs border-collapse" {...props}>
+                                  {children}
+                                </table>
+                              </div>
+                            );
+                          },
+                          thead({ children, ...props }) {
+                            return <thead className="bg-slate-50 dark:bg-slate-800" {...props}>{children}</thead>;
+                          },
+                          tbody({ children, ...props }) {
+                            return <tbody className="divide-y divide-slate-200 dark:divide-slate-700" {...props}>{children}</tbody>;
+                          },
+                          tr({ children, ...props }) {
+                            return <tr className="even:bg-slate-50/50 dark:even:bg-slate-800/50" {...props}>{children}</tr>;
+                          },
+                          th({ children, ...props }) {
+                            return <th className="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[12px]" {...props}>{children}</th>;
+                          },
+                          td({ children, ...props }) {
+                            return <td className="px-3 py-2 text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 text-[12px]" {...props}>{children}</td>;
                           },
                         }}
                       >
@@ -219,6 +245,90 @@ export default function TabChat({
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     rehypePlugins={[[rehypeHighlight, { detect: false }]]}
+                    components={{
+                      pre({ children }) {
+                        return <pre className="code-block">{children}</pre>;
+                      },
+                      code({ className, children, ...codeProps }: any) {
+                        const match = /language-(\w+)/.exec(className || '');
+                        const codeText = String(children).replace(/\n$/, '');
+                        const isInline = !className;
+
+                        if (!isInline) {
+                          const language = match ? match[1] : 'code';
+                          const blockId = Math.random().toString(36).substr(2, 9);
+                          return (
+                            <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 relative font-mono text-xs shadow-3xs max-w-full">
+                              <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
+                                <span className="text-[10px] font-mono font-bold uppercase tracking-wider">{language}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyCode(codeText, blockId)}
+                                  className="flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 px-2.5 py-1 rounded text-[11px] text-slate-600 dark:text-slate-300 font-sans cursor-pointer transition-colors"
+                                >
+                                  {copiedId === blockId ? (
+                                    <>
+                                      <Check className="w-3 h-3 text-green-600" />
+                                      <span className="text-green-600 font-medium">Copied</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Copy className="w-3 h-3" />
+                                      <span>Copy</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
+                              <pre className="p-4 overflow-x-auto text-[11.5px] leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950">
+                                <code className="font-mono">{codeText}</code>
+                              </pre>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold" {...codeProps}>
+                            {children}
+                          </code>
+                        );
+                      },
+                      p({ children, ...pProps }) {
+                        return <p className="text-slate-700 dark:text-slate-300 leading-relaxed my-2 text-[13.5px]" {...pProps}>{children}</p>;
+                      },
+                      ul({ children, ...ulProps }) {
+                        return <ul className="list-disc pl-5 my-2 text-xs text-slate-700 dark:text-slate-300 space-y-1" {...ulProps}>{children}</ul>;
+                      },
+                      ol({ children, ...olProps }) {
+                        return <ol className="list-decimal pl-5 my-2 text-xs text-slate-700 dark:text-slate-300 space-y-1" {...olProps}>{children}</ol>;
+                      },
+                      blockquote({ children, ...bqProps }) {
+                        return <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-1.5 my-3 italic text-slate-600 dark:text-slate-400 rounded-r-lg" {...bqProps}>{children}</blockquote>;
+                      },
+                      table({ children, ...tableProps }) {
+                        return (
+                          <div className="overflow-x-auto my-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                            <table className="min-w-full text-xs border-collapse" {...tableProps}>
+                              {children}
+                            </table>
+                          </div>
+                        );
+                      },
+                      thead({ children, ...theadProps }) {
+                        return <thead className="bg-slate-50 dark:bg-slate-800" {...theadProps}>{children}</thead>;
+                      },
+                      tbody({ children, ...tbodyProps }) {
+                        return <tbody className="divide-y divide-slate-200 dark:divide-slate-700" {...tbodyProps}>{children}</tbody>;
+                      },
+                      tr({ children, ...trProps }) {
+                        return <tr className="even:bg-slate-50/50 dark:even:bg-slate-800/50" {...trProps}>{children}</tr>;
+                      },
+                      th({ children, ...thProps }) {
+                        return <th className="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[12px]" {...thProps}>{children}</th>;
+                      },
+                      td({ children, ...tdProps }) {
+                        return <td className="px-3 py-2 text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 text-[12px]" {...tdProps}>{children}</td>;
+                      },
+                    }}
                   >
                     {sanitizeStreamingContent(streamingContent)}
                   </ReactMarkdown>
@@ -251,7 +361,7 @@ export default function TabChat({
       </div>
 
       {/* Suggestions */}
-      {allMessages.length > 0 && !isRunning && (
+      {false && allMessages.length > 0 && !isRunning && (
         <div className="px-6 py-2 flex flex-wrap gap-2 select-none shrink-0 bg-white/40 dark:bg-slate-900/60 border-t border-slate-100 dark:border-slate-800/60">
           <button
             onClick={() => onSend('生成当前会话的 Git Diff')}
@@ -271,9 +381,6 @@ export default function TabChat({
       {/* Input area */}
       <div className="shrink-0 px-4 py-3 md:px-5 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
         <div className="mx-auto max-w-[900px]">
-          <div className="flex items-center justify-end gap-3 px-1 pb-2">
-            <span className="text-xs text-slate-400 dark:text-slate-500">Ctrl / Cmd + Enter 发送</span>
-          </div>
           <div className="flex flex-col gap-2.5">
             <textarea
               className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition"
@@ -288,10 +395,20 @@ export default function TabChat({
               placeholder="向当前会话发送消息…"
               value={draft}
             />
-            <div className="flex items-center justify-end gap-2.5 px-1">
+            <div className="flex items-center gap-2.5 px-1">
+              {/* WS connection indicator */}
+              <div className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500' : 'bg-red-400'}`} />
+                <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                  {wsConnected ? 'WS' : 'WS 离线'}
+                </span>
+              </div>
+              {!isRunning && (
+                <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">Ctrl / Cmd + Enter 发送</span>
+              )}
               {isRunning && (
                 <button
-                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-xl text-red-600 dark:text-red-400 font-semibold hover:bg-red-100 dark:hover:bg-red-900/50 text-xs transition cursor-pointer"
+                  className="flex items-center space-x-1.5 px-3 py-1.5 ml-auto bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-xl text-red-600 dark:text-red-400 font-semibold hover:bg-red-100 dark:hover:bg-red-900/50 text-xs transition cursor-pointer"
                   onClick={onStop}
                 >
                   <OctagonX className="w-3.5 h-3.5" />

@@ -55,10 +55,11 @@ function mapAgentSessionEvent(
   return null;
 }
 
-function decodeCursor(cursor: string | null | undefined) {
-  if (!cursor) return 0;
+function decodeCursor(cursor: string | null | undefined, total: number) {
+  if (!cursor) return total;
   const value = Number.parseInt(cursor, 10);
-  return Number.isFinite(value) && value >= 0 ? value : 0;
+  if (!Number.isFinite(value) || value <= 0) return total;
+  return Math.min(value, total);
 }
 
 export function createPiClient(): PiClient {
@@ -91,10 +92,15 @@ export function createPiClient(): PiClient {
       const active = runtimeRegistry.ensure(session.sessionId, locator, cwd);
       active.prompt = input.prompt;
       active.title = input.title ?? null;
+      active.model = {
+        provider: model.provider,
+        id: model.id,
+        label: model.name ?? `${model.provider}/${model.id}`,
+      };
       session.dispose();
-      return { sessionId: session.sessionId, locator };
+      return { sessionId: session.sessionId, locator, model: active.model };
     },
-    async restoreRuntime(sessionId, locator, cwd) {
+    async restoreRuntime(sessionId, locator, cwd, modelOverride) {
       const runtimeCwd = cwd ?? runtimeRegistry.get(sessionId)?.cwd ?? process.cwd();
       const sessionDir = dirname(locator.sessionFile);
       const expectedSessionDir = SessionManager.create(runtimeCwd).getSessionDir();
@@ -103,14 +109,51 @@ export function createPiClient(): PiClient {
         throw new Error('pi_session_runtime_unavailable');
       }
       try {
-        const model = await ensureModel();
+        // 读取 session 文件中持久化的模型（由 agentSession.setModel() 写入）
+        const sessionManager = SessionManager.open(locator.sessionFile);
+        const sessionContext = sessionManager.buildSessionContext();
+
+        let model: any;
+        // 优先级：session 文件中的模型 > modelOverride > registry 缓存 > 默认
+        if (sessionContext.model) {
+          const available = await modelRegistry.getAvailable();
+          model = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+          if (!model) {
+            model = modelOverride ?? runtimeRegistry.get(sessionId)?.model ?? await ensureModel();
+          }
+        } else if (modelOverride) {
+          const available = await modelRegistry.getAvailable();
+          model = available.find((m) => m.provider === modelOverride.provider && m.id === modelOverride.id);
+          if (!model) {
+            model = runtimeRegistry.get(sessionId)?.model ?? await ensureModel();
+          }
+        } else {
+          const existingModel = runtimeRegistry.get(sessionId)?.model ?? runtimeRegistry.get(sessionId)?.agentSession?.model;
+          model = existingModel ?? await ensureModel();
+        }
+
         const { session: agentSession } = await createAgentSession({
           cwd: runtimeCwd,
-          sessionManager: SessionManager.open(locator.sessionFile),
+          sessionManager,
           model,
         });
         const session = runtimeRegistry.ensure(sessionId, locator, runtimeCwd);
         session.agentSession = agentSession;
+        // If modelOverride was provided (from DB), cache it in the registry.
+        // Otherwise ensure session.model reflects what was actually used.
+        if (modelOverride) {
+          session.model = {
+            provider: modelOverride.provider,
+            id: modelOverride.id,
+            label: modelOverride.label ?? `${modelOverride.provider}/${modelOverride.id}`,
+          };
+        } else if (!session.model) {
+          session.model = {
+            provider: model.provider,
+            id: model.id,
+            label: model.name ?? `${model.provider}/${model.id}`,
+          };
+        }
       } catch {
         throw new Error('pi_session_runtime_unavailable');
       }
@@ -137,9 +180,10 @@ export function createPiClient(): PiClient {
     async getHistory(sessionId, locator, cursor, limit = 50): Promise<PiHistoryPage> {
       const session = runtimeRegistry.get(sessionId);
       if (session?.messages.length) {
-        const offset = decodeCursor(cursor);
-        const page = session.messages.slice(offset, offset + limit);
-        const nextCursor = offset + page.length < session.messages.length ? String(offset + page.length) : null;
+        const end = decodeCursor(cursor, session.messages.length);
+        const start = Math.max(end - limit, 0);
+        const page = session.messages.slice(start, end);
+        const nextCursor = start > 0 ? String(start) : null;
         return {
           messages: page.map((message) => ({
             id: message.id,
@@ -221,35 +265,33 @@ export function createPiClient(): PiClient {
 
     async getCurrentModel(sessionId) {
       const session = runtimeRegistry.get(sessionId);
-      const model = session?.agentSession?.model;
-      if (!model) return null;
-      return {
-        provider: model.provider,
-        id: model.id,
-        label: model.name ?? `${model.provider}/${model.id}`,
-      };
+      // 优先返回 registry 中缓存的模型（用户手动设置的），agentSession.model 可能被 bindToolRuntime 覆盖
+      return session?.model ?? null;
     },
 
     async setSessionModel(sessionId, locator, modelRef, cwd) {
-      await this.restoreRuntime(sessionId, locator, cwd);
-      const session = runtimeRegistry.get(sessionId);
-      if (!session?.agentSession) {
-        throw new Error('pi_session_runtime_unavailable');
-      }
-      if (session.agentSession.isStreaming) {
-        throw new Error('pi_session_busy');
-      }
+      const session = runtimeRegistry.ensure(sessionId, locator, cwd);
 
       const available = await modelRegistry.getAvailable();
       const target = available.find((m) => m.provider === modelRef.provider && m.id === modelRef.id);
       if (!target) throw new Error('pi_model_not_found');
 
-      await session.agentSession.setModel(target);
-      return {
+      // 保存到 runtime registry，后续 bindToolRuntime / sendMessage 会读取
+      session.model = {
         provider: target.provider,
         id: target.id,
         label: target.name ?? `${target.provider}/${target.id}`,
       };
+
+      // 如果 agentSession 已存在，也立即切换
+      if (session.agentSession) {
+        if (session.agentSession.isStreaming) {
+          throw new Error('pi_session_busy');
+        }
+        await session.agentSession.setModel(target);
+      }
+
+      return session.model;
     },
 
     async bindToolRuntime(sessionId, tools, handler, cwd) {
@@ -257,6 +299,8 @@ export function createPiClient(): PiClient {
       session.toolDefs = tools;
       session.toolHandler = handler;
 
+      // 保存旧 agentSession 的模型，确保 rebuild 后不丢失用户设置
+      const existingModel = session.model ?? session.agentSession?.model;
       if (session.agentSession) {
         session.agentSession.dispose();
       }
@@ -286,14 +330,39 @@ export function createPiClient(): PiClient {
       });
       await loader.reload();
 
-      const model = await ensureModel();
+      // 读取 session 文件中上次持久化的模型（由 agentSession.setModel() 写入）
+      const sessionManager = SessionManager.open(session.locator.sessionFile);
+      const sessionContext = sessionManager.buildSessionContext();
+
+      // 优先使用 session 文件中持久化的模型，其次用 registry 缓存，最后用默认
+      let model: any;
+      if (sessionContext.model) {
+        const available = await modelRegistry.getAvailable();
+        model = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+        if (!model) {
+          // session 文件中记录的模型不在可用列表中，用默认
+          model = existingModel ?? await ensureModel();
+        }
+      } else {
+        model = existingModel ?? await ensureModel();
+      }
+
       const { session: agentSession } = await createAgentSession({
         cwd: session.cwd,
         resourceLoader: loader,
-        sessionManager: SessionManager.open(session.locator.sessionFile),
+        sessionManager,
         model,
       });
       session.agentSession = agentSession;
+
+      // 确保 registry 中的 model 缓存与实际创建的一致
+      if (!session.model) {
+        session.model = {
+          provider: model.provider,
+          id: model.id,
+          label: model.name ?? `${model.provider}/${model.id}`,
+        };
+      }
     },
 
     async registerTools(_tools: PiToolDef[]) {

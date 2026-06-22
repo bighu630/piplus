@@ -141,15 +141,16 @@ export default function Sidebar({
             <FileText className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}`} />
 
             {!isSidebarCollapsed && (
-              <span className="text-[11.5px] truncate font-sans tracking-tight">
+              <span
+                className="text-[11.5px] truncate font-sans tracking-tight"
+                title={session.title}
+              >
                 {session.title}
               </span>
             )}
           </div>
 
-          {isActive && !isSidebarCollapsed && (
-            <div className="w-1.5 h-1.5 bg-blue-500 rounded-full mr-1.5 shrink-0" />
-          )}
+
 
           {!isSidebarCollapsed && (
             <div className="flex items-center space-x-1.5 shrink-0 select-none">
@@ -298,52 +299,57 @@ export default function Sidebar({
                   </div>
 
                   {!isSidebarCollapsed && (
-                    <div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1 pl-1">
-                      {onArchiveProject && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onArchiveProject(project.id);
-                          }}
-                          className="p-0.5 hover:bg-slate-200 rounded text-slate-500 cursor-pointer"
-                          title="归档项目"
-                        >
-                          <Archive className="w-3 h-3" />
-                        </button>
-                      )}
-                      {onDeleteProject && projects.length > 1 && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (confirm(`确定删除项目 "${project.name}" 及其所有会话？`)) {
-                              onDeleteProject(project.id);
-                            }
-                          }}
-                          className="p-0.5 hover:bg-red-50 hover:text-red-600 rounded text-slate-400 cursor-pointer"
-                          title="删除项目"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                    <div className="flex items-center space-x-1 pl-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectProject(project.id);
+                          onCreateSession();
+                        }}
+                        className="p-0.5 hover:bg-blue-50 hover:text-blue-600 rounded text-slate-400 cursor-pointer transition-colors"
+                        title="新建空白 Session"
+                        disabled={creatingSession}
+                        type="button"
+                      >
+                        {creatingSession ? (
+                          <span className="block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Plus className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      <div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1">
+                        {onArchiveProject && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onArchiveProject(project.id);
+                            }}
+                            className="p-0.5 hover:bg-slate-200 rounded text-slate-500 cursor-pointer"
+                            title="归档项目"
+                          >
+                            <Archive className="w-3 h-3" />
+                          </button>
+                        )}
+                        {onDeleteProject && projects.length > 1 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm(`确定删除项目 "${project.name}" 及其所有会话？`)) {
+                                onDeleteProject(project.id);
+                              }
+                            }}
+                            className="p-0.5 hover:bg-red-50 hover:text-red-600 rounded text-slate-400 cursor-pointer"
+                            title="删除项目"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
 
-                {/* New session button inside project */}
-                {!isSidebarCollapsed && !isCollapsed && (
-                  <button
-                    className="ml-5 mb-1 flex w-[calc(100%-20px)] items-center gap-1.5 py-1 text-xs text-slate-400 dark:text-slate-500 transition-colors hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer"
-                    disabled={creatingSession}
-                    onClick={() => {
-                      onSelectProject(project.id);
-                      onCreateSession();
-                    }}
-                    type="button"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>{creatingSession ? '创建中…' : '新建空白 Session'}</span>
-                  </button>
-                )}
+
 
                 {/* Sessions */}
                 {!isCollapsed && (

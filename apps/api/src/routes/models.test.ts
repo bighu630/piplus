@@ -26,6 +26,10 @@ describe('model routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Array.isArray(body.models)).toBe(true);
-    expect(body.models.length).toBeGreaterThan(0);
+    for (const model of body.models) {
+      expect(model).toHaveProperty('provider');
+      expect(model).toHaveProperty('id');
+      expect(model).toHaveProperty('label');
+    }
   });
 });
