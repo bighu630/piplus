@@ -96,12 +96,7 @@ export default function Sidebar({
   creatingSession,
 }: SidebarProps) {
   const [sidebarSearch, setSidebarSearch] = useState('');
-  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [collapsedSessions, setCollapsedSessions] = useState<Record<string, boolean>>({});
-
-  const toggleProject = (id: string) => {
-    setCollapsedProjects((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
 
   const toggleSession = (id: string) => {
     setCollapsedSessions((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -136,30 +131,33 @@ export default function Sidebar({
       <div key={session.id} className="w-full flex flex-col">
         <div
           onClick={() => onSelectSession(projectId, session.id)}
-          style={{ paddingLeft: isSidebarCollapsed ? '8px' : `${depth * 14 + 8}px` }}
+          style={{ paddingLeft: isSidebarCollapsed ? '0px' : `${Math.max(0, depth * 14 + 8 - 20)}px` }}
           className={`group flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition ${
             isActive
               ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold shadow-2xs'
               : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/40 text-slate-600 dark:text-slate-300'
           } ${isArchived ? 'opacity-50' : ''}`}
         >
-          <div className="flex items-center space-x-1.5 flex-1 min-w-0">
-            {!isSidebarCollapsed && hasChildren ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleSession(session.id);
-                }}
-                className="p-0.5 hover:bg-slate-300/60 rounded text-slate-500 shrink-0"
-              >
-                <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isCollapsed ? '-rotate-90' : ''}`} />
-              </button>
-            ) : !isSidebarCollapsed ? (
-              <div className="w-4 h-4 shrink-0" />
-            ) : null}
-
-            {React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}` })}
+          <div className="flex items-center flex-1 min-w-0">
+            {/* 固定宽度的 chevron 位，有按钮显示按钮，无按钮留空 — 保证图标文字对齐 */}
+            {!isSidebarCollapsed && (
+              <div className="w-4 shrink-0 flex items-center justify-start">
+                {hasChildren && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSession(session.id);
+                    }}
+                    className="p-0.5 hover:bg-slate-300/60 rounded text-slate-500"
+                  >
+                    <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isCollapsed ? '-rotate-90' : ''}`} />
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="flex items-center space-x-1.5 min-w-0">
+              {!isSidebarCollapsed && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}` })}
 
             {!isSidebarCollapsed && (
               <span
@@ -169,9 +167,8 @@ export default function Sidebar({
                 {session.title}
               </span>
             )}
+            </div>
           </div>
-
-
 
           {!isSidebarCollapsed && (
             <div className="flex items-center gap-1 shrink-0 select-none">
@@ -279,7 +276,6 @@ export default function Sidebar({
           <div className="text-xs text-slate-400 text-center py-4">暂无项目</div>
         ) : (
           filteredProjects.map((project) => {
-            const isCollapsed = collapsedProjects[project.id];
             const matchingSessions = project.sessions.filter(
               (s) => showArchived || !s.archived_at,
             );
@@ -291,23 +287,10 @@ export default function Sidebar({
                     isSidebarCollapsed ? 'justify-center' : ''
                   }`}
                 >
-                  <div
-                    className="flex items-center space-x-1.5 flex-1 min-w-0"
-                    onClick={() => !isSidebarCollapsed && toggleProject(project.id)}
-                  >
-                    {isCollapsed ? (
-                      <ChevronRight className="w-3.5 h-3.5 shrink-0 text-slate-400 dark:text-slate-500" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5 shrink-0 text-slate-400 dark:text-slate-500" />
-                    )}
-
+                  <div className="flex items-center space-x-1.5 flex-1 min-w-0">
                     {!isSidebarCollapsed ? (
                       <>
-                        {isCollapsed ? (
-                          <Folder className="w-4 h-4 shrink-0 text-slate-400 dark:text-slate-500" />
-                        ) : (
-                          <FolderOpen className="w-4 h-4 shrink-0 text-blue-400/80 dark:text-blue-500/80" />
-                        )}
+                        <FolderOpen className="w-4 h-4 shrink-0 text-blue-400/80 dark:text-blue-500/80" />
                         <span className="text-xs font-semibold truncate text-slate-700 dark:text-slate-200 leading-tight">
                           {project.name}
                         </span>
@@ -373,11 +356,9 @@ export default function Sidebar({
 
 
                 {/* Sessions */}
-                {!isCollapsed && (
-                  <div className={isSidebarCollapsed ? 'space-y-1' : 'space-y-0.5 ml-1'}>
-                    {matchingSessions.map((session) => renderSessionNode(session, project.id, 1))}
-                  </div>
-                )}
+                <div className={isSidebarCollapsed ? 'space-y-1' : 'space-y-0.5'}>
+                  {matchingSessions.map((session) => renderSessionNode(session, project.id, 1))}
+                </div>
               </div>
             );
           })

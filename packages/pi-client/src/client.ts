@@ -190,6 +190,12 @@ export function createPiClient(): PiClient {
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
       if (session.agentSession) {
+        // 首次发消息时，先把角色 prompt 注入
+        if (session.prompt && !session.promptSent) {
+          console.log('[pi-client] sendMessage → injecting role prompt', { sessionId, promptLen: session.prompt.length });
+          await session.agentSession.prompt(session.prompt);
+          session.promptSent = true;
+        }
         console.log('[pi-client] sendMessage → agentSession.prompt', { sessionId, content: content.slice(0, 80) });
         await session.agentSession.prompt(content);
         console.log('[pi-client] sendMessage ← agentSession.prompt done', { sessionId });

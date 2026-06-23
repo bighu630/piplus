@@ -14,6 +14,7 @@ export type ActiveSessionRuntime = {
   messages: PiMessage[];
   stopped: boolean;
   prompt: string;
+  promptSent: boolean;
   title: string | null;
   listeners: Set<SessionListener>;
 };
@@ -42,6 +43,7 @@ export class RuntimeRegistry {
       messages: [],
       stopped: false,
       prompt: '',
+      promptSent: false,
       title: null,
       listeners: new Set(),
     };
