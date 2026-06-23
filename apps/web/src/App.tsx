@@ -543,8 +543,6 @@ export default function App() {
     );
   }
 
-  const modelLabel = sessionInfo?.session.current_model?.label ?? modelsQuery.data?.[0]?.label;
-  const modelDisabled = runtimeStatus === 'running';
   const isPlannerRoot = sessionInfo?.role_template.key === 'planner' && sessionInfo.lineage.depth === 0;
 
   return (
@@ -577,48 +575,6 @@ export default function App() {
               <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">
                 {sessionInfo.session.title}
               </h1>
-
-              {!isPlannerRoot && (
-              <button
-                onClick={handleArchiveSession}
-                className="flex items-center space-x-1 px-3 py-1.5 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 transition cursor-pointer disabled:opacity-50"
-                disabled={archiveSessionMut.isPending}
-              >
-                <Archive className="w-3.5 h-3.5" />
-                <span>{archiveSessionMut.isPending ? '...' : 'Archive'}</span>
-              </button>
-              )}
-
-              {modelsQuery.data && modelsQuery.data.length > 0 && (
-                <div className="relative">
-                  <select
-                    value={
-                      sessionInfo.session.current_model
-                        ? `${sessionInfo.session.current_model.provider}/${sessionInfo.session.current_model.id}`
-                        : ''
-                    }
-                    onChange={(e) => {
-                      const [provider, id] = e.target.value.split('/');
-                      if (provider && id) handleModelSelect(provider, id);
-                    }}
-                    disabled={modelDisabled}
-                    className="appearance-none bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl px-3 py-1.5 pr-8 text-xs font-semibold text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer disabled:opacity-50"
-                  >
-                    {modelsQuery.data.map((m) => (
-                      <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                        {m.provider} / {m.label}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="w-3.5 h-3.5 absolute right-2.5 top-2.5 pointer-events-none text-slate-500" />
-                </div>
-              )}
-
-              {streamNote && (
-                <span className="text-xs text-blue-600 dark:text-blue-400 font-medium">
-                  {streamNote}
-                </span>
-              )}
             </div>
           )}
 
@@ -687,6 +643,12 @@ export default function App() {
                   wsConnected={wsConnected}
                   selectedSessionId={selectedSessionId}
                   sendShortcutMode={sendShortcutMode}
+                  models={modelsQuery.data ?? []}
+                  currentModelValue={sessionInfo?.session.current_model ? `${sessionInfo.session.current_model.provider}/${sessionInfo.session.current_model.id}` : ''}
+                  onModelSelect={handleModelSelect}
+                  onArchiveSession={handleArchiveSession}
+                  archivePending={archiveSessionMut.isPending}
+                  showArchiveButton={!isPlannerRoot}
                 />
               )}
 

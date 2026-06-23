@@ -18,5 +18,8 @@
     "happy-dom": "^20.9.0",
     "jsdom": "^29.1.1",
     "typescript": "*"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.79.10"
   }
 }

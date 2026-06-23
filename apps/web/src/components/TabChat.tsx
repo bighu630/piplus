@@ -17,7 +17,14 @@ import {
   ChevronDown,
   ChevronRight,
   Terminal,
+  Archive,
 } from 'lucide-react';
+
+interface ModelOption {
+  provider: string;
+  id: string;
+  label: string;
+}
 
 interface TabChatProps {
   messages: ChatMessageDTO[];
@@ -35,6 +42,12 @@ interface TabChatProps {
   wsConnected?: boolean;
   selectedSessionId?: string | null;
   sendShortcutMode?: 'enter' | 'mod_enter';
+  models?: ModelOption[];
+  currentModelValue?: string;
+  onModelSelect?: (provider: string, id: string) => void;
+  onArchiveSession?: () => void;
+  archivePending?: boolean;
+  showArchiveButton?: boolean;
 }
 
 function extractCodeText(node: unknown): string {
@@ -79,6 +92,12 @@ export default function TabChat({
   wsConnected,
   selectedSessionId,
   sendShortcutMode,
+  models,
+  currentModelValue,
+  onModelSelect,
+  onArchiveSession,
+  archivePending,
+  showArchiveButton,
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -619,7 +638,50 @@ export default function TabChat({
       )}
 
       {/* Input area */}
-      <div className="shrink-0 px-4 py-3 md:px-5 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+      {/* Model selector & archive bar */}
+      <div className="shrink-0 px-4 md:px-5 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+        <div className="mx-auto max-w-[900px] flex items-center gap-2 py-1.5">
+          {models && models.length > 0 && onModelSelect && (
+            <div className="relative">
+              <select
+                value={currentModelValue ?? ''}
+                onChange={(e) => {
+                  const [provider, id] = e.target.value.split('/');
+                  if (provider && id) onModelSelect(provider, id);
+                }}
+                disabled={runtimeStatus === 'running'}
+                className="appearance-none bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl px-2.5 py-1 pr-7 text-[10px] font-semibold text-slate-600 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer disabled:opacity-50"
+              >
+                {models.map((m) => (
+                  <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+                    {m.provider} / {m.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-3 h-3 absolute right-2 top-1.5 pointer-events-none text-slate-400" />
+            </div>
+          )}
+          {showArchiveButton && onArchiveSession && (
+            <button
+              onClick={onArchiveSession}
+              className="flex items-center space-x-1 px-2.5 py-1 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-[10px] font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
+              disabled={archivePending}
+            >
+              <Archive className="w-3 h-3" />
+              <span>{archivePending ? '...' : 'Archive'}</span>
+            </button>
+          )}
+          <div className="flex-1" />
+          {streamNote && (
+            <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium">
+              {streamNote}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Input area */}
+      <div className="shrink-0 px-4 py-3 md:px-5 bg-slate-50 dark:bg-slate-900">
         <div className="mx-auto max-w-[900px]">
           <div className="flex flex-col gap-2.5">
             <textarea
