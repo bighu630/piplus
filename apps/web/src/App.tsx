@@ -468,9 +468,14 @@ export default function App() {
 
   const handleArchiveSession = useCallback(async () => {
     if (!selectedSessionId) return;
+    const rootId = currentSessionNode?.root_session_id ?? sessionInfo?.session.root_session_id;
     await archiveSessionMut.mutateAsync(selectedSessionId);
     await treeQuery.refetch();
-  }, [selectedSessionId, archiveSessionMut, treeQuery]);
+    // 归档后自动跳转到根会话（负责人/planner）
+    if (rootId && rootId !== selectedSessionId) {
+      handleSelectSession(selectedProjectId ?? '', rootId);
+    }
+  }, [selectedSessionId, currentSessionNode, sessionInfo, archiveSessionMut, treeQuery, handleSelectSession, selectedProjectId]);
 
   const handleModelSelect = useCallback(
     async (provider: string, id: string) => {
@@ -540,6 +545,7 @@ export default function App() {
 
   const modelLabel = sessionInfo?.session.current_model?.label ?? modelsQuery.data?.[0]?.label;
   const modelDisabled = runtimeStatus === 'running';
+  const isPlannerRoot = sessionInfo?.role_template.key === 'planner' && sessionInfo.lineage.depth === 0;
 
   return (
     <div className={`flex h-screen w-full overflow-hidden bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
@@ -572,6 +578,7 @@ export default function App() {
                 {sessionInfo.session.title}
               </h1>
 
+              {!isPlannerRoot && (
               <button
                 onClick={handleArchiveSession}
                 className="flex items-center space-x-1 px-3 py-1.5 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 transition cursor-pointer disabled:opacity-50"
@@ -580,6 +587,7 @@ export default function App() {
                 <Archive className="w-3.5 h-3.5" />
                 <span>{archiveSessionMut.isPending ? '...' : 'Archive'}</span>
               </button>
+              )}
 
               {modelsQuery.data && modelsQuery.data.length > 0 && (
                 <div className="relative">

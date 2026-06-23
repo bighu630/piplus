@@ -455,6 +455,11 @@ export function registerSessionRoutes(app: Hono) {
     const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
+    // 负责人(planner root)会话不允许归档
+    if (session.depth === 0 && session.roleTemplateId === 'role_planner') {
+      return c.json({ error: { code: 'CANNOT_ARCHIVE_PLANNER', message: 'Cannot archive the planner session' } }, 400);
+    }
+
     const now = nextMessageTime();
     await db.update(sessions).set({ status: 'archived', archivedAt: now, archivedBy: userId, updatedAt: now }).where(eq(sessions.id, sessionId));
     log.info('session archived', { sessionId });

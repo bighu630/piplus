@@ -6,6 +6,9 @@ dist
 bun.lock
 *.log
 /.codegraph/daemon.pid
-piplus.sqlite
-piplus.sqlite-shm
-piplus.sqlite-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+pi.db
+/piplus.sqlite-shm
+/piplus.sqlite-wal

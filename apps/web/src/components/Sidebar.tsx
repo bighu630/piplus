@@ -96,7 +96,12 @@ export default function Sidebar({
   creatingSession,
 }: SidebarProps) {
   const [sidebarSearch, setSidebarSearch] = useState('');
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [collapsedSessions, setCollapsedSessions] = useState<Record<string, boolean>>({});
+
+  const toggleProject = (id: string) => {
+    setCollapsedProjects((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
   const toggleSession = (id: string) => {
     setCollapsedSessions((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -276,6 +281,7 @@ export default function Sidebar({
           <div className="text-xs text-slate-400 text-center py-4">暂无项目</div>
         ) : (
           filteredProjects.map((project) => {
+            const isCollapsed = collapsedProjects[project.id];
             const matchingSessions = project.sessions.filter(
               (s) => showArchived || !s.archived_at,
             );
@@ -286,6 +292,7 @@ export default function Sidebar({
                   className={`group flex items-center justify-between p-1.5 rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300 cursor-pointer ${
                     isSidebarCollapsed ? 'justify-center' : ''
                   }`}
+                  onClick={() => !isSidebarCollapsed && toggleProject(project.id)}
                 >
                   <div className="flex items-center space-x-1.5 flex-1 min-w-0">
                     {!isSidebarCollapsed ? (
@@ -321,14 +328,16 @@ export default function Sidebar({
                           <Plus className="w-3.5 h-3.5" />
                         )}
                       </button>
-                      <div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1">
+                      <div className="flex items-center space-x-1">
                         {onArchiveProject && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              onArchiveProject(project.id);
+                              if (confirm(`确定归档项目 "${project.name}"？`)) {
+                                onArchiveProject(project.id);
+                              }
                             }}
-                            className="p-0.5 hover:bg-slate-200 rounded text-slate-500 cursor-pointer"
+                            className="p-0.5 hover:bg-amber-100 hover:text-amber-600 rounded text-slate-400 cursor-pointer transition-colors"
                             title="归档项目"
                           >
                             <Archive className="w-3 h-3" />
@@ -342,7 +351,7 @@ export default function Sidebar({
                                 onDeleteProject(project.id);
                               }
                             }}
-                            className="p-0.5 hover:bg-red-50 hover:text-red-600 rounded text-slate-400 cursor-pointer"
+                            className="p-0.5 hover:bg-red-50 hover:text-red-600 rounded text-slate-400 cursor-pointer transition-colors"
                             title="删除项目"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -356,9 +365,11 @@ export default function Sidebar({
 
 
                 {/* Sessions */}
-                <div className={isSidebarCollapsed ? 'space-y-1' : 'space-y-0.5'}>
-                  {matchingSessions.map((session) => renderSessionNode(session, project.id, 1))}
-                </div>
+                {!isCollapsed && (
+                  <div className={isSidebarCollapsed ? 'space-y-1' : 'space-y-0.5'}>
+                    {matchingSessions.map((session) => renderSessionNode(session, project.id, 1))}
+                  </div>
+                )}
               </div>
             );
           })
