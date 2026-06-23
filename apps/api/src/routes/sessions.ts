@@ -149,11 +149,13 @@ export function registerSessionRoutes(app: Hono) {
     const events = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, sessionId)).orderBy(desc(sessionEvents.createdAt)).limit(20);
 
     const runtimeModel = await piClient.getCurrentModel(sessionId);
-    const currentModel = runtimeModel ?? (
-      session.currentModelProvider && session.currentModelId
-        ? { provider: session.currentModelProvider, id: session.currentModelId, label: `${session.currentModelProvider}/${session.currentModelId}` }
-        : null
-    );
+    const currentModel = runtimeModel ?? (() => {
+      if (!session.currentModelProvider || !session.currentModelId) return null;
+      // 尝试从可用模型列表中查找 label（如 "DeepSeek V4 Pro"），
+      // 如果找不到就用 id 作为 label，避免出现 "deepseek/deepseek-v4-pro" 这种拼接
+      const label = session.currentModelId;
+      return { provider: session.currentModelProvider, id: session.currentModelId, label };
+    })();
 
     return c.json({
       session: {
@@ -369,7 +371,7 @@ export function registerSessionRoutes(app: Hono) {
     const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
-    if (session.runtimeStatus !== 'idle') {
+    if (session.runtimeStatus === 'running') {
       return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
     }
 

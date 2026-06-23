@@ -361,12 +361,34 @@ export function createPiClient(): PiClient {
       };
 
       if (!sessionContext.model) {
-        options.model = await ensureModel();
-        console.log('[pi-client] bindToolRuntime fallback default model', {
-          sessionId,
-          provider: options.model?.provider ?? null,
-          id: options.model?.id ?? null,
-        });
+        if (session.model) {
+          const available = await modelRegistry.getAvailable();
+          const cached = available.find(
+            (candidate: any) => candidate.provider === session.model!.provider && candidate.id === session.model!.id,
+          );
+          if (cached) {
+            options.model = cached;
+            console.log('[pi-client] bindToolRuntime using cached registry model', {
+              sessionId,
+              provider: cached.provider,
+              id: cached.id,
+            });
+          } else {
+            options.model = await ensureModel();
+            console.log('[pi-client] bindToolRuntime cached model not found in registry, fallback default', {
+              sessionId,
+              provider: options.model?.provider ?? null,
+              id: options.model?.id ?? null,
+            });
+          }
+        } else {
+          options.model = await ensureModel();
+          console.log('[pi-client] bindToolRuntime no cached model, fallback default', {
+            sessionId,
+            provider: options.model?.provider ?? null,
+            id: options.model?.id ?? null,
+          });
+        }
       }
 
       const { session: agentSession } = await createAgentSession(options);

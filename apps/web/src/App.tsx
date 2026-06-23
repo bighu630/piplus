@@ -282,15 +282,14 @@ export default function App() {
             }
 
             if (message.phase === 'complete') {
+              setStreamingContent('');
               setStreamNote('');
+              setPendingUserMessages([]);
               Promise.all([
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['tree'] }),
-              ]).then(() => {
-                setStreamingContent('');
-                setStreamNote('');
-                setPendingUserMessages([]);
-              });
+                queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
+              ]);
             }
 
             if (message.phase === 'error') {
@@ -303,14 +302,14 @@ export default function App() {
             treeQuery.refetch();
             const status = message.payload?.runtime_status;
             if (status === 'idle') {
+              setStreamingContent('');
+              setStreamNote('');
+              setPendingUserMessages([]);
               Promise.all([
+                queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['tree'] }),
-              ]).then(() => {
-                setStreamingContent('');
-                setStreamNote('');
-                setPendingUserMessages([]);
-              });
+              ]);
             }
           }
 
@@ -540,7 +539,7 @@ export default function App() {
   }
 
   const modelLabel = sessionInfo?.session.current_model?.label ?? modelsQuery.data?.[0]?.label;
-  const modelDisabled = runtimeStatus !== 'idle';
+  const modelDisabled = runtimeStatus === 'running';
 
   return (
     <div className={`flex h-screen w-full overflow-hidden bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
@@ -564,9 +563,9 @@ export default function App() {
       />
 
       {/* Main content */}
-      <div className="flex-1 min-w-0 flex flex-col h-full bg-white dark:bg-slate-900 relative">
+      <div className="flex-1 min-w-0 flex flex-col h-full bg-slate-50 dark:bg-slate-900 relative">
         {/* Top header bar */}
-        <header className="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
+        <header className="border-b border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
           {sessionInfo && (
             <div className="flex items-center space-x-3 py-1">
               <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">

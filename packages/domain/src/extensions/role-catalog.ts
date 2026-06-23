@@ -29,13 +29,19 @@ const BUILTIN_ROLES: RoleCatalogEntry[] = [
   {
     key: 'reviewer',
     name: 'Reviewer',
-    description: 'Reviews output and returns critiques or confirmations.',
+    description: 'Reviews code quality and provides specific, actionable feedback to the user.',
     source: 'builtin',
   },
   {
-    key: 'researcher',
-    name: 'Researcher',
-    description: 'Investigates a topic and summarizes findings.',
+    key: 'feature_lead',
+    name: 'Feature Lead',
+    description: 'Aligns with user on feature requirements, plans the approach, and delegates execution to workers.',
+    source: 'builtin',
+  },
+  {
+    key: 'bugfix_lead',
+    name: 'Bugfix Lead',
+    description: 'Aligns with user on bug details, diagnoses root cause, and delegates fixes to workers.',
     source: 'builtin',
   },
 ];

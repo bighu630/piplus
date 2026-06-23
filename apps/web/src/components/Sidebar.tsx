@@ -13,6 +13,12 @@ import {
   PlusCircle,
   Search,
   Archive,
+  Star,
+  Circle,
+  Triangle,
+  Bug,
+  Eye,
+  User,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -39,10 +45,23 @@ function roleLabel(key: string): string {
     planner: '规划者',
     worker: '执行者',
     reviewer: '审查者',
-    researcher: '研究者',
+    feature_lead: '需求负责人',
+    bugfix_lead: 'Bug负责人',
     blank: '空白',
   };
   return map[key] ?? key;
+}
+
+function roleIcon(key: string) {
+  const map: Record<string, React.ComponentType<{ className?: string }>> = {
+    planner: Star,
+    worker: Circle,
+    reviewer: Eye,
+    feature_lead: Triangle,
+    bugfix_lead: Bug,
+    blank: User,
+  };
+  return map[key] ?? FileText;
 }
 
 function runtimeColor(status: string): string | null {
@@ -140,7 +159,7 @@ export default function Sidebar({
               <div className="w-4 h-4 shrink-0" />
             ) : null}
 
-            <FileText className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}`} />
+            {React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}` })}
 
             {!isSidebarCollapsed && (
               <span
@@ -177,12 +196,12 @@ export default function Sidebar({
 
   return (
     <div
-      className={`bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col transition-all duration-300 ${
+      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col transition-all duration-300 ${
         isSidebarCollapsed ? 'w-16' : 'w-64'
       } h-screen select-none`}
     >
       {/* Header */}
-      <div className="p-4 border-b border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
+      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
         {!isSidebarCollapsed && (
           <div className="flex items-center space-x-2">
             <div className="bg-blue-600 text-white font-black px-2 py-1 rounded text-sm tracking-widest font-sans flex items-center">
@@ -366,7 +385,7 @@ export default function Sidebar({
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900/60 flex flex-col space-y-2">
+      <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-col space-y-2">
         <button
           onClick={onLogout}
           className={`flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 p-1.5 rounded-lg text-slate-600 dark:text-slate-300 transition text-[11.5px] font-sans cursor-pointer ${

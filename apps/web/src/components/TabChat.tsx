@@ -37,6 +37,15 @@ interface TabChatProps {
   sendShortcutMode?: 'enter' | 'mod_enter';
 }
 
+function extractCodeText(node: unknown): string {
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map(extractCodeText).join('');
+  if (node && typeof node === 'object' && 'props' in node) {
+    return extractCodeText((node as any).props.children);
+  }
+  return '';
+}
+
 function sanitizeStreamingContent(content: string): string {
   const lastFenceIdx = content.lastIndexOf('```');
   if (lastFenceIdx === -1) return content;
@@ -80,6 +89,7 @@ export default function TabChat({
   const prevDisplayMessagesRef = useRef<ChatMessageDTO[]>([]);
   const prevScrollHeightRef = useRef<number | null>(null);
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
+  const sessionJustSwitchedRef = useRef(false);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -171,8 +181,9 @@ export default function TabChat({
     return () => observer.disconnect();
   }, [hasMore, loadingMore, onLoadMore]);
 
+  // 独立标记：session 切换时设 flag，等真实消息渲染后再跳到底部
   useEffect(() => {
-    scrollToBottom('auto');
+    sessionJustSwitchedRef.current = true;
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -183,6 +194,16 @@ export default function TabChat({
 
     const container = scrollContainerRef.current;
     if (!container) return;
+
+    // 刚刚切换 session → 等真实消息加载后立刻跳到底部
+    if (sessionJustSwitchedRef.current && displayMessages.length > 0) {
+      const isPlaceholder = displayMessages.length === 1 && displayMessages[0].id === 'empty_placeholder';
+      if (!isPlaceholder) {
+        sessionJustSwitchedRef.current = false;
+        requestAnimationFrame(() => requestAnimationFrame(() => scrollToBottom('auto')));
+        return;
+      }
+    }
 
     if (lastChangeTypeRef.current === 'prepend') {
       return;
@@ -363,7 +384,7 @@ export default function TabChat({
                           },
                           code({ className, children, ...props }: any) {
                             const match = /language-(\w+)/.exec(className || '');
-                            const codeText = String(children).replace(/\n$/, '');
+                            const codeText = extractCodeText(children).replace(/\n$/, '');
                             const isInline = !className;
 
                             if (!isInline) {
@@ -392,7 +413,7 @@ export default function TabChat({
                                     </button>
                                   </div>
                                   <pre className="p-4 overflow-x-auto text-[11.5px] leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950">
-                                    <code className="font-mono">{codeText}</code>
+                                    <code className={className}>{children}</code>
                                   </pre>
                                 </div>
                               );
@@ -470,7 +491,7 @@ export default function TabChat({
                       },
                       code({ className, children, ...codeProps }: any) {
                         const match = /language-(\w+)/.exec(className || '');
-                        const codeText = String(children).replace(/\n$/, '');
+                        const codeText = extractCodeText(children).replace(/\n$/, '');
                         const isInline = !className;
 
                         if (!isInline) {
@@ -499,7 +520,7 @@ export default function TabChat({
                                 </button>
                               </div>
                               <pre className="p-4 overflow-x-auto text-[11.5px] leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950">
-                                <code className="font-mono">{codeText}</code>
+                                <code className={className}>{children}</code>
                               </pre>
                             </div>
                           );
@@ -598,7 +619,7 @@ export default function TabChat({
       )}
 
       {/* Input area */}
-      <div className="shrink-0 px-4 py-3 md:px-5 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+      <div className="shrink-0 px-4 py-3 md:px-5 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
         <div className="mx-auto max-w-[900px]">
           <div className="flex flex-col gap-2.5">
             <textarea

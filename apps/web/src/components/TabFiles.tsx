@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { SessionFileContentResponseDTO, SessionFileTreeNodeDTO, SessionFileTreeResponseDTO } from '@piplus/shared';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -137,13 +137,36 @@ function FileTreeNode({
   );
 }
 
+function extractCodeText(node: unknown): string {
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map(extractCodeText).join('');
+  if (node && typeof node === 'object' && 'props' in node) {
+    return extractCodeText((node as any).props.children);
+  }
+  return '';
+}
+
 function RichMarkdown({ content }: { content: string }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  const handleCopyCode = async (codeText: string, blockId: string) => {
-    await navigator.clipboard.writeText(codeText);
-    setCopiedId(blockId);
-    setTimeout(() => setCopiedId((current) => (current === blockId ? null : current)), 1500);
+  const doCopy = (id: string, text: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+    } catch { /* ignore */ }
+    setCopiedId(id);
+    setTimeout(() => setCopiedId((c) => (c === id ? null : c)), 1500);
   };
 
   return (
@@ -155,21 +178,21 @@ function RichMarkdown({ content }: { content: string }) {
           pre({ children }) {
             return <pre className="code-block">{children}</pre>;
           },
-          code({ className, children, ...props }: any) {
+          code({ className, children }: any) {
             const match = /language-([\w-]+)/.exec(className || '');
-            const codeText = String(children).replace(/\n$/, '');
             const isInline = !className;
 
             if (!isInline) {
               const language = match ? match[1] : 'code';
-              const blockId = `${language}-${codeText.length}`;
+              const codeText = extractCodeText(children);
+              const blockId = `blk-${language}-${codeText.slice(0, 60)}`;
               return (
                 <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 relative font-mono text-xs shadow-3xs max-w-full">
                   <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
                     <span className="text-[10px] font-mono font-bold uppercase tracking-wider">{language}</span>
                     <button
                       type="button"
-                      onClick={() => void handleCopyCode(codeText, blockId)}
+                      onClick={() => doCopy(blockId, codeText)}
                       className="flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 px-2.5 py-1 rounded text-[11px] text-slate-600 dark:text-slate-300 font-sans cursor-pointer transition-colors"
                     >
                       {copiedId === blockId ? (
@@ -186,14 +209,14 @@ function RichMarkdown({ content }: { content: string }) {
                     </button>
                   </div>
                   <pre className="p-4 overflow-x-auto text-[11.5px] leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950">
-                    <code className={className} {...props}>{codeText}</code>
+                    <code className={className}>{children}</code>
                   </pre>
                 </div>
               );
             }
 
             return (
-              <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold" {...props}>
+              <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold">
                 {children}
               </code>
             );

@@ -15,8 +15,28 @@ import {
   X,
   Sparkles,
   Search,
-  Check
+  Check,
+  Star,
+  Circle,
+  Triangle,
+  Bug,
+  Eye,
+  User,
 } from "lucide-react";
+
+// ... (existing code until SidebarProps)
+
+function roleIcon(key?: string) {
+  const map: Record<string, React.ComponentType<{ className?: string }>> = {
+    planner: Star,
+    worker: Circle,
+    reviewer: Eye,
+    feature_lead: Triangle,
+    bugfix_lead: Bug,
+    blank: User,
+  };
+  return (key && map[key]) ? map[key] : FileText;
+}
 
 interface SidebarProps {
   projects: Project[];
@@ -164,7 +184,7 @@ export default function Sidebar({
               <div className="w-4 h-4 shrink-0" />
             ) : null}
 
-            <FileText className={`w-3.5 h-3.5 shrink-0 ${isSelected ? "text-blue-500" : "text-slate-400"}`} />
+            {React.createElement(roleIcon((session as any).roleKey), { className: `w-3.5 h-3.5 shrink-0 ${isSelected ? "text-blue-500" : "text-slate-400"}` })}
             
             {!isSidebarCollapsed && (
               <span className="text-[11.5px] truncate font-sans tracking-tight">

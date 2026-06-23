@@ -2,14 +2,14 @@ import type { PiToolDef } from '@piplus/pi-client';
 import type { PiClient } from '@piplus/pi-client';
 import type { RoleCatalog } from './role-catalog';
 import type { RoleManagerDb } from '../role-manager/service';
-import { sessions } from '@piplus/db/schema';
-import { eq } from 'drizzle-orm';
+import { messages, sessions } from '@piplus/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
 import { startSessionRun } from '../session/runtime';
 
 function labelForRole(key: string) {
   const map: Record<string, string> = {
-    planner: '规划者', worker: '执行者', reviewer: '审查者', researcher: '研究者', blank: '空白',
+    planner: '规划者', worker: '执行者', reviewer: '审查者', feature_lead: '需求负责人', bugfix_lead: 'Bug负责人', blank: '空白',
   };
   return map[key] ?? key;
 }
@@ -38,6 +38,10 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
           objective: { type: 'string', description: 'The outcome this child session should achieve' },
           scope: { type: 'string', description: 'The codebase area or boundary it should stay within (optional)' },
           task: { type: 'string', description: 'The specific task to execute (optional)' },
+          wait: {
+            type: 'boolean',
+            description: 'Whether to wait for the child session to complete and return its results. Use true for workers, false for roles that need to interact with the user independently.',
+          },
           constraints: {
             type: 'array',
             items: { type: 'string' },
@@ -89,6 +93,8 @@ export async function invokeRoleManagerTool(
       .limit(1);
     if (!parent) throw new Error('parent_session_not_found');
 
+    const wait = Boolean(args.wait ?? false);
+
     const result = await roleManager.spawnSession({
       projectId: parent.projectId,
       parentSessionId: ctx.sessionId,
@@ -100,10 +106,54 @@ export async function invokeRoleManagerTool(
       constraints: Array.isArray(args.constraints) ? args.constraints.map(String) : [],
     });
 
+    const kickOffMsg = `请开始执行你的任务。目标：${String(args.objective ?? '')}。范围：${args.scope ? String(args.scope) : '无限制'}。具体任务：${args.task ? String(args.task) : String(args.objective ?? '')}`;
+    console.log('[role-manager-tools] kickoff start', { sessionId: result.sessionId, locatorFile: result.locator.sessionFile, kickOffMsg, wait });
+
+    if (wait) {
+      // 同步等待子会话完成
+      const run = await startSessionRun({
+        db: ctx.db,
+        piClient: ctx.piClient,
+        sessionId: result.sessionId,
+        userId: ctx.userId,
+        content: kickOffMsg,
+      });
+      console.log('[role-manager-tools] kickoff message sent (wait mode)', { runId: run.runId });
+
+      // 轮询等待 writeback 消息
+      const timeoutMs = 5 * 60 * 1000;
+      const pollIntervalMs = 2000;
+      const deadline = Date.now() + timeoutMs;
+
+      while (Date.now() < deadline) {
+        const [writeback] = await ctx.db
+          .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
+          .from(messages)
+          .where(and(eq(messages.sourceSessionId, result.sessionId), eq(messages.messageKind, 'writeback')))
+          .limit(1);
+
+        if (writeback) {
+          let blocks = null;
+          if (writeback.blocksJson) {
+            try { blocks = JSON.parse(writeback.blocksJson); } catch { /* ignore */ }
+          }
+          return {
+            status: 'completed',
+            summary: writeback.summary,
+            blocks,
+          };
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+
+      return {
+        status: 'timeout',
+        message: `子会话 ${labelForRole(String(args.role))} 超时未返回结果`,
+      };
+    }
 
     // 后台异步启动子 session
-    const kickOffMsg = `请开始执行你的任务。目标：${String(args.objective ?? '')}。范围：${args.scope ? String(args.scope) : '无限制'}。具体任务：${args.task ? String(args.task) : String(args.objective ?? '')}`;
-    console.log('[role-manager-tools] kickoff start', { sessionId: result.sessionId, locatorFile: result.locator.sessionFile, kickOffMsg });
     void startSessionRun({
       db: ctx.db,
       piClient: ctx.piClient,

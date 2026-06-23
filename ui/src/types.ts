@@ -20,6 +20,7 @@ export interface FileItem {
 export interface Session {
   id: string;
   name: string;
+  roleKey?: string;
   responsible: string;
   model: string;
   status: "Active" | "Archived" | "Draft";

@@ -4,7 +4,8 @@ import { sessions } from '@piplus/db/schema';
 import { eq, ne } from 'drizzle-orm';
 
 export function getDbPath() {
-  const envUrl = Bun.env.DATABASE_URL ?? 'file:./piplus.sqlite';
+  const home = Bun.env.HOME ?? process.env.HOME ?? '/tmp';
+  const envUrl = Bun.env.DATABASE_URL ?? `file:${home}/.config/piplus/piplus.sqlite`;
   return envUrl.startsWith('file:') ? envUrl.slice('file:'.length) : envUrl;
 }
 
