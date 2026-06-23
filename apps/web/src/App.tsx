@@ -26,6 +26,7 @@ import {
   useArchiveSessionMutation,
   useLoginMutation,
   useLogoutMutation,
+  useModelsStatus,
   useModels,
   useSetSessionModelMutation,
   useArchiveProjectMutation,
@@ -102,6 +103,7 @@ export default function App() {
   // Auth
   const authQuery = useAuthSession();
   const isLoggedIn = Boolean(authQuery.data?.ok);
+  const modelsStatusQuery = useModelsStatus();
 
   const loginMutation = useLoginMutation();
   const logoutMutation = useLogoutMutation();
@@ -538,6 +540,7 @@ export default function App() {
       <LoginScreen
         busy={loginMutation.isPending}
         error={loginMutation.isError ? '密码错误' : null}
+        modelStatus={modelsStatusQuery.data ? { ok: modelsStatusQuery.data.ok, count: modelsStatusQuery.data.count } : null}
         onSubmit={handleLogin}
       />
     );

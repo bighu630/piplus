@@ -181,7 +181,7 @@ export default function Sidebar({
                 {roleLabel(session.role_template_key)}
               </span>
               {statusDotColor ? (
-                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor}`} />
+                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${session.runtime_status === 'running' ? 'animate-pulse' : ''}`} />
               ) : null}
             </div>
           )}
@@ -377,26 +377,24 @@ export default function Sidebar({
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-col space-y-2">
+      <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-row items-center">
         <button
           onClick={onLogout}
           className={`flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 p-1.5 rounded-lg text-slate-600 dark:text-slate-300 transition text-[11.5px] font-sans cursor-pointer ${
-            isSidebarCollapsed ? 'justify-center w-full' : 'pr-3'
+            isSidebarCollapsed ? 'justify-center' : ''
           }`}
         >
           <LogOut className="w-4 h-4 text-slate-500 dark:text-slate-400" />
           {!isSidebarCollapsed && <span>退出登录</span>}
         </button>
 
-        {!isSidebarCollapsed && (
-          <button
-            onClick={onOpenSettings}
-            className="flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 p-1.5 rounded-lg text-slate-600 dark:text-slate-300 transition text-[11.5px] font-sans cursor-pointer"
-          >
-            <Settings className="w-4 h-4 text-slate-500 dark:text-slate-400" />
-            <span>设置</span>
-          </button>
-        )}
+        <button
+          onClick={onOpenSettings}
+          className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
+          title="设置"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
       </div>
     </div>
   );

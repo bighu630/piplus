@@ -5,6 +5,7 @@ import {
   getSessionMessages,
   checkAuth,
   login,
+  getModelsStatus,
   getModels,
   setSessionModel,
   archiveProject,
@@ -63,6 +64,15 @@ export function useLogoutMutation() {
 }
 
 // Models
+export function useModelsStatus() {
+  return useQuery({
+    queryKey: ['models', 'status'],
+    queryFn: getModelsStatus,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
 export function useModels() {
   return useQuery({
     queryKey: ['models'],

@@ -640,7 +640,7 @@ export default function TabChat({
       {/* Input area */}
       {/* Model selector & archive bar */}
       <div className="shrink-0 px-4 md:px-5 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
-        <div className="mx-auto max-w-[900px] flex items-center gap-2 py-1.5">
+        <div className="mx-auto max-w-[900px] flex items-center gap-3 py-2">
           {models && models.length > 0 && onModelSelect && (
             <div className="relative">
               <select
@@ -650,7 +650,7 @@ export default function TabChat({
                   if (provider && id) onModelSelect(provider, id);
                 }}
                 disabled={runtimeStatus === 'running'}
-                className="appearance-none bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl px-2.5 py-1 pr-7 text-[10px] font-semibold text-slate-600 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer disabled:opacity-50"
+                className="appearance-none bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl px-2.5 py-1 pr-7 text-[11px] font-semibold text-slate-600 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer disabled:opacity-50"
               >
                 {models.map((m) => (
                   <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
@@ -664,7 +664,7 @@ export default function TabChat({
           {showArchiveButton && onArchiveSession && (
             <button
               onClick={onArchiveSession}
-              className="flex items-center space-x-1 px-2.5 py-1 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-[10px] font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
+              className="flex items-center space-x-1 px-2.5 py-1 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-[11px] font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
               disabled={archivePending}
             >
               <Archive className="w-3 h-3" />
@@ -673,7 +673,7 @@ export default function TabChat({
           )}
           <div className="flex-1" />
           {streamNote && (
-            <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium">
+            <span className="text-[11px] text-blue-600 dark:text-blue-400 font-medium">
               {streamNote}
             </span>
           )}
@@ -681,9 +681,9 @@ export default function TabChat({
       </div>
 
       {/* Input area */}
-      <div className="shrink-0 px-4 py-3 md:px-5 bg-slate-50 dark:bg-slate-900">
+      <div className="shrink-0 px-4 py-2 md:px-5 bg-slate-50 dark:bg-slate-900">
         <div className="mx-auto max-w-[900px]">
-          <div className="flex flex-col gap-2.5">
+          <div className="flex flex-col gap-2">
             <textarea
               className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition"
               disabled={isRunning || sending}

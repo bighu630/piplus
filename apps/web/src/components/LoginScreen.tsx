@@ -4,10 +4,11 @@ import { useState } from 'react';
 type Props = {
   busy?: boolean;
   error?: string | null;
+  modelStatus?: { ok: boolean; count: number } | null;
   onSubmit: (password: string) => void;
 };
 
-export function LoginScreen({ busy = false, error = null, onSubmit }: Props) {
+export function LoginScreen({ busy = false, error = null, modelStatus = null, onSubmit }: Props) {
   const [password, setPassword] = useState('');
 
   return (
@@ -47,6 +48,18 @@ export function LoginScreen({ busy = false, error = null, onSubmit }: Props) {
         {error ? (
           <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">
             {error}
+          </div>
+        ) : null}
+
+        {modelStatus && !modelStatus.ok ? (
+          <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-lg px-3 py-2 leading-relaxed">
+            当前未检测到可用模型，登录后可能无法正常使用 Agent。请先检查 PI SDK 的模型配置 / API key。
+          </div>
+        ) : null}
+
+        {modelStatus && modelStatus.ok ? (
+          <div className="text-[11px] text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 rounded-lg px-3 py-2">
+            已检测到 {modelStatus.count} 个可用模型。
           </div>
         ) : null}
 

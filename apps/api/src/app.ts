@@ -26,7 +26,6 @@ export function createApp() {
   app.use('/api/v1/projects', requireAuth);
   app.use('/api/v1/projects/*', requireAuth);
   app.use('/api/v1/sessions/*', requireAuth);
-  app.use('/api/v1/models', requireAuth);
   registerTreeRoutes(app);
   registerProjectRoutes(app);
   registerSessionRoutes(app);

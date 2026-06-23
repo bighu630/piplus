@@ -57,6 +57,10 @@ export function checkAuth(token: string) {
 }
 
 // Models
+export function getModelsStatus() {
+  return request<{ ok: boolean; count: number; models: ModelInfo[] }>('/api/v1/models/status');
+}
+
 export function getModels() {
   return request<{ models: ModelInfo[] }>('/api/v1/models');
 }
