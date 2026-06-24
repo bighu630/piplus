@@ -103,6 +103,7 @@ export function createPiClient(): PiClient {
       const active = runtimeRegistry.ensure(session.sessionId, locator, cwd);
       active.prompt = input.prompt;
       active.title = input.title ?? null;
+      console.log('[pi-client] createSession stored prompt', { piSessionId: session.sessionId, promptLen: active.prompt.length });
       active.model = {
         provider: model.provider,
         id: model.id,
@@ -146,6 +147,16 @@ export function createPiClient(): PiClient {
 
         const { session: agentSession } = await createAgentSession(options);
         const session = runtimeRegistry.ensure(sessionId, locator, runtimeCwd);
+        // 把 createSession 用 piSessionId 存的 prompt 迁移过来
+        const piSessionId = locator.piSessionId;
+        if (piSessionId && piSessionId !== sessionId) {
+          const createdEntry = runtimeRegistry.get(piSessionId);
+          if (createdEntry?.prompt && !session.prompt) {
+            session.prompt = createdEntry.prompt;
+            session.promptSent = createdEntry.promptSent;
+            console.log('[pi-client] restoreRuntime transferred prompt', { sessionId, piSessionId, promptLen: session.prompt.length });
+          }
+        }
         session.agentSession = agentSession;
         if (agentSession.model) {
           session.model = {
@@ -192,9 +203,11 @@ export function createPiClient(): PiClient {
       if (session.agentSession) {
         // 首次发消息时，先把角色 prompt 注入
         if (session.prompt && !session.promptSent) {
-          console.log('[pi-client] sendMessage → injecting role prompt', { sessionId, promptLen: session.prompt.length });
+          console.log('[pi-client] sendMessage → injecting role prompt', { sessionId, promptLen: session.prompt.length, preview: session.prompt.slice(0, 120) });
           await session.agentSession.prompt(session.prompt);
           session.promptSent = true;
+        } else if (!session.prompt) {
+          console.log('[pi-client] sendMessage → no role prompt to inject', { sessionId });
         }
         console.log('[pi-client] sendMessage → agentSession.prompt', { sessionId, content: content.slice(0, 80) });
         await session.agentSession.prompt(content);

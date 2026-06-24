@@ -2,6 +2,7 @@ import { createApp } from './app';
 import { websocket } from 'hono/bun';
 import { ensureSeedDb, recoverStuckSessions } from './db-context';
 import { createLogger } from './lib/logger';
+import { getServerConfig } from './server-config';
 
 const log = createLogger('api');
 
@@ -12,12 +13,18 @@ recoverStuckSessions();
 log.info('stuck sessions recovered');
 
 const app = createApp();
-const port = Number(Bun.env.API_PORT ?? 3001);
+const config = getServerConfig();
 
 Bun.serve({
-  port,
+  hostname: config.host,
+  port: config.port,
   fetch: app.fetch,
   websocket,
 });
 
-log.info('server started', { port });
+log.info('server started', {
+  host: config.host,
+  port: config.port,
+  databasePath: config.databasePath,
+  projectsRoot: config.projectsRoot,
+});

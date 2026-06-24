@@ -5,9 +5,10 @@ import { messages, projects, sessionEvents, sessionSyncStates, sessions } from '
 import { createProjectWithPlanner } from '@piplus/domain/project/service';
 import { createTopLevelSession } from '@piplus/domain/session/service';
 import { createPiClient } from '@piplus/pi-client';
-import { join } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { getDbPath } from '../db-context';
+import { getServerConfig } from '../server-config';
 import { createEvent } from '../ws/protocol';
 import { socketHub } from '../ws/server';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -54,7 +55,7 @@ export function registerProjectRoutes(app: Hono) {
 
     if (mode === 'git_clone') {
       if (!repoUrl) return c.json({ error: { code: 'INVALID_URL', message: 'Repository URL is required' } }, 400);
-      const root = Bun.env.PROJECTS_ROOT ?? join(Bun.env.HOME ?? '~', 'projects');
+      const root = getServerConfig().projectsRoot;
       const repoName = repoUrl.split('/').pop()?.replace('.git', '') ?? 'repo';
       const targetPath = join(root, repoName);
       if (existsSync(targetPath)) {

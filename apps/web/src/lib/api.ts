@@ -1,4 +1,4 @@
-import { getApiBaseUrl } from './constants';
+import { getApiBaseUrl } from './runtime-config';
 import type {
   SessionInfoDTO,
   TreeResponse,

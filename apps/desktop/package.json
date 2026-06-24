@@ -1,0 +1,26 @@
+{
+  "name": "piplus",
+  "version": "0.1.0",
+  "description": "piplus Electron desktop application",
+  "author": "piplus <dev@piplus.local>",
+  "homepage": "https://github.com/piplus/piplus",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev:check": "node ./scripts/dev-check.mjs",
+    "dev": "tsc -p tsconfig.json && node ./scripts/dev-check.mjs && electron .",
+    "pack": "tsc -p tsconfig.json && bunx electron-builder --dir",
+    "dist": "tsc -p tsconfig.json && bunx electron-builder --linux",
+    "dist:mac": "tsc -p tsconfig.json && bunx electron-builder --mac",
+    "dist:win": "tsc -p tsconfig.json && bunx electron-builder --win"
+  },
+  "devDependencies": {
+    "@types/node": "25.0.0",
+    "electron": "^42.4.1",
+    "electron-builder": "^26.0.13",
+    "typescript": "6.0.3"
+  }
+}

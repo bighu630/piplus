@@ -1,0 +1,26 @@
+appId: com.piplus.desktop
+productName: piplus
+executableName: piplus
+files:
+  - dist/main/**
+  - dist/preload/**
+  - package.json
+  - "!node_modules/**"
+extraResources:
+  - from: ../api/dist
+    to: api-dist
+  - from: ../web/dist
+    to: web-dist
+  - from: ../migrations
+    to: migrations
+linux:
+  category: Development
+  executableName: piplus
+  target:
+    - AppImage
+    - deb
+mac:
+  target:
+    - dmg
+win:
+  target: nsis

@@ -1,9 +1,11 @@
+import { getServerConfig } from '../server-config';
+
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
 function resolveMinLevel(): LogLevel {
-  const env = (typeof Bun !== 'undefined' ? Bun.env.LOG_LEVEL : undefined) ?? 'info';
+  const env = getServerConfig().logLevel ?? 'info';
   return LEVEL_RANK.hasOwnProperty(env) ? (env as LogLevel) : 'info';
 }
 

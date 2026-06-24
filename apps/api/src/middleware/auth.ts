@@ -1,5 +1,6 @@
 import type { Context, Next } from 'hono';
 import { verifyToken } from '../auth/token';
+import { getServerConfig } from '../server-config';
 
 export async function requireAuth(c: Context, next: Next) {
   const header = c.req.header('Authorization') ?? '';
@@ -13,7 +14,7 @@ export async function requireAuth(c: Context, next: Next) {
 
   // Fallback: allow x-user-id for dev / test
   const headerUserId = c.req.header('x-user-id');
-  if (headerUserId && Bun.env.NODE_ENV !== 'production') {
+  if (headerUserId && getServerConfig().nodeEnv !== 'production') {
     c.set('userId', headerUserId);
     c.set('userName', headerUserId);
     return await next();

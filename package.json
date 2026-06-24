@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "bash scripts/dev.sh",
     "dev:api": "bun run apps/api/src/index.ts",
-    "dev:web": "bun --cwd apps/web run dev",
-    "typecheck": "bun --cwd apps/api run typecheck && bun --cwd apps/web run lint && bun --cwd packages/db run typecheck && bun --cwd packages/domain run typecheck && bun --cwd packages/pi-client run typecheck && bun --cwd packages/shared run typecheck",
-    "test": "bun --cwd apps/api test",
-    "test:api": "bun --cwd apps/api test",
-    "test:web": "bun --cwd apps/web test"
+    "dev:web": "cd apps/web && bun run dev",
+    "dev:desktop": "cd apps/desktop && bun run dev",
+    "typecheck": "cd apps/api && bun run typecheck && cd ../web && bun run lint && cd ../desktop && bun run typecheck && cd ../../packages/db && bun run typecheck && cd ../domain && bun run typecheck && cd ../pi-client && bun run typecheck && cd ../shared && bun run typecheck",
+    "typecheck:desktop": "cd apps/desktop && bun run typecheck",
+    "build:desktop": "bash scripts/build-desktop.sh",
+    "test": "cd apps/api && bun test",
+    "test:api": "cd apps/api && bun test",
+    "test:web": "cd apps/web && bun test"
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.3",

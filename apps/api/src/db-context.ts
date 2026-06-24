@@ -1,12 +1,11 @@
 import { createSeedDb } from '@piplus/db/init';
 import { createDb } from '@piplus/db/client';
 import { sessions } from '@piplus/db/schema';
-import { eq, ne } from 'drizzle-orm';
+import { ne } from 'drizzle-orm';
+import { getDatabasePath } from './server-config';
 
 export function getDbPath() {
-  const home = Bun.env.HOME ?? process.env.HOME ?? '/tmp';
-  const envUrl = Bun.env.DATABASE_URL ?? `file:${home}/.config/piplus/piplus.sqlite`;
-  return envUrl.startsWith('file:') ? envUrl.slice('file:'.length) : envUrl;
+  return getDatabasePath();
 }
 
 export function ensureSeedDb() {

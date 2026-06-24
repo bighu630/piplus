@@ -351,26 +351,47 @@ export default function TabChat({
           // Tool result message: compact result card
           if (isTool) {
             const toolName = msg.tool_name || 'unknown';
+            const isError = /^error/i.test(msg.content_text?.trim() ?? '');
             const summary = msg.content_text
               ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
               : '(empty result)';
 
+            const colorScheme = isError
+              ? {
+                  bg: 'bg-red-50 dark:bg-red-950/30',
+                  border: 'border-red-200 dark:border-red-800',
+                  borderT: 'border-red-200 dark:border-red-800',
+                  icon: 'text-red-600 dark:text-red-400',
+                  label: 'text-red-800 dark:text-red-300',
+                  text: 'text-red-900 dark:text-red-200',
+                  suffix: 'text-red-600/60 dark:text-red-400/60',
+                }
+              : {
+                  bg: 'bg-emerald-50 dark:bg-emerald-950/30',
+                  border: 'border-emerald-200 dark:border-emerald-800',
+                  borderT: 'border-emerald-200 dark:border-emerald-800',
+                  icon: 'text-emerald-600 dark:text-emerald-400',
+                  label: 'text-emerald-800 dark:text-emerald-300',
+                  text: 'text-emerald-900 dark:text-emerald-200',
+                  suffix: 'text-emerald-600/60 dark:text-emerald-400/60',
+                };
+
             return (
               <div key={msg.id} className="flex justify-start items-start w-full">
                 <div className="flex flex-col items-start max-w-full flex-1">
-                  <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl overflow-hidden">
+                  <div className={`${colorScheme.bg} ${colorScheme.border} rounded-xl overflow-hidden`}>
                     <div className="px-3 py-2 flex items-center gap-2">
-                      <Terminal className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                      <span className="text-xs font-semibold text-emerald-800 dark:text-emerald-300 font-mono">
+                      <Terminal className={`w-3.5 h-3.5 ${colorScheme.icon} shrink-0`} />
+                      <span className={`text-xs font-semibold ${colorScheme.label} font-mono`}>
                         {toolName}
                       </span>
-                      <span className="text-[10px] text-emerald-600/60 dark:text-emerald-400/60 ml-1">
-                        结果
+                      <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
+                        {isError ? '错误' : '结果'}
                       </span>
                     </div>
                     {msg.content_text && (
-                      <div className="border-t border-emerald-200 dark:border-emerald-800 px-3 py-2">
-                        <div className="text-[11px] text-emerald-900 dark:text-emerald-200 font-mono whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto">
+                      <div className={`border-t ${colorScheme.borderT} px-3 py-2`}>
+                        <div className={`text-[11px] ${colorScheme.text} font-mono whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto`}>
                           {summary}
                         </div>
                       </div>

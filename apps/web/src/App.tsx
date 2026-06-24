@@ -539,7 +539,7 @@ export default function App() {
     return (
       <LoginScreen
         busy={loginMutation.isPending}
-        error={loginMutation.isError ? '密码错误' : null}
+        error={loginMutation.isError ? (loginMutation.error as Error)?.message || '登录失败' : null}
         modelStatus={modelsStatusQuery.data ? { ok: modelsStatusQuery.data.ok, count: modelsStatusQuery.data.count } : null}
         onSubmit={handleLogin}
       />

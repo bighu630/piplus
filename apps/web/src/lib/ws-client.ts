@@ -1,5 +1,5 @@
 import type { ClientMessage } from '@piplus/shared';
-import { getWsBaseUrl } from './constants';
+import { getWsBaseUrl } from './runtime-config';
 
 const RECONNECT_DELAY = 2000;
 
