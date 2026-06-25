@@ -179,6 +179,10 @@ Piplus 比较适合这些用户：
 
 ---
 
+## Docker 部署
+
+如需使用单容器 Docker 部署方案，请参考 `deployment/docker/README.md`。
+
 ## 开发模式（可选）
 
 如果你希望本地开发：

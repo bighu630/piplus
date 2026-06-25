@@ -4,6 +4,7 @@ import type { PiClient, PiSessionStreamEvent } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
+import { setRequestContext, clearRequestContext } from './request-context';
 
 export type StartSessionRunInput = {
   db: RoleManagerDb;
@@ -11,6 +12,7 @@ export type StartSessionRunInput = {
   sessionId: string;
   userId: string;
   content: string;
+  requestId?: string;
   startedAt?: Date;
   safetyTimeoutMs?: number;
   onStreamEvent?: (event: PiSessionStreamEvent) => void | Promise<void>;
@@ -131,6 +133,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
     if (timeoutHandle) clearTimeout(timeoutHandle);
 
     const runtimeError = error ? formatRuntimeError(error) : null;
+    clearRequestContext(input.sessionId);
     await markSessionIdle(input.db, input.sessionId, new Date(), runtimeError);
     await input.onRuntimeStatusChange?.({
       sessionId: input.sessionId,
@@ -142,6 +145,13 @@ export async function startSessionRun(input: StartSessionRunInput) {
     unsubscribe();
   };
   await markSessionRunning(input.db, input.sessionId, startedAt);
+
+  // Bind request context for cross-session wait coordination
+  if (input.requestId) {
+    setRequestContext(input.sessionId, input.requestId);
+    console.log('[session-runtime] bind request context', { sessionId: input.sessionId, requestId: input.requestId });
+  }
+
   await input.onRuntimeStatusChange?.({
     sessionId: input.sessionId,
     projectId: project.id,

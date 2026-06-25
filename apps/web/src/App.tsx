@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ServerMessage } from '@piplus/shared';
+import type { ProviderFormPayload } from './lib/api';
 import hljsLight from 'highlight.js/styles/github.css?url';
 import hljsDark from 'highlight.js/styles/github-dark.css?url';
 import Sidebar from './components/Sidebar';
@@ -35,22 +36,20 @@ import {
   useGitPushMutation,
   useGitCommitMutation,
   useAddGitignoreMutation,
+  useTestModelProviderMutation,
+  useCreateModelProviderMutation,
 } from './lib/hooks';
 import {
-  Sparkles,
-  Terminal,
   Settings,
-  LogOut,
-  Archive,
   ChevronDown,
-  FolderOpen,
-  X,
   PlusCircle,
-  Wrench,
+  Database,
+  Trash2,
 } from 'lucide-react';
 
 type Tab = 'chat' | 'info' | 'diff' | 'files';
 type SendShortcutMode = 'enter' | 'mod_enter';
+type ProviderModelForm = ProviderFormPayload['models'][number];
 
 const WORKSPACE_ROOT_PATH = '/workspace';
 
@@ -99,42 +98,61 @@ function findSessionNode(projects: ProjectDTO[], sessionId: string): SessionTree
   return null;
 }
 
+function createEmptyProviderModel(): ProviderModelForm {
+  return {
+    id: '',
+    name: '',
+    reasoning: false,
+    inputImage: false,
+    contextWindow: undefined,
+    maxTokens: undefined,
+  };
+}
+
 export default function App() {
-  // Auth
   const authQuery = useAuthSession();
   const isLoggedIn = Boolean(authQuery.data?.ok);
   const modelsStatusQuery = useModelsStatus();
-
   const loginMutation = useLoginMutation();
   const logoutMutation = useLogoutMutation();
 
-  // UI state
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
+  const [showArchived, setShowArchived] = useState(() => {
+    try { return localStorage.getItem('pi-show-archived') === 'true'; } catch { return false; }
+  });
+  const [showWorker, setShowWorker] = useState(() => {
+    try { return localStorage.getItem('pi-show-worker') !== 'false'; } catch { return true; }
+  });
   const [showSettings, setShowSettings] = useState(false);
   const [showCreateProject, setShowCreateProject] = useState(false);
+  const [showProviderModal, setShowProviderModal] = useState(false);
 
-  // Create project form state
   const [createName, setCreateName] = useState('');
   const [createMode, setCreateMode] = useState<'existing' | 'git_clone'>('existing');
   const [createPath, setCreatePath] = useState('');
   const [createRepoUrl, setCreateRepoUrl] = useState('');
   const [createProjectModelKey, setCreateProjectModelKey] = useState('');
 
-  // Stream state
+  const [providerKey, setProviderKey] = useState('');
+  const [providerBaseUrl, setProviderBaseUrl] = useState('');
+  const [providerApiKey, setProviderApiKey] = useState('');
+  const [providerAuthHeader, setProviderAuthHeader] = useState(true);
+  const [supportsDeveloperRole, setSupportsDeveloperRole] = useState(false);
+  const [supportsReasoningEffort, setSupportsReasoningEffort] = useState(false);
+  const [providerModels, setProviderModels] = useState<ProviderModelForm[]>([createEmptyProviderModel()]);
+  const [providerError, setProviderError] = useState<string | null>(null);
+  const [providerTestResult, setProviderTestResult] = useState<string | null>(null);
+  const [providerTestModels, setProviderTestModels] = useState<Array<{ id: string; name?: string }>>([]);
+
   const [streamNote, setStreamNote] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
-
-  // WS connection status
   const [wsConnected, setWsConnected] = useState(false);
 
-  // Theme
   const initialUrlSessionId = useMemo(() => getSessionIdFromPath(window.location.pathname), []);
-
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try {
       const saved = localStorage.getItem('pi-workspace-theme');
@@ -153,13 +171,10 @@ export default function App() {
   });
 
   useEffect(() => {
-    try { localStorage.setItem('pi-workspace-theme', theme); } catch { /* noop */ }
-
-    // Dynamically load matching highlight.js theme so code preview matches the app theme.
+    try { localStorage.setItem('pi-workspace-theme', theme); } catch {}
     const hljsLinkId = 'hljs-theme';
     const existing = document.getElementById(hljsLinkId);
     if (existing) existing.remove();
-
     const link = document.createElement('link');
     link.id = hljsLinkId;
     link.rel = 'stylesheet';
@@ -168,37 +183,28 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    try { localStorage.setItem('pi-send-shortcut-mode', sendShortcutMode); } catch { /* noop */ }
+    try { localStorage.setItem('pi-send-shortcut-mode', sendShortcutMode); } catch {}
   }, [sendShortcutMode]);
 
   const queryClient = useQueryClient();
-
-  // Data queries
   const treeQuery = useTree();
+  const refetchTree = treeQuery.refetch;
   const tree = treeQuery.data?.projects ?? [];
-
   const sessionInfoQuery = useSessionInfo(selectedSessionId);
   const sessionInfo = sessionInfoQuery.data;
-
   const gitDiffQuery = useSessionGitDiff(activeTab === 'diff' ? selectedSessionId : null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const fileTreeQuery = useSessionFileTree(activeTab === 'files' ? selectedSessionId : null);
-  const fileContentQuery = useSessionFileContent(
-    activeTab === 'files' ? selectedSessionId : null,
-    activeTab === 'files' ? selectedFilePath : null,
-  );
-
+  const fileContentQuery = useSessionFileContent(activeTab === 'files' ? selectedSessionId : null, activeTab === 'files' ? selectedFilePath : null);
   const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null);
-  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => {
-    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-  }) ?? [];
+  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [];
   const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
   const loadingMoreMessages = messagesQuery.isFetchingNextPage;
-
   const modelsQuery = useModels();
   const setModelMut = useSetSessionModelMutation();
+  const testProviderMut = useTestModelProviderMutation();
+  const createProviderMut = useCreateModelProviderMutation();
 
-  // Mutations
   const createProjectMut = useCreateProjectMutation();
   const createSessionMut = useCreateSessionMutation();
   const sendMessageMut = useSendMessageMutation(selectedSessionId);
@@ -206,11 +212,9 @@ export default function App() {
   const archiveSessionMut = useArchiveSessionMutation();
   const archiveProjectMut = useArchiveProjectMutation();
   const deleteProjectMut = useDeleteProjectMutation();
-
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
   const runtimeStatus = sessionInfo?.session.runtime_status ?? currentSessionNode?.runtime_status ?? 'idle';
 
-  // Clear streaming when session changes
   useEffect(() => {
     setPendingUserMessages([]);
     setStreamingContent('');
@@ -218,13 +222,10 @@ export default function App() {
     setSelectedFilePath(null);
   }, [selectedSessionId]);
 
-  // Restore session from URL first, then fallback to first available session.
   useEffect(() => {
     if (!tree.length) return;
-
     const requestedSessionId = getSessionIdFromPath(window.location.pathname) ?? initialUrlSessionId;
     const resolvedSessionId = selectedSessionId ?? requestedSessionId;
-
     if (resolvedSessionId) {
       const pid = findProjectId(tree, resolvedSessionId);
       if (pid) {
@@ -233,15 +234,12 @@ export default function App() {
         return;
       }
     }
-
     const fallback = findFirstSession(tree);
     if (!fallback) return;
-
     if (selectedSessionId !== fallback.sessionId) setSelectedSessionId(fallback.sessionId);
     if (selectedProjectId !== fallback.projectId) setSelectedProjectId(fallback.projectId);
   }, [tree, selectedSessionId, selectedProjectId, initialUrlSessionId]);
 
-  // Keep URL in sync with current session selection.
   useEffect(() => {
     const targetPath = getSessionPath(selectedSessionId);
     if (window.location.pathname !== targetPath) {
@@ -249,14 +247,12 @@ export default function App() {
     }
   }, [selectedSessionId]);
 
-  // Resolve projectId from tree
   useEffect(() => {
     if (!selectedSessionId || !tree.length) return;
     const pid = findProjectId(tree, selectedSessionId);
     if (pid) setSelectedProjectId(pid);
   }, [selectedSessionId, tree]);
 
-  // WS
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
   const selectedProjectIdRef = useRef(selectedProjectId);
@@ -265,24 +261,17 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedSessionId) return;
-
     const socket = createWorkspaceSocket({
       onMessage(event) {
         try {
           const message = JSON.parse(event.data as string) as ServerMessage;
-
-          // chat_stream
           if (message.kind === 'chat_stream' && message.scope?.session_id === selectedSessionId) {
             if (activeTabRef.current === 'chat') {
               const delta = message.payload?.delta ?? '';
               setStreamNote(`${message.phase}${delta ? ' · streaming' : ''}`);
-              if (message.phase === 'start') {
-                setStreamingContent('');
-              } else if (message.phase === 'delta') {
-                setStreamingContent((prev) => prev + delta);
-              }
+              if (message.phase === 'start') setStreamingContent('');
+              else if (message.phase === 'delta') setStreamingContent((prev) => prev + delta);
             }
-
             if (message.phase === 'complete') {
               setStreamingContent('');
               setStreamNote('');
@@ -293,13 +282,8 @@ export default function App() {
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
               ]);
             }
-
-            if (message.phase === 'error') {
-              setStreamNote('error');
-            }
+            if (message.phase === 'error') setStreamNote('error');
           }
-
-          // runtime_status_changed
           if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
             treeQuery.refetch();
             const status = message.payload?.runtime_status;
@@ -314,20 +298,10 @@ export default function App() {
               ]);
             }
           }
-
-          // tree change events
-          if (
-            message.kind === 'event' &&
-            (message.type === 'tree.changed' ||
-              message.type === 'project.created' ||
-              message.type === 'session.created' ||
-              message.type === 'session.archived')
-          ) {
+          if (message.kind === 'event' && (message.type === 'tree.changed' || message.type === 'project.created' || message.type === 'session.created' || message.type === 'session.archived')) {
             treeQuery.refetch();
           }
-        } catch {
-          /* ignore parse errors */
-        }
+        } catch {}
       },
       onOpen() {
         setWsConnected(true);
@@ -335,13 +309,7 @@ export default function App() {
         socket.setContext({
           project_id: selectedProjectIdRef.current ?? undefined,
           session_id: selectedSessionId,
-          current_tab: activeTabRef.current === 'info'
-            ? 'session_info'
-            : activeTabRef.current === 'diff'
-              ? 'git_diff'
-              : activeTabRef.current === 'files'
-                ? 'files'
-                : 'chat',
+          current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' ? 'files' : 'chat',
         });
         socket.ping();
       },
@@ -349,118 +317,93 @@ export default function App() {
         setWsConnected(false);
       },
     });
-
     socketRef.current = socket;
     return () => {
       socketRef.current = null;
       socket.close();
     };
-  }, [selectedSessionId]);
+  }, [selectedSessionId, queryClient, refetchTree]);
 
-  // Update WS context when tab/project changes
   useEffect(() => {
     if (!socketRef.current || !selectedSessionId) return;
     socketRef.current.setContext({
       project_id: selectedProjectId ?? undefined,
       session_id: selectedSessionId,
-      current_tab: activeTab === 'info'
-        ? 'session_info'
-        : activeTab === 'diff'
-          ? 'git_diff'
-          : activeTab === 'files'
-            ? 'files'
-            : 'chat',
+      current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : activeTab === 'files' ? 'files' : 'chat',
     });
   }, [activeTab, selectedProjectId, selectedSessionId]);
 
-  // Handlers
-  const handleLogin = useCallback(
-    async (password: string) => {
-      try {
-        await loginMutation.mutateAsync(password);
-        authQuery.refetch();
-      } catch { /* handled by mutation state */ }
-    },
-    [loginMutation, authQuery],
-  );
+  const handleLogin = useCallback(async (password: string) => {
+    try {
+      await loginMutation.mutateAsync(password);
+      authQuery.refetch();
+    } catch {}
+  }, [loginMutation, authQuery]);
 
   const handleLogout = useCallback(() => {
     logoutMutation.mutate();
   }, [logoutMutation]);
 
-  const handleSelectSession = useCallback(
-    (projectId: string, sessionId: string) => {
-      setSelectedProjectId(projectId);
-      setSelectedSessionId(sessionId);
-      setActiveTab('chat');
-      const targetPath = getSessionPath(sessionId);
-      if (window.location.pathname !== targetPath) {
-        window.history.pushState(null, '', targetPath);
-      }
-    },
-    [],
-  );
+  const handleSelectSession = useCallback((projectId: string, sessionId: string) => {
+    setSelectedProjectId(projectId);
+    setSelectedSessionId(sessionId);
+    setActiveTab('chat');
+    const targetPath = getSessionPath(sessionId);
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState(null, '', targetPath);
+    }
+  }, []);
 
-  const handleCreateProject = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!createName.trim()) return;
-      try {
-        const result = await createProjectMut.mutateAsync({
-          name: createName.trim(),
-          mode: createMode,
-          path: createMode === 'existing' ? createPath : undefined,
-          repoUrl: createMode === 'git_clone' ? createRepoUrl : undefined,
-          model: createProjectModelKey
-            ? (() => {
-                const [provider, id] = createProjectModelKey.split('/');
-                return provider && id ? { provider, id, label: createProjectModelKey } : null;
-              })()
-            : null,
-        });
-        setShowCreateProject(false);
-        setCreateName('');
-        setCreatePath('');
-        setCreateRepoUrl('');
-        setCreateProjectModelKey('');
-        if (result.sessionId) {
-          setSelectedProjectId(result.projectId);
-          setSelectedSessionId(result.sessionId);
-        }
-        await treeQuery.refetch();
-      } catch { /* ignore */ }
-    },
-    [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, treeQuery],
-  );
+  const handleCreateProject = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!createName.trim()) return;
+    try {
+      const result = await createProjectMut.mutateAsync({
+        name: createName.trim(),
+        mode: createMode,
+        path: createMode === 'existing' ? createPath : undefined,
+        repoUrl: createMode === 'git_clone' ? createRepoUrl : undefined,
+        model: createProjectModelKey ? (() => {
+          const [provider, id] = createProjectModelKey.split('/');
+          return provider && id ? { provider, id, label: createProjectModelKey } : null;
+        })() : null,
+      });
+      setShowCreateProject(false);
+      setCreateName('');
+      setCreatePath('');
+      setCreateRepoUrl('');
+      setCreateProjectModelKey('');
+      if (result.sessionId) {
+        setSelectedProjectId(result.projectId);
+        setSelectedSessionId(result.sessionId);
+      }
+      await treeQuery.refetch();
+    } catch {}
+  }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, treeQuery]);
 
   const handleCreateSession = useCallback(async () => {
     if (!selectedProjectId) return;
     try {
-      const result = await createSessionMut.mutateAsync({
-        projectId: selectedProjectId,
-      });
+      const result = await createSessionMut.mutateAsync({ projectId: selectedProjectId });
       setSelectedSessionId(result.session_id);
       await treeQuery.refetch();
-    } catch { /* ignore */ }
+    } catch {}
   }, [selectedProjectId, createSessionMut, treeQuery]);
 
-  const handleSend = useCallback(
-    async (content: string) => {
-      if (!selectedSessionId) return;
-      const optimisticMessage: ChatMessageDTO = {
-        id: `optimistic_${Date.now()}`,
-        role: 'user',
-        message_kind: 'normal',
-        source_session_id: null,
-        content_text: content,
-        created_at: new Date().toISOString(),
-      };
-      setPendingUserMessages((prev) => [...prev, optimisticMessage]);
-      await sendMessageMut.mutateAsync(content);
-      queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
-    },
-    [selectedSessionId, sendMessageMut, queryClient],
-  );
+  const handleSend = useCallback(async (content: string) => {
+    if (!selectedSessionId) return;
+    const optimisticMessage: ChatMessageDTO = {
+      id: `optimistic_${Date.now()}`,
+      role: 'user',
+      message_kind: 'normal',
+      source_session_id: null,
+      content_text: content,
+      created_at: new Date().toISOString(),
+    };
+    setPendingUserMessages((prev) => [...prev, optimisticMessage]);
+    await sendMessageMut.mutateAsync(content);
+    queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+  }, [selectedSessionId, sendMessageMut, queryClient]);
 
   const handleStop = useCallback(async () => {
     if (!selectedSessionId) return;
@@ -473,46 +416,137 @@ export default function App() {
     const rootId = currentSessionNode?.root_session_id ?? sessionInfo?.session.root_session_id;
     await archiveSessionMut.mutateAsync(selectedSessionId);
     await treeQuery.refetch();
-    // 归档后自动跳转到根会话（负责人/planner）
     if (rootId && rootId !== selectedSessionId) {
       handleSelectSession(selectedProjectId ?? '', rootId);
     }
   }, [selectedSessionId, currentSessionNode, sessionInfo, archiveSessionMut, treeQuery, handleSelectSession, selectedProjectId]);
 
-  const handleModelSelect = useCallback(
-    async (provider: string, id: string) => {
-      if (!selectedSessionId) return;
-      await setModelMut.mutateAsync({ sessionId: selectedSessionId, provider, id });
-      queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] });
-    },
-    [selectedSessionId, setModelMut, queryClient],
-  );
+  const handleModelSelect = useCallback(async (provider: string, id: string) => {
+    if (!selectedSessionId) return;
+    await setModelMut.mutateAsync({ sessionId: selectedSessionId, provider, id });
+    queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] });
+  }, [selectedSessionId, setModelMut, queryClient]);
 
   const handleRefreshDiff = useCallback(() => {
     if (!selectedSessionId) return;
     queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', selectedSessionId] });
   }, [selectedSessionId, queryClient]);
 
-  // Git mutations
-  const gitPullMut = useGitPullMutation(selectedSessionId);
-  const gitPushMut = useGitPushMutation(selectedSessionId);
-  const gitCommitMut = useGitCommitMutation(selectedSessionId);
-  const addGitignoreMut = useAddGitignoreMutation(selectedSessionId);
+  const gitPullMut = useGitPullMutation();
+  const gitPushMut = useGitPushMutation();
+  const gitCommitMut = useGitCommitMutation();
+  const addGitignoreMut = useAddGitignoreMutation();
 
-  const handleGitPull = useCallback(async () => {
-    return gitPullMut.mutateAsync();
-  }, [gitPullMut]);
+  const resetProviderForm = useCallback(() => {
+    setProviderKey('');
+    setProviderBaseUrl('');
+    setProviderApiKey('');
+    setProviderAuthHeader(true);
+    setSupportsDeveloperRole(false);
+    setSupportsReasoningEffort(false);
+    setProviderModels([createEmptyProviderModel()]);
+    setProviderError(null);
+    setProviderTestResult(null);
+    setProviderTestModels([]);
+  }, []);
 
-  const handleGitPush = useCallback(async () => {
-    return gitPushMut.mutateAsync();
-  }, [gitPushMut]);
+  const handleOpenProviderModal = useCallback(() => {
+    setShowSettings(false);
+    resetProviderForm();
+    setShowProviderModal(true);
+  }, [resetProviderForm]);
 
-  const handleGitCommit = useCallback(
-    async (message: string) => {
-      return gitCommitMut.mutateAsync(message);
+  const handleCloseProviderModal = useCallback(() => {
+    setShowProviderModal(false);
+    setProviderError(null);
+  }, []);
+
+  const updateProviderModel = useCallback((index: number, patch: Partial<ProviderModelForm>) => {
+    setProviderModels((current) => current.map((model, modelIndex) => modelIndex === index ? { ...model, ...patch } : model));
+  }, []);
+
+  const handleAddProviderModel = useCallback(() => {
+    setProviderModels((current) => [...current, createEmptyProviderModel()]);
+  }, []);
+
+  const handleRemoveProviderModel = useCallback((index: number) => {
+    setProviderModels((current) => current.length === 1 ? current : current.filter((_, modelIndex) => modelIndex !== index));
+  }, []);
+
+  const buildProviderPayload = useCallback((): ProviderFormPayload => ({
+    providerKey: providerKey.trim(),
+    baseUrl: providerBaseUrl.trim(),
+    apiKey: providerApiKey,
+    authHeader: providerAuthHeader,
+    compat: {
+      supportsDeveloperRole,
+      supportsReasoningEffort,
     },
-    [gitCommitMut],
-  );
+    models: providerModels.map((model) => ({
+      id: model.id.trim(),
+      name: model.name?.trim() || undefined,
+      reasoning: Boolean(model.reasoning),
+      inputImage: Boolean(model.inputImage),
+      contextWindow: model.contextWindow ? Number(model.contextWindow) : undefined,
+      maxTokens: model.maxTokens ? Number(model.maxTokens) : undefined,
+    })),
+  }), [providerKey, providerBaseUrl, providerApiKey, providerAuthHeader, supportsDeveloperRole, supportsReasoningEffort, providerModels]);
+
+  const validateProviderPayload = useCallback((payload: ProviderFormPayload) => {
+    if (!payload.providerKey) return '请填写 providerKey';
+    if (!payload.baseUrl) return '请填写 baseUrl';
+    if (payload.models.length === 0) return '请至少添加一个模型';
+    if (payload.models.some((model) => !model.id)) return '请填写所有模型的 id';
+    return null;
+  }, []);
+
+  const handleTestProvider = useCallback(async () => {
+    const payload = buildProviderPayload();
+    const error = validateProviderPayload(payload);
+    if (error) {
+      setProviderError(error);
+      return;
+    }
+    setProviderError(null);
+    setProviderTestResult(null);
+    setProviderTestModels([]);
+    try {
+      const result = await testProviderMut.mutateAsync({
+        providerKey: payload.providerKey,
+        baseUrl: payload.baseUrl,
+        apiKey: payload.apiKey,
+        authHeader: payload.authHeader,
+      });
+      if (!result.ok) {
+        setProviderError(result.error ?? '测试连接失败');
+        return;
+      }
+      setProviderTestModels(result.models ?? []);
+      setProviderTestResult(result.models && result.models.length > 0 ? `测试成功，发现 ${result.models.length} 个模型` : '测试成功');
+    } catch (error) {
+      setProviderError(error instanceof Error ? error.message : '测试连接失败');
+    }
+  }, [buildProviderPayload, validateProviderPayload, testProviderMut]);
+
+  const handleSaveProvider = useCallback(async () => {
+    const payload = buildProviderPayload();
+    const error = validateProviderPayload(payload);
+    if (error) {
+      setProviderError(error);
+      return;
+    }
+    setProviderError(null);
+    try {
+      await createProviderMut.mutateAsync(payload);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['models', 'status'] }),
+      ]);
+      setShowProviderModal(false);
+    } catch (saveError) {
+      setProviderError(saveError instanceof Error ? saveError.message : '保存失败');
+    }
+  }, [buildProviderPayload, validateProviderPayload, createProviderMut, queryClient]);
 
   const handleLoadMore = useCallback(() => {
     if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
@@ -520,21 +554,14 @@ export default function App() {
     }
   }, [messagesQuery]);
 
-  const handleArchiveProject = useCallback(
-    (projectId: string) => {
-      archiveProjectMut.mutate(projectId);
-    },
-    [archiveProjectMut],
-  );
+  const handleArchiveProject = useCallback((projectId: string) => {
+    archiveProjectMut.mutate(projectId);
+  }, [archiveProjectMut]);
 
-  const handleDeleteProject = useCallback(
-    (projectId: string) => {
-      deleteProjectMut.mutate(projectId);
-    },
-    [deleteProjectMut],
-  );
+  const handleDeleteProject = useCallback((projectId: string) => {
+    deleteProjectMut.mutate(projectId);
+  }, [deleteProjectMut]);
 
-  // Login screen
   if (!isLoggedIn) {
     return (
       <LoginScreen
@@ -564,14 +591,26 @@ export default function App() {
         onLogout={handleLogout}
         onOpenSettings={() => setShowSettings(true)}
         showArchived={showArchived}
-        onToggleShowArchived={() => setShowArchived(!showArchived)}
+        onToggleShowArchived={() => {
+          setShowArchived((v) => {
+            const next = !v;
+            try { localStorage.setItem('pi-show-archived', String(next)); } catch {}
+            return next;
+          });
+        }}
+        showWorker={showWorker}
+        onToggleShowWorker={() => {
+          setShowWorker((v) => {
+            const next = !v;
+            try { localStorage.setItem('pi-show-worker', String(next)); } catch {}
+            return next;
+          });
+        }}
         treeLoading={treeQuery.isLoading}
         creatingSession={createSessionMut.isPending}
       />
 
-      {/* Main content */}
       <div className="flex-1 min-w-0 flex flex-col h-full bg-slate-50 dark:bg-slate-900 relative">
-        {/* Top header bar */}
         <header className="border-b border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
           {sessionInfo && (
             <div className="flex items-center space-x-3 py-1">
@@ -582,50 +621,13 @@ export default function App() {
           )}
 
           <div className="flex space-x-1">
-            <button
-              onClick={() => setActiveTab('chat')}
-              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
-                activeTab === 'chat'
-                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-              }`}
-            >
-              Chat
-            </button>
-            <button
-              onClick={() => setActiveTab('info')}
-              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
-                activeTab === 'info'
-                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-              }`}
-            >
-              Session Info
-            </button>
-            <button
-              onClick={() => setActiveTab('diff')}
-              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
-                activeTab === 'diff'
-                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-              }`}
-            >
-              Git
-            </button>
-            <button
-              onClick={() => setActiveTab('files')}
-              className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${
-                activeTab === 'files'
-                  ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-              }`}
-            >
-              Files
-            </button>
+            <button onClick={() => setActiveTab('chat')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'chat' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Chat</button>
+            <button onClick={() => setActiveTab('info')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'info' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Session Info</button>
+            <button onClick={() => setActiveTab('diff')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'diff' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Git</button>
+            <button onClick={() => setActiveTab('files')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'files' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Files</button>
           </div>
         </header>
 
-        {/* Tab content */}
         <div className="flex-1 overflow-hidden relative">
           {selectedSessionId ? (
             <>
@@ -654,30 +656,22 @@ export default function App() {
                   showArchiveButton={!isPlannerRoot}
                 />
               )}
-
-              {activeTab === 'info' && (
-                <TabSessionInfo
-                  sessionInfo={sessionInfo ?? null}
-                  isLoading={sessionInfoQuery.isLoading}
-                />
-              )}
-
+              {activeTab === 'info' && <TabSessionInfo sessionInfo={sessionInfo ?? null} isLoading={sessionInfoQuery.isLoading} />}
               {activeTab === 'diff' && (
                 <TabGitDiff
                   diff={gitDiffQuery.data?.diff ?? null}
                   isLoading={gitDiffQuery.isLoading}
                   onRefresh={handleRefreshDiff}
-                  onPull={handleGitPull}
-                  onPush={handleGitPush}
-                  onCommit={handleGitCommit}
+                  onPull={() => gitPullMut.mutateAsync(selectedSessionId)}
+                  onPush={() => gitPushMut.mutateAsync(selectedSessionId)}
+                  onCommit={(message) => gitCommitMut.mutateAsync({ sessionId: selectedSessionId, message })}
                   isPulling={gitPullMut.isPending}
                   isPushing={gitPushMut.isPending}
                   isCommitting={gitCommitMut.isPending}
-                  onAddGitignore={(filePath) => addGitignoreMut.mutateAsync(filePath)}
+                  onAddGitignore={(filePath) => addGitignoreMut.mutateAsync({ sessionId: selectedSessionId, path: filePath })}
                   isAddingGitignore={addGitignoreMut.isPending}
                 />
               )}
-
               {activeTab === 'files' && (
                 <TabFiles
                   treeResponse={fileTreeQuery.data ?? null}
@@ -688,9 +682,7 @@ export default function App() {
                   contentError={fileContentQuery.error instanceof Error ? fileContentQuery.error.message : null}
                   selectedPath={selectedFilePath}
                   onSelectPath={setSelectedFilePath}
-                  onRefresh={() => {
-                    void fileTreeQuery.refetch();
-                  }}
+                  onRefresh={() => { void fileTreeQuery.refetch(); }}
                 />
               )}
             </>
@@ -698,209 +690,146 @@ export default function App() {
             <div className="h-full flex flex-col items-center justify-center p-8 bg-slate-50 dark:bg-slate-900/40">
               <div className="text-center space-y-2">
                 <h2 className="text-base font-bold text-slate-700 dark:text-slate-300">未选择会话</h2>
-                <p className="text-xs text-slate-400 dark:text-slate-500">
-                  在侧边栏选择或新建一个会话以开始工作。
-                </p>
+                <p className="text-xs text-slate-400 dark:text-slate-500">在侧边栏选择或新建一个会话以开始工作。</p>
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Create Project Modal */}
-      <Modal
-        isOpen={showCreateProject}
-        onClose={() => setShowCreateProject(false)}
-        title="新建项目"
-        icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}
-      >
+      <Modal isOpen={showCreateProject} onClose={() => setShowCreateProject(false)} title="新建项目" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}>
         <form onSubmit={handleCreateProject} className="space-y-4">
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-              项目名称 <span className="text-red-500">*</span>
-            </label>
-            <input
-              required
-              autoFocus
-              type="text"
-              placeholder="请输入项目名称..."
-              value={createName}
-              onChange={(e) => setCreateName(e.target.value)}
-              className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400"
-            />
+            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">项目名称 <span className="text-red-500">*</span></label>
+            <input required autoFocus type="text" placeholder="请输入项目名称..." value={createName} onChange={(e) => setCreateName(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
           </div>
-
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-              模式
-            </label>
+            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">模式</label>
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setCreateMode('existing')}
-                className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${
-                  createMode === 'existing'
-                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                绑定目录
-              </button>
-              <button
-                type="button"
-                onClick={() => setCreateMode('git_clone')}
-                className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${
-                  createMode === 'git_clone'
-                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                Git Clone
-              </button>
+              <button type="button" onClick={() => setCreateMode('existing')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${createMode === 'existing' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>绑定目录</button>
+              <button type="button" onClick={() => setCreateMode('git_clone')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${createMode === 'git_clone' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>Git Clone</button>
             </div>
           </div>
-
           {createMode === 'existing' ? (
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-                项目路径 <span className="text-red-500">*</span>
-              </label>
-              <input
-                required
-                type="text"
-                placeholder="/path/to/project"
-                value={createPath}
-                onChange={(e) => setCreatePath(e.target.value)}
-                className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400"
-              />
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">项目路径 <span className="text-red-500">*</span></label>
+              <input required type="text" placeholder="/path/to/project" value={createPath} onChange={(e) => setCreatePath(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
             </div>
           ) : (
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-                Git 仓库地址 <span className="text-red-500">*</span>
-              </label>
-              <input
-                required
-                type="url"
-                placeholder="https://github.com/user/repo"
-                value={createRepoUrl}
-                onChange={(e) => setCreateRepoUrl(e.target.value)}
-                className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400"
-              />
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Git 仓库地址 <span className="text-red-500">*</span></label>
+              <input required type="url" placeholder="https://github.com/user/repo" value={createRepoUrl} onChange={(e) => setCreateRepoUrl(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
             </div>
           )}
-
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">
-              负责人模型
-            </label>
+            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">负责人模型</label>
             <div className="relative">
-              <select
-                value={createProjectModelKey}
-                onChange={(e) => setCreateProjectModelKey(e.target.value)}
-                className="w-full appearance-none px-3 py-2 pr-8 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
-              >
+              <select value={createProjectModelKey} onChange={(e) => setCreateProjectModelKey(e.target.value)} className="w-full appearance-none px-3 py-2 pr-8 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition">
                 <option value="">使用默认模型</option>
-                {(modelsQuery.data ?? []).map((m) => (
-                  <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                    {m.provider} / {m.label}
-                  </option>
-                ))}
+                {(modelsQuery.data ?? []).map((m) => <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>{m.provider} / {m.label}</option>)}
               </select>
               <ChevronDown className="w-3.5 h-3.5 absolute right-2.5 top-2.5 pointer-events-none text-slate-500" />
             </div>
           </div>
-
           <div className="flex space-x-2 pt-3 justify-end border-t border-slate-150 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => setShowCreateProject(false)}
-              className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
-            >
-              取消
-            </button>
-            <button
-              type="submit"
-              disabled={createProjectMut.isPending}
-              className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs hover:shadow-xs transition cursor-pointer disabled:opacity-50"
-            >
-              {createProjectMut.isPending ? '创建中…' : '确认创建'}
-            </button>
+            <button type="button" onClick={() => setShowCreateProject(false)} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
+            <button type="submit" disabled={createProjectMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs hover:shadow-xs transition cursor-pointer disabled:opacity-50">{createProjectMut.isPending ? '创建中…' : '确认创建'}</button>
           </div>
         </form>
       </Modal>
 
-      {/* Settings Modal */}
-      <Modal
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-        title="设置"
-        icon={<Settings className="w-4 h-4 text-slate-500 dark:text-slate-400" />}
-      >
+      <Modal isOpen={showSettings} onClose={() => setShowSettings(false)} title="设置" icon={<Settings className="w-4 h-4 text-slate-500 dark:text-slate-400" />}>
         <div className="space-y-4">
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-              发送快捷键
-            </label>
+            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">发送快捷键</label>
             <div className="flex gap-2">
-              <button
-                onClick={() => setSendShortcutMode('enter')}
-                className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${
-                  sendShortcutMode === 'enter'
-                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                Enter 发送
-              </button>
-              <button
-                onClick={() => setSendShortcutMode('mod_enter')}
-                className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${
-                  sendShortcutMode === 'mod_enter'
-                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                Ctrl/Cmd+Enter 发送
-              </button>
+              <button onClick={() => setSendShortcutMode('enter')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${sendShortcutMode === 'enter' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>Enter 发送</button>
+              <button onClick={() => setSendShortcutMode('mod_enter')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${sendShortcutMode === 'mod_enter' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>Ctrl/Cmd+Enter 发送</button>
             </div>
           </div>
-
           <div>
-            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-              主题
-            </label>
+            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">主题</label>
             <div className="flex gap-2">
-              <button
-                onClick={() => setTheme('light')}
-                className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${
-                  theme === 'light'
-                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                浅色
-              </button>
-              <button
-                onClick={() => setTheme('dark')}
-                className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${
-                  theme === 'dark'
-                    ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400'
-                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                深色
-              </button>
+              <button onClick={() => setTheme('light')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'light' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>浅色</button>
+              <button onClick={() => setTheme('dark')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'dark' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>深色</button>
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">模型提供商</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">当前仅支持 `openai-completions` 兼容接口</div>
+              </div>
+              <button onClick={handleOpenProviderModal} className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer">添加模型提供商</button>
+            </div>
+          </div>
+          <div className="flex justify-end pt-3 border-t border-slate-150 dark:border-slate-800">
+            <button onClick={() => setShowSettings(false)} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer">关闭</button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={showProviderModal} onClose={handleCloseProviderModal} title="添加模型提供商" icon={<Database className="w-4 h-4 text-blue-600 dark:text-blue-400" />} maxWidthClassName="max-w-3xl">
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">providerKey</label>
+              <input value={providerKey} onChange={(e) => setProviderKey(e.target.value)} placeholder="例如 custom-openai" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">baseUrl</label>
+              <input value={providerBaseUrl} onChange={(e) => setProviderBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">apiKey</label>
+              <input value={providerApiKey} onChange={(e) => setProviderApiKey(e.target.value)} type="password" placeholder="sk-..." className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
             </div>
           </div>
 
-          <div className="flex justify-end pt-3 border-t border-slate-150 dark:border-slate-800">
-            <button
-              onClick={() => setShowSettings(false)}
-              className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer"
-            >
-              关闭
-            </button>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={providerAuthHeader} onChange={(e) => setProviderAuthHeader(e.target.checked)} /> authHeader</label>
+            <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsDeveloperRole} onChange={(e) => setSupportsDeveloperRole(e.target.checked)} /> compat.supportsDeveloperRole</label>
+            <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsReasoningEffort} onChange={(e) => setSupportsReasoningEffort(e.target.checked)} /> compat.supportsReasoningEffort</label>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">模型列表</div>
+              <button onClick={handleAddProviderModel} className="px-3 py-1.5 text-xs font-semibold border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer">添加模型项</button>
+            </div>
+            {providerModels.map((model, index) => (
+              <div key={index} className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-3 bg-slate-50 dark:bg-slate-950/40">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">模型 {index + 1}</div>
+                  <button onClick={() => handleRemoveProviderModel(index)} disabled={providerModels.length === 1} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input value={model.id} onChange={(e) => updateProviderModel(index, { id: e.target.value })} placeholder="id" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                  <input value={model.name ?? ''} onChange={(e) => updateProviderModel(index, { name: e.target.value })} placeholder="name（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                  <input value={model.contextWindow ?? ''} onChange={(e) => updateProviderModel(index, { contextWindow: e.target.value ? Number(e.target.value) : undefined })} type="number" placeholder="contextWindow（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                  <input value={model.maxTokens ?? ''} onChange={(e) => updateProviderModel(index, { maxTokens: e.target.value ? Number(e.target.value) : undefined })} type="number" placeholder="maxTokens（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                </div>
+                <div className="flex flex-wrap gap-4">
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.reasoning} onChange={(e) => updateProviderModel(index, { reasoning: e.target.checked })} /> reasoning</label>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.inputImage} onChange={(e) => updateProviderModel(index, { inputImage: e.target.checked })} /> inputImage</label>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {providerError && <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">{providerError}</div>}
+          {providerTestResult && <div className="text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-lg px-3 py-2">{providerTestResult}</div>}
+          {providerTestModels.length > 0 && (
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-2">
+              <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">测试返回模型</div>
+              <div className="flex flex-wrap gap-2">{providerTestModels.map((model) => <span key={model.id} className="px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-200">{model.name ?? model.id}</span>)}</div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-slate-150 dark:border-slate-800">
+            <button onClick={handleCloseProviderModal} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
+            <button onClick={handleTestProvider} disabled={testProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer disabled:opacity-50">{testProviderMut.isPending ? '测试中…' : '测试连接'}</button>
+            <button onClick={handleSaveProvider} disabled={createProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50">{createProviderMut.isPending ? '保存中…' : '保存'}</button>
           </div>
         </div>
       </Modal>

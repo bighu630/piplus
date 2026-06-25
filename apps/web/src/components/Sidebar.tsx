@@ -36,6 +36,8 @@ interface SidebarProps {
   onOpenSettings: () => void;
   showArchived: boolean;
   onToggleShowArchived: () => void;
+  showWorker: boolean;
+  onToggleShowWorker: () => void;
   treeLoading: boolean;
   creatingSession: boolean;
 }
@@ -92,6 +94,8 @@ export default function Sidebar({
   onOpenSettings,
   showArchived,
   onToggleShowArchived,
+  showWorker,
+  onToggleShowWorker,
   treeLoading,
   creatingSession,
 }: SidebarProps) {
@@ -131,6 +135,7 @@ export default function Sidebar({
     const statusDotColor = runtimeColor(session.runtime_status);
 
     if (!showArchived && isArchived) return null;
+    if (!showWorker && session.role_template_key === 'worker') return null;
 
     return (
       <div key={session.id} className="w-full flex flex-col">
@@ -257,19 +262,31 @@ export default function Sidebar({
         </div>
       )}
 
-      {/* Archived toggle */}
+      {/* Filter toggles */}
       {!isSidebarCollapsed && (
-        <div className="px-3 mb-2">
-          <button
-            onClick={onToggleShowArchived}
-            className={`text-[10px] font-semibold px-2 py-1 rounded-md transition cursor-pointer ${
-              showArchived
-                ? 'bg-amber-100 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400'
-                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
-            }`}
-          >
-            {showArchived ? '显示已归档' : '隐藏已归档'}
-          </button>
+        <div className="px-3 mb-2 flex flex-row items-center">
+          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={onToggleShowArchived}
+              className="w-3 h-3 accent-slate-600 rounded cursor-pointer dark:bg-slate-700 dark:border-slate-600"
+            />
+            <span className={`text-[10px] font-semibold ${showArchived ? 'text-amber-700 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}>
+              显示已归档
+            </span>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer select-none ml-auto">
+            <input
+              type="checkbox"
+              checked={showWorker}
+              onChange={onToggleShowWorker}
+              className="w-3 h-3 accent-slate-600 rounded cursor-pointer dark:bg-slate-700 dark:border-slate-600"
+            />
+            <span className={`text-[10px] font-semibold ${showWorker ? 'text-blue-700 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500'}`}>
+              显示执行者
+            </span>
+          </label>
         </div>
       )}
 
@@ -283,7 +300,7 @@ export default function Sidebar({
           filteredProjects.map((project) => {
             const isCollapsed = collapsedProjects[project.id];
             const matchingSessions = project.sessions.filter(
-              (s) => showArchived || !s.archived_at,
+              (s) => (showArchived || !s.archived_at) && (showWorker || s.role_template_key !== 'worker'),
             );
 
             return (

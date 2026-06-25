@@ -166,7 +166,7 @@ describe('role manager tools', () => {
       userId: 'user_seed',
     });
 
-    expect(result).toMatchObject({ status: 'created' });
+    expect(result).toMatchObject({ status: 'created', session_id: expect.any(String) });
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -177,7 +177,7 @@ describe('role manager tools', () => {
     expect(state.setModel[0]).toEqual({ sessionId: child!.id, provider: 'anthropic', id: 'claude-sonnet-4-20250514', cwd: '' });
     expect(state.bound[0]).toEqual({ sessionId: child!.id, cwd: '' });
     expect(state.sent[0]?.sessionId).toBe(child!.id);
-    expect(state.sent[0]?.content).toContain('fix runtime status');
+    expect(state.sent[0]?.content).toBe('Proceed with the assigned task.');
 
     const [updatedChild] = await db.select().from(sessions).where(eq(sessions.id, child!.id)).limit(1);
     expect(updatedChild?.runtimeStatus).toBe('idle');

@@ -13,6 +13,33 @@ export type ModelInfo = {
   label: string;
 };
 
+export type ProviderFormModel = {
+  id: string;
+  name?: string;
+  reasoning: boolean;
+  inputImage: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+};
+
+export type ProviderFormPayload = {
+  providerKey: string;
+  baseUrl: string;
+  apiKey: string;
+  authHeader: boolean;
+  compat: {
+    supportsDeveloperRole: boolean;
+    supportsReasoningEffort: boolean;
+  };
+  models: ProviderFormModel[];
+};
+
+export type ProviderTestResponse = {
+  ok: boolean;
+  models?: Array<{ id: string; name?: string }>;
+  error?: string;
+};
+
 export type SessionMessagesPage = {
   session_id: string;
   cursor: string | null;
@@ -42,7 +69,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-// Auth
 export function login(password: string) {
   return request<{ token: string; user: { id: string; name: string } }>('/api/v1/auth/login', {
     method: 'POST',
@@ -56,13 +82,26 @@ export function checkAuth(token: string) {
   });
 }
 
-// Models
 export function getModelsStatus() {
   return request<{ ok: boolean; count: number; models: ModelInfo[] }>('/api/v1/models/status');
 }
 
 export function getModels() {
   return request<{ models: ModelInfo[] }>('/api/v1/models');
+}
+
+export function testModelProvider(payload: Omit<ProviderFormPayload, 'compat' | 'models'>) {
+  return request<ProviderTestResponse>('/api/v1/models/providers/test', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createModelProvider(payload: ProviderFormPayload) {
+  return request<{ ok: boolean; providerKey: string; models: ModelInfo[] }>('/api/v1/models/providers', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function setSessionModel(sessionId: string, model: { provider: string; id: string }) {
@@ -72,12 +111,10 @@ export function setSessionModel(sessionId: string, model: { provider: string; id
   });
 }
 
-// Tree
 export function getTree() {
   return request<TreeResponse>('/api/v1/tree');
 }
 
-// Sessions
 export function getSessionInfo(sessionId: string) {
   return request<SessionInfoDTO>(`/api/v1/sessions/${sessionId}/info`);
 }
@@ -155,7 +192,6 @@ export function addGitignore(sessionId: string, path: string) {
   );
 }
 
-// Projects
 export function createProject(
   name: string,
   mode?: string,

@@ -6,6 +6,7 @@ import { messages, sessions } from '@piplus/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
 import { startSessionRun } from '../session/runtime';
+import { setRequestContext, getRequestContext } from '../session/request-context';
 
 function labelForRole(key: string) {
   const map: Record<string, string> = {
@@ -68,6 +69,23 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
         required: ['summary'],
       },
     },
+    {
+      name: 'send_message_to_session',
+      description:
+        'Send a follow-up message to an existing child session (e.g. ask a reviewer to continue after fixes). Only direct child sessions are allowed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          session_id: { type: 'string', description: 'The target child session id (must be a direct child of the current session)' },
+          content: { type: 'string', description: 'The message to send to the child session' },
+          wait: {
+            type: 'boolean',
+            description: 'Whether to wait for the child session to process this message and return its writeback result',
+          },
+        },
+        required: ['session_id', 'content'],
+      },
+    },
   ];
 }
 
@@ -94,83 +112,81 @@ export async function invokeRoleManagerTool(
     if (!parent) throw new Error('parent_session_not_found');
 
     const wait = Boolean(args.wait ?? false);
+    const role = String(args.role ?? 'worker');
+    const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
 
     const result = await roleManager.spawnSession({
       projectId: parent.projectId,
       parentSessionId: ctx.sessionId,
       createdBy: ctx.userId,
-      role: String(args.role ?? 'worker'),
+      role,
       objective: String(args.objective ?? ''),
       scope: args.scope ? String(args.scope) : undefined,
       task: args.task ? String(args.task) : undefined,
       constraints: Array.isArray(args.constraints) ? args.constraints.map(String) : [],
     });
 
-    const kickOffMsg = `请开始执行你的任务。目标：${String(args.objective ?? '')}。范围：${args.scope ? String(args.scope) : '无限制'}。具体任务：${args.task ? String(args.task) : String(args.objective ?? '')}`;
-    console.log('[role-manager-tools] kickoff start', { sessionId: result.sessionId, locatorFile: result.locator.sessionFile, kickOffMsg, wait });
+    console.log('[role-manager-tools] spawn_session created', {
+      parentSessionId: ctx.sessionId,
+      childSessionId: result.sessionId,
+      role,
+      requestId,
+      wait,
+    });
+
+    // 始终启动子 session，无论 wait 与否
+    const kickoffContent = 'Proceed with the assigned task.';
+    await startChildSessionRun(ctx, result.sessionId, kickoffContent, requestId);
 
     if (wait) {
-      // 同步等待子会话完成
-      const run = await startSessionRun({
-        db: ctx.db,
-        piClient: ctx.piClient,
-        sessionId: result.sessionId,
-        userId: ctx.userId,
-        content: kickOffMsg,
-      });
-      console.log('[role-manager-tools] kickoff message sent (wait mode)', { runId: run.runId });
-
-      // 轮询等待 writeback 消息
-      const timeoutMs = 5 * 60 * 1000;
-      const pollIntervalMs = 2000;
-      const deadline = Date.now() + timeoutMs;
-
-      while (Date.now() < deadline) {
-        const [writeback] = await ctx.db
-          .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
-          .from(messages)
-          .where(and(eq(messages.sourceSessionId, result.sessionId), eq(messages.messageKind, 'writeback')))
-          .limit(1);
-
-        if (writeback) {
-          let blocks = null;
-          if (writeback.blocksJson) {
-            try { blocks = JSON.parse(writeback.blocksJson); } catch { /* ignore */ }
-          }
-          return {
-            status: 'completed',
-            summary: writeback.summary,
-            blocks,
-          };
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      }
-
-      return {
-        status: 'timeout',
-        message: `子会话 ${labelForRole(String(args.role))} 超时未返回结果`,
-      };
+      return await waitForChildWriteback(ctx, result.sessionId, requestId);
     }
-
-    // 后台异步启动子 session
-    void startSessionRun({
-      db: ctx.db,
-      piClient: ctx.piClient,
-      sessionId: result.sessionId,
-      userId: ctx.userId,
-      content: kickOffMsg,
-    })
-      .then((run) => {
-        console.log('[role-manager-tools] kickoff message sent', { runId: run.runId });
-      })
-      .catch((err) => {
-        console.error('[role-manager-tools] kickoff failed', err?.message ?? err);
-      });
 
     return {
       status: 'created',
-      message: `已创建 ${labelForRole(String(args.role))} 子会话（点击左侧栏可切换）`,
+      session_id: result.sessionId,
+      message: `已创建 ${labelForRole(role)} 子会话（点击左侧栏可切换）`,
+    };
+  }
+
+  if (toolName === 'send_message_to_session') {
+    const targetSessionId = String(args.session_id ?? '');
+    const content = String(args.content ?? '');
+    const wait = Boolean(args.wait ?? false);
+
+    if (!targetSessionId) throw new Error('missing_session_id');
+    if (!content) throw new Error('missing_content');
+
+    // 校验目标是当前 session 的直接子 session
+    const [child] = await ctx.db
+      .select({ id: sessions.id, parentSessionId: sessions.parentSessionId })
+      .from(sessions)
+      .where(eq(sessions.id, targetSessionId))
+      .limit(1);
+
+    if (!child) throw new Error('target_session_not_found');
+    if (child.parentSessionId !== ctx.sessionId) throw new Error('not_direct_child_session');
+
+    const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
+
+    console.log('[role-manager-tools] send_message_to_session', {
+      parentSessionId: ctx.sessionId,
+      targetSessionId,
+      requestId,
+      wait,
+    });
+
+    // 启动目标 session 处理这条后续消息
+    await startChildSessionRun(ctx, targetSessionId, content, requestId);
+
+    if (wait) {
+      return await waitForChildWriteback(ctx, targetSessionId, requestId);
+    }
+
+    return {
+      status: 'sent',
+      session_id: targetSessionId,
+      message: '已向子会话发送消息',
     };
   }
 
@@ -184,4 +200,88 @@ export async function invokeRoleManagerTool(
   }
 
   throw new Error(`unknown_tool:${toolName}`);
+}
+
+// ── Internal helpers ──
+
+/** Always start a child session run (independent of wait). */
+async function startChildSessionRun(
+  ctx: RoleManagerToolContext,
+  childSessionId: string,
+  content: string,
+  requestId: string,
+) {
+  setRequestContext(childSessionId, requestId);
+  console.log('[role-manager-tools] startChildSessionRun', { childSessionId, requestId });
+
+  await startSessionRun({
+    db: ctx.db,
+    piClient: ctx.piClient,
+    sessionId: childSessionId,
+    userId: ctx.userId,
+    content,
+    requestId,
+  });
+}
+
+/** Poll for a writeback from a child session, keyed by (sourceSessionId, requestId). */
+async function waitForChildWriteback(
+  ctx: RoleManagerToolContext,
+  childSessionId: string,
+  requestId: string,
+): Promise<unknown> {
+  const timeoutMs = 10 * 60 * 1000;
+  const pollIntervalMs = 2000;
+  const deadline = Date.now() + timeoutMs;
+
+  const reqCtx = getRequestContext(childSessionId);
+  const startedAt = reqCtx?.startedAt ?? Date.now();
+
+  while (Date.now() < deadline) {
+    const [writeback] = await ctx.db
+      .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.sourceSessionId, childSessionId),
+          eq(messages.messageKind, 'writeback'),
+          eq(messages.requestId, requestId),
+        ),
+      )
+      .limit(1);
+
+    if (writeback) {
+      let blocks = null;
+      if (writeback.blocksJson) {
+        try {
+          blocks = JSON.parse(writeback.blocksJson);
+        } catch {
+          /* ignore */
+        }
+      }
+      console.log('[role-manager-tools] waitForChildWriteback matched', {
+        childSessionId,
+        requestId,
+      });
+      return {
+        status: 'completed',
+        session_id: childSessionId,
+        summary: writeback.summary,
+        blocks,
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  console.log('[role-manager-tools] waitForChildWriteback timeout', {
+    childSessionId,
+    requestId,
+  });
+
+  return {
+    status: 'timeout',
+    session_id: childSessionId,
+    message: '子会话超时未返回结果',
+  };
 }

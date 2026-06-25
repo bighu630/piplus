@@ -1,0 +1,15 @@
+services:
+  piplus:
+    image: piplus:1.1
+    environment:
+      HOME: /home/app
+      API_HOST: 0.0.0.0
+      API_PORT: 3000
+      PUBLIC_WEB_ORIGIN: piplus.whosworld.fun
+      PIPLUS_SERVE_WEB: "1"
+      PIPLUS_WEB_DIST: /app/apps/web/dist
+    ports:
+      - "3008:3000"
+    volumes:
+      - /data/piplus_data/pi/agent:/home/app/.pi/agent
+      - /data/piplus_data/piplus:/home/app/.config/piplus

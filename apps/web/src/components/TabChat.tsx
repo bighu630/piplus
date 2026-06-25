@@ -205,12 +205,20 @@ export default function TabChat({
     sessionJustSwitchedRef.current = true;
   }, [selectedSessionId]);
 
-  useEffect(() => {
-    if (streamingContent) {
-      scrollToBottom('smooth');
-      return;
-    }
+  // useLayoutEffect：在浏览器重绘前同步吸附底部，避免抽搐
+  useLayoutEffect(() => {
+    if (!streamingContent) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
 
+    const isNearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    if (isNearBottom) {
+      container.scrollTop = container.scrollHeight - container.clientHeight;
+    }
+  }, [streamingContent]);
+
+  useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
@@ -224,7 +232,7 @@ export default function TabChat({
       }
     }
 
-    if (lastChangeTypeRef.current === 'prepend') {
+    if (streamingContent || lastChangeTypeRef.current === 'prepend') {
       return;
     }
 

@@ -3,6 +3,7 @@ import { messages, projects, roleTemplates, sessionEvents, sessions } from '@pip
 import { eq } from 'drizzle-orm';
 import type { PiClient } from '@piplus/pi-client';
 import { stringifyLocator } from '@piplus/pi-client/locator';
+import { getRequestContext } from '../session/request-context';
 
 export type RoleManagerDb = ReturnType<typeof createDb>;
 
@@ -370,6 +371,10 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       const parentSessionId = child.parentSessionId;
       if (!parentSessionId) throw new Error('parent_session_not_found');
 
+      // Auto-fill requestId from the current runtime context (not exposed to the model)
+      const reqCtx = getRequestContext(input.childSessionId);
+      const requestId = reqCtx?.requestId ?? null;
+
       const messageId = id('message');
       const timestamp = now();
       await db.insert(messages).values({
@@ -382,6 +387,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         contentText: input.summary,
         contentBlocksJson: input.blocks ? JSON.stringify(input.blocks) : null,
         contentVersion: 1,
+        requestId,
         createdAt: timestamp,
       } as any);
 
@@ -389,7 +395,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         id: id('event'),
         sessionId: parentSessionId,
         type: 'writeback_written',
-        payload: JSON.stringify({ child_session_id: input.childSessionId, message_id: messageId }),
+        payload: JSON.stringify({ child_session_id: input.childSessionId, message_id: messageId, request_id: requestId }),
         parentMessageId: null,
         sequence: 1,
         createdAt: timestamp,

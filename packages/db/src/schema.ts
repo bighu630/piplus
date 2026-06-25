@@ -83,6 +83,7 @@ export const messages = sqliteTable('messages', {
   contentText: text('content_text').notNull(),
   contentBlocksJson: text('content_blocks_json'),
   contentVersion: integer('content_version').notNull().default(0),
+  requestId: text('request_id'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 });
 

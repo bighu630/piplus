@@ -2,6 +2,7 @@ import type { ClientMessage } from '@piplus/shared';
 import { getWsBaseUrl } from './runtime-config';
 
 const RECONNECT_DELAY = 2000;
+const INITIAL_CONNECT_DELAY = 0;
 
 export function createWorkspaceSocket({
   onMessage,
@@ -15,6 +16,7 @@ export function createWorkspaceSocket({
   let ws: WebSocket;
   let closed = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
 
   function connect() {
     if (closed) return;
@@ -38,9 +40,10 @@ export function createWorkspaceSocket({
     });
   }
 
-  connect();
+  connectTimer = setTimeout(connect, INITIAL_CONNECT_DELAY);
 
   function safeSend(message: ClientMessage) {
+    if (!ws) return;
     if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify(message));
   }
@@ -69,8 +72,14 @@ export function createWorkspaceSocket({
     },
     close() {
       closed = true;
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      ws.close();
+      if (ws) {
+        ws.close();
+      }
     },
   };
 }

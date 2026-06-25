@@ -1,0 +1,11 @@
+node_modules
+.git
+*.sqlite
+*.AppImage
+*.deb
+*.exe
+dist
+apps/api/dist
+apps/web/dist
+apps/desktop
+piplus.sqlite

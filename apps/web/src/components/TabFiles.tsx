@@ -297,6 +297,7 @@ export default function TabFiles({
   onSelectPath,
 }: TabFilesProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [refreshSpinning, setRefreshSpinning] = useState(false);
 
   const firstFilePath = useMemo(() => {
     const visit = (nodes: SessionFileTreeNodeDTO[]): string | null => {
@@ -337,11 +338,14 @@ export default function TabFiles({
           </div>
           <button
             type="button"
-            onClick={onRefresh}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+            onClick={() => {
+              setRefreshSpinning(true);
+              setTimeout(() => setRefreshSpinning(false), 600);
+              onRefresh();
+            }}
+            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${treeLoading ? 'animate-spin' : ''}`} />
-            <span>刷新</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${treeLoading || refreshSpinning ? 'animate-spin' : ''}`} />
           </button>
         </div>
 
