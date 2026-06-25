@@ -134,9 +134,11 @@ export async function invokeRoleManagerTool(
       wait,
     });
 
-    // 始终启动子 session，无论 wait 与否
-    const kickoffContent = 'Proceed with the assigned task.';
-    await startChildSessionRun(ctx, result.sessionId, kickoffContent, requestId);
+    // Always auto-start the child session — no extra kickoff message needed.
+    // The compiled prompt (with objective/scope/task) is already injected as
+    // the system prompt via piClient.createSession. The AI executes based on
+    // that prompt alone.
+    await startChildSessionRun(ctx, result.sessionId, '', requestId);
 
     if (wait) {
       return await waitForChildWriteback(ctx, result.sessionId, requestId);

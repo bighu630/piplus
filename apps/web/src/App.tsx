@@ -587,6 +587,7 @@ export default function App() {
         onCreateProject={() => setShowCreateProject(true)}
         onCreateSession={handleCreateSession}
         onArchiveProject={handleArchiveProject}
+        onArchiveSession={handleArchiveSession}
         onDeleteProject={handleDeleteProject}
         onLogout={handleLogout}
         onOpenSettings={() => setShowSettings(true)}

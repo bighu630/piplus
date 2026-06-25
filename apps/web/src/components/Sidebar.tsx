@@ -31,6 +31,7 @@ interface SidebarProps {
   onCreateProject: () => void;
   onCreateSession: () => void;
   onArchiveProject?: (projectId: string) => void;
+  onArchiveSession?: (sessionId: string) => void;
   onDeleteProject?: (projectId: string) => void;
   onLogout: () => void;
   onOpenSettings: () => void;
@@ -89,6 +90,7 @@ export default function Sidebar({
   onCreateProject,
   onCreateSession,
   onArchiveProject,
+  onArchiveSession,
   onDeleteProject,
   onLogout,
   onOpenSettings,
@@ -112,20 +114,37 @@ export default function Sidebar({
   };
 
   const filteredProjects = useMemo(() => {
-    if (!sidebarSearch) return projects;
-    const q = sidebarSearch.toLowerCase();
+    const q = sidebarSearch?.toLowerCase() ?? '';
+    const hasSearch = q.length > 0;
+
+    const filterSessions = (sessions: SessionTreeNodeDTO[], includeSearch: boolean): SessionTreeNodeDTO[] =>
+      sessions
+        .filter((s) => {
+          if (!showArchived && s.archived_at) return false;
+          if (s.role_template_key === 'worker') {
+            if (!showWorker) return false;
+            if (showWorker && s.runtime_status === 'running') return false;
+          }
+          if (includeSearch && hasSearch) {
+            if (!s.title.toLowerCase().includes(q) && !roleLabel(s.role_template_key).includes(q)) {
+              return false;
+            }
+          }
+          return true;
+        })
+        .map((s) => ({ ...s, children: filterSessions(s.children, includeSearch) }));
+
     return projects
       .map((p) => {
-        if (p.name.toLowerCase().includes(q)) return p;
-        const matchSessions = (sessions: SessionTreeNodeDTO[]): SessionTreeNodeDTO[] =>
-          sessions
-            .filter((s) => s.title.toLowerCase().includes(q) || roleLabel(s.role_template_key).includes(q))
-            .map((s) => ({ ...s, children: matchSessions(s.children) }));
-        const matched = matchSessions(p.sessions);
-        return matched.length > 0 ? { ...p, sessions: matched } : null;
+        if (hasSearch && p.name.toLowerCase().includes(q)) {
+          // project name matched — only apply archive/worker filters to sessions, skip search
+          return { ...p, sessions: filterSessions(p.sessions, false) };
+        }
+        const filtered = filterSessions(p.sessions, true);
+        return filtered.length > 0 ? { ...p, sessions: filtered } : null;
       })
       .filter((p): p is ProjectDTO => p !== null);
-  }, [projects, sidebarSearch]);
+  }, [projects, sidebarSearch, showArchived, showWorker]);
 
   const renderSessionNode = (session: SessionTreeNodeDTO, projectId: string, depth: number): React.ReactNode => {
     const isActive = session.id === activeSessionId;
@@ -134,8 +153,6 @@ export default function Sidebar({
     const isArchived = Boolean(session.archived_at);
     const statusDotColor = runtimeColor(session.runtime_status);
 
-    if (!showArchived && isArchived) return null;
-    if (!showWorker && session.role_template_key === 'worker') return null;
 
     return (
       <div key={session.id} className="w-full flex flex-col">
@@ -182,7 +199,19 @@ export default function Sidebar({
 
           {!isSidebarCollapsed && (
             <div className="flex items-center gap-1 shrink-0 select-none">
-              <span className="text-[9px] text-slate-400 dark:text-slate-500 font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity">
+              <span
+                className="text-[9px] text-slate-400 dark:text-slate-500 font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity cursor-context-menu"
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (onArchiveSession) {
+                    const name = session.title || roleLabel(session.role_template_key);
+                    if (confirm(`确定归档会话 "${name}"？`)) {
+                      onArchiveSession(session.id);
+                    }
+                  }
+                }}
+              >
                 {roleLabel(session.role_template_key)}
               </span>
               {statusDotColor ? (
@@ -284,7 +313,7 @@ export default function Sidebar({
               className="w-3 h-3 accent-slate-600 rounded cursor-pointer dark:bg-slate-700 dark:border-slate-600"
             />
             <span className={`text-[10px] font-semibold ${showWorker ? 'text-blue-700 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500'}`}>
-              显示执行者
+              显示已完成Worker
             </span>
           </label>
         </div>
@@ -299,10 +328,6 @@ export default function Sidebar({
         ) : (
           filteredProjects.map((project) => {
             const isCollapsed = collapsedProjects[project.id];
-            const matchingSessions = project.sessions.filter(
-              (s) => (showArchived || !s.archived_at) && (showWorker || s.role_template_key !== 'worker'),
-            );
-
             return (
               <div key={project.id} className="space-y-0.5">
                 <div
@@ -384,7 +409,7 @@ export default function Sidebar({
                 {/* Sessions */}
                 {!isCollapsed && (
                   <div className={isSidebarCollapsed ? 'space-y-1' : 'space-y-0.5'}>
-                    {matchingSessions.map((session) => renderSessionNode(session, project.id, 1))}
+                    {project.sessions.map((session) => renderSessionNode(session, project.id, 1))}
                   </div>
                 )}
               </div>

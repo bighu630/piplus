@@ -171,6 +171,7 @@ export function createSeedDb(path: string) {
 }
 
 if (import.meta.main) {
-  createSeedDb('piplus.sqlite');
+  const home = Bun.env.HOME ?? process.env.HOME ?? '/tmp';
+  createSeedDb(`${home}/.config/piplus/piplus.sqlite`);
   console.log('db seeded');
 }
