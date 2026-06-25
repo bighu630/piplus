@@ -37,6 +37,8 @@ import {
   useGitPushMutation,
   useGitCommitMutation,
   useAddGitignoreMutation,
+  useGitBranches,
+  useGitCheckoutMutation,
   useTestModelProviderMutation,
   useCreateModelProviderMutation,
   useUpdateSessionTitleMutation,
@@ -472,6 +474,8 @@ export default function App() {
   const gitPushMut = useGitPushMutation();
   const gitCommitMut = useGitCommitMutation();
   const addGitignoreMut = useAddGitignoreMutation();
+  const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
+  const gitCheckoutMut = useGitCheckoutMutation();
   const updateTitleMut = useUpdateSessionTitleMutation();
 
   const resetProviderForm = useCallback(() => {
@@ -807,6 +811,11 @@ export default function App() {
                   isCommitting={gitCommitMut.isPending}
                   onAddGitignore={(filePath) => addGitignoreMut.mutateAsync({ sessionId: selectedSessionId, path: filePath })}
                   isAddingGitignore={addGitignoreMut.isPending}
+                  currentBranch={gitBranchesQuery.data?.current_branch ?? null}
+                  branches={gitBranchesQuery.data?.branches ?? null}
+                  onCheckout={(branch) => gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId, branch })}
+                  isCheckingOut={gitCheckoutMut.isPending}
+                  cwd={gitDiffQuery.data?.cwd ?? gitBranchesQuery.data?.cwd ?? null}
                 />
               )}
               {activeTab === 'files' && (

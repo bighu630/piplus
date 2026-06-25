@@ -202,6 +202,19 @@ export function addGitignore(sessionId: string, path: string) {
   );
 }
 
+export function getGitBranches(sessionId: string) {
+  return request<{ session_id: string; cwd: string; current_branch: string; branches: Array<{ name: string; is_current: boolean }> }>(
+    `/api/v1/sessions/${sessionId}/git/branches`,
+  );
+}
+
+export function gitCheckout(sessionId: string, branch: string) {
+  return request<GitActionResult & { branch: string }>(
+    `/api/v1/sessions/${sessionId}/git/checkout`,
+    { method: 'POST', body: JSON.stringify({ branch }) },
+  );
+}
+
 export function createProject(
   name: string,
   mode?: string,
