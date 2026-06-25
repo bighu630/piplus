@@ -239,16 +239,32 @@ export function useUpdateSessionTitleMutation() {
 }
 
 export function useGitPullMutation() {
-  return useMutation({ mutationFn: (sessionId: string) => gitPull(sessionId) });
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) => gitPull(sessionId),
+    onSuccess: (_data, sessionId) => {
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+    },
+  });
 }
 
 export function useGitPushMutation() {
-  return useMutation({ mutationFn: (sessionId: string) => gitPush(sessionId) });
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) => gitPush(sessionId),
+    onSuccess: (_data, sessionId) => {
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+    },
+  });
 }
 
 export function useGitCommitMutation() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ sessionId, message }: { sessionId: string; message: string }) => gitCommit(sessionId, message),
+    onSuccess: (_data, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+    },
   });
 }
 
