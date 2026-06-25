@@ -8,6 +8,7 @@ export type PlatformToolContext = {
   piClient: PiClient;
   sessionId: string;
   userId: string;
+  onSessionCreated?: (payload: { sessionId: string; projectId: string }) => void | Promise<void>;
 };
 
 export async function buildAllToolDefs(db: RoleManagerDb) {

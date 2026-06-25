@@ -113,3 +113,10 @@ export type SessionFileContentResponseDTO = {
   content: string;
   truncated: boolean;
 };
+
+export type SessionContextUsageDTO = {
+  session_id: string;
+  tokens: number | null;
+  context_window: number;
+  percent: number | null;
+};

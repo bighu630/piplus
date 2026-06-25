@@ -57,7 +57,15 @@ export type PiSessionStreamEvent =
   | { type: 'message_start'; sessionId: string; runId: string; messageId?: string }
   | { type: 'text_delta'; sessionId: string; runId: string; messageId?: string; delta: string }
   | { type: 'message_end'; sessionId: string; runId: string; messageId?: string }
-  | { type: 'error'; sessionId: string; runId: string; messageId?: string; error: string };
+  | { type: 'error'; sessionId: string; runId: string; messageId?: string; error: string }
+  | { type: 'compaction_start'; sessionId: string; reason: 'manual' | 'threshold' | 'overflow' }
+  | { type: 'compaction_end'; sessionId: string; reason: 'manual' | 'threshold' | 'overflow'; aborted: boolean; errorMessage?: string };
+
+export type PiContextUsage = {
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+};
 
 export type PiMessage = {
   id: string;
@@ -91,6 +99,8 @@ export type PiClient = {
     handler: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>,
     cwd?: string,
   ): Promise<void>;
+  getContextUsage(sessionId: string, locator: PiSessionLocator): Promise<PiContextUsage | null>;
+  compactSession(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<void>;
   registerTools?(tools: PiToolDef[]): Promise<void>;
 };
 

@@ -332,6 +332,10 @@ export function registerSessionRoutes(app: Hono) {
       onRuntimeStatusChange: async ({ projectId, runtimeStatus }) => {
         socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus }, { project_id: projectId, session_id: sessionId }));
       },
+      onToolSessionCreated: async ({ sessionId: childSessionId, projectId }) => {
+        socketHub.broadcast(createEvent('session.created', { session_id: childSessionId }, { project_id: projectId, session_id: childSessionId }));
+        socketHub.broadcast(createEvent('tree.changed', { project_id: projectId }, { project_id: projectId }));
+      },
     });
 
     socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
@@ -687,6 +691,96 @@ export function registerSessionRoutes(app: Hono) {
 
     await appendFile(gitignorePath, entry, 'utf8');
     return c.json({ session_id: sessionId, path: normalizedEntry, result: 'ok' });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/context-usage:
+   *   get:
+   *     summary: 获取会话上下文使用情况
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       200:
+   *         description: 查询成功，返回 token 使用量、context window 和百分比。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/context-usage', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath })
+      .from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const locator = parseLocator(session.piSessionLocatorJson);
+    const usage = await piClient.getContextUsage(sessionId, locator);
+
+    if (!usage) {
+      return c.json({ session_id: sessionId, tokens: null, context_window: 128000, percent: null });
+    }
+
+    return c.json({
+      session_id: sessionId,
+      tokens: usage.tokens,
+      context_window: usage.contextWindow,
+      percent: usage.percent,
+    });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/compact:
+   *   post:
+   *     summary: 手动触发会话上下文压缩
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 触发 LLM 摘要生成以压缩上下文。仅在会话 idle 时可用。压缩进度通过 WebSocket 推送 compaction_start / compaction_end 事件。
+   *     responses:
+   *       202:
+   *         description: 已受理压缩请求。
+   *       409:
+   *         description: 会话繁忙。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.post('/api/v1/sessions/:sessionId/compact', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath })
+      .from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    if (session.runtimeStatus === 'running' || session.runtimeStatus === 'stopping') {
+      return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+    }
+
+    const locator = parseLocator(session.piSessionLocatorJson);
+
+    // Fire and forget — compaction is async, progress pushed via WS events
+    (async () => {
+      try {
+        await piClient.compactSession(sessionId, locator, project.projectPath);
+        log.info('compaction completed', { sessionId });
+        socketHub.broadcast(createEvent('session.compacted', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
+      } catch (err) {
+        log.error('compaction failed', { sessionId, error: String(err) });
+      }
+    })();
+
+    return c.json({ session_id: sessionId, accepted: true }, 202);
   });
 
   registerWebSocketRoutes(app);

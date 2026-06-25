@@ -18,7 +18,10 @@ import {
   ChevronRight,
   Terminal,
   Archive,
+  GitMerge,
 } from 'lucide-react';
+import ContextUsageRing from './ContextUsageRing';
+import { useSessionContextUsage } from '../lib/hooks';
 
 interface ModelOption {
   provider: string;
@@ -48,6 +51,8 @@ interface TabChatProps {
   onArchiveSession?: () => void;
   archivePending?: boolean;
   showArchiveButton?: boolean;
+  onCompactSession?: () => void;
+  compactPending?: boolean;
 }
 
 function extractCodeText(node: unknown): string {
@@ -98,6 +103,8 @@ export default function TabChat({
   onArchiveSession,
   archivePending,
   showArchiveButton,
+  onCompactSession,
+  compactPending,
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -272,6 +279,10 @@ export default function TabChat({
       setCopiedId(null);
     }
   };
+
+  const contextUsageQuery = useSessionContextUsage(selectedSessionId ?? null);
+  const contextPercent = contextUsageQuery.data?.percent ?? null;
+  const showCompactButton = contextPercent !== null && contextPercent > 60;
 
   const isRunning = runtimeStatus === 'running';
 
@@ -698,6 +709,17 @@ export default function TabChat({
             >
               <Archive className="w-3 h-3" />
               <span>{archivePending ? '...' : 'Archive'}</span>
+            </button>
+          )}
+          <ContextUsageRing sessionId={selectedSessionId ?? null} />
+          {showCompactButton && onCompactSession && (
+            <button
+              onClick={onCompactSession}
+              className="flex items-center space-x-1 px-2.5 py-1 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-[11px] font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
+              disabled={compactPending}
+            >
+              <GitMerge className="w-3 h-3" />
+              <span>{compactPending ? '...' : '压缩'}</span>
             </button>
           )}
           <div className="flex-1" />

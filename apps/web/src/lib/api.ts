@@ -1,6 +1,7 @@
 import { getApiBaseUrl } from './runtime-config';
 import type {
   SessionInfoDTO,
+  SessionContextUsageDTO,
   TreeResponse,
   ChatMessageDTO,
   SessionFileTreeResponseDTO,
@@ -18,8 +19,18 @@ export type ProviderFormModel = {
   name?: string;
   reasoning: boolean;
   inputImage: boolean;
+  input?: string[];
+  api?: string;
   contextWindow?: number;
   maxTokens?: number;
+  cost?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
+  compat?: string;
+  thinkingLevelMap?: string;
 };
 
 export type ProviderFormPayload = {
@@ -27,10 +38,9 @@ export type ProviderFormPayload = {
   baseUrl: string;
   apiKey: string;
   authHeader: boolean;
-  compat: {
-    supportsDeveloperRole: boolean;
-    supportsReasoningEffort: boolean;
-  };
+  api?: string;
+  headers?: Record<string, string>;
+  compat?: Record<string, unknown>;
   models: ProviderFormModel[];
 };
 
@@ -208,6 +218,16 @@ export function createProject(
       repo_url: repoUrl ?? '',
       model: model ?? null,
     }),
+  });
+}
+
+export function getSessionContextUsage(sessionId: string) {
+  return request<SessionContextUsageDTO>(`/api/v1/sessions/${sessionId}/context-usage`);
+}
+
+export function compactSession(sessionId: string) {
+  return request<{ session_id: string; accepted: boolean }>(`/api/v1/sessions/${sessionId}/compact`, {
+    method: 'POST',
   });
 }
 

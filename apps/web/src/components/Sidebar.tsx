@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import type { ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
 import {
   Folder,
@@ -102,8 +102,22 @@ export default function Sidebar({
   creatingSession,
 }: SidebarProps) {
   const [sidebarSearch, setSidebarSearch] = useState('');
-  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
-  const [collapsedSessions, setCollapsedSessions] = useState<Record<string, boolean>>({});
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('pi-collapsed-projects');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [collapsedSessions, setCollapsedSessions] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('pi-collapsed-sessions');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
 
   const toggleProject = (id: string) => {
     setCollapsedProjects((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -112,6 +126,14 @@ export default function Sidebar({
   const toggleSession = (id: string) => {
     setCollapsedSessions((prev) => ({ ...prev, [id]: !prev[id] }));
   };
+
+  useEffect(() => {
+    try { localStorage.setItem('pi-collapsed-projects', JSON.stringify(collapsedProjects)); } catch {}
+  }, [collapsedProjects]);
+
+  useEffect(() => {
+    try { localStorage.setItem('pi-collapsed-sessions', JSON.stringify(collapsedSessions)); } catch {}
+  }, [collapsedSessions]);
 
   const filteredProjects = useMemo(() => {
     const q = sidebarSearch?.toLowerCase() ?? '';
@@ -123,7 +145,6 @@ export default function Sidebar({
           if (!showArchived && s.archived_at) return false;
           if (s.role_template_key === 'worker') {
             if (!showWorker) return false;
-            if (showWorker && s.runtime_status === 'running') return false;
           }
           if (includeSearch && hasSearch) {
             if (!s.title.toLowerCase().includes(q) && !roleLabel(s.role_template_key).includes(q)) {
@@ -145,6 +166,20 @@ export default function Sidebar({
       })
       .filter((p): p is ProjectDTO => p !== null);
   }, [projects, sidebarSearch, showArchived, showWorker]);
+
+  // Sort planner's immediate children: feature_lead > bugfix_lead > other roles > blank
+  function sortPlannerChildren(sessions: SessionTreeNodeDTO[]): SessionTreeNodeDTO[] {
+    const priority: Record<string, number> = {
+      feature_lead: 0,
+      bugfix_lead: 1,
+      blank: 3,
+    };
+    return [...sessions].sort((a, b) => {
+      const pa = priority[a.role_template_key] ?? 2;
+      const pb = priority[b.role_template_key] ?? 2;
+      return pa - pb;
+    });
+  }
 
   const renderSessionNode = (session: SessionTreeNodeDTO, projectId: string, depth: number): React.ReactNode => {
     const isActive = session.id === activeSessionId;
@@ -223,7 +258,7 @@ export default function Sidebar({
 
         {!isCollapsed && hasChildren && (
           <div className="flex flex-col space-y-0.5 mt-0.5">
-            {session.children.map((child) => renderSessionNode(child, projectId, depth + 1))}
+            {(session.role_template_key === 'planner' ? sortPlannerChildren(session.children) : session.children).map((child) => renderSessionNode(child, projectId, depth + 1))}
           </div>
         )}
       </div>

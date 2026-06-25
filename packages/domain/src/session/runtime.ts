@@ -22,6 +22,7 @@ export type StartSessionRunInput = {
     runtimeStatus: 'running' | 'idle';
     error: string | null;
   }) => void | Promise<void>;
+  onToolSessionCreated?: (payload: { sessionId: string; projectId: string }) => void | Promise<void>;
 };
 
 function formatRuntimeError(error: unknown) {
@@ -111,6 +112,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
       piClient: input.piClient,
       sessionId: input.sessionId,
       userId: input.userId,
+      onSessionCreated: input.onToolSessionCreated,
     });
   }, project.projectPath);
 

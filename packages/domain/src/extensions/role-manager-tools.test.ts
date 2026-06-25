@@ -143,6 +143,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     } as any);
 
     // wait defaults to false — still auto-starts, no kickoff message
+    const onSessionCreatedCalls: Array<{ sessionId: string; projectId: string }> = [];
     const result = await invokeRoleManagerTool('spawn_session', {
       role: 'worker',
       objective: 'fix runtime status',
@@ -154,6 +155,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       piClient,
       sessionId: parentSessionId,
       userId: 'user_seed',
+      onSessionCreated: (p) => { onSessionCreatedCalls.push(p); },
     });
 
     expect(result).toMatchObject({ status: 'created', session_id: expect.any(String) });
@@ -174,6 +176,11 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     expect(state.sent).toHaveLength(1);
     expect(state.sent[0]?.sessionId).toBe(child!.id);
     expect(state.sent[0]?.content).toBe('');
+
+    // onSessionCreated callback was invoked with the child session
+    expect(onSessionCreatedCalls).toHaveLength(1);
+    expect(onSessionCreatedCalls[0].sessionId).toBe(child!.id);
+    expect(onSessionCreatedCalls[0].projectId).toBeDefined();
 
     const [updatedChild] = await db.select().from(sessions).where(eq(sessions.id, child!.id)).limit(1);
     expect(updatedChild?.runtimeStatus).toBe('idle');
@@ -294,6 +301,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       compiledPrompt: 'compiled',
     } as any);
 
+    const onSessionCreatedCalls: Array<{ sessionId: string; projectId: string }> = [];
     const result = await invokeRoleManagerTool('spawn_session', {
       role: 'worker',
       objective: 'fix runtime status',
@@ -306,6 +314,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       piClient,
       sessionId: parentSessionId,
       userId: 'user_seed',
+      onSessionCreated: (p) => { onSessionCreatedCalls.push(p); },
     });
 
     expect(state.created).toHaveLength(1);
@@ -328,6 +337,11 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     expect(state.sent).toHaveLength(1);
     expect(state.sent[0]?.sessionId).toBe(child!.id);
     expect(state.sent[0]?.content).toBe('');
+
+    // onSessionCreated callback was invoked with the child session
+    expect(onSessionCreatedCalls).toHaveLength(1);
+    expect(onSessionCreatedCalls[0].sessionId).toBe(child!.id);
+    expect(onSessionCreatedCalls[0].projectId).toBeDefined();
 
     const [updatedChild] = await db.select().from(sessions).where(eq(sessions.id, child!.id)).limit(1);
     expect(updatedChild?.lastRuntimeError).toBeNull();

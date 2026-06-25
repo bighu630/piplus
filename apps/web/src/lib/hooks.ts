@@ -2,6 +2,8 @@ import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tansta
 import {
   getTree,
   getSessionInfo,
+  getSessionContextUsage,
+  compactSession,
   getSessionMessages,
   checkAuth,
   login,
@@ -253,5 +255,29 @@ export function useGitCommitMutation() {
 export function useAddGitignoreMutation() {
   return useMutation({
     mutationFn: ({ sessionId, path }: { sessionId: string; path: string }) => addGitignore(sessionId, path),
+  });
+}
+
+export function useSessionContextUsage(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'context-usage', sessionId],
+    queryFn: () => getSessionContextUsage(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+export function useCompactSessionMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sessionId: string) => compactSession(sessionId),
+    // Speculative refresh after 202 accepted; real invalidation
+    // comes from WS session.compacted / session.compaction_end events
+    onSuccess: (data) => {
+      if (data.accepted) {
+        queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', data.session_id] });
+      }
+    },
   });
 }

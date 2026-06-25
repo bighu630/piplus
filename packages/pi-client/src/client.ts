@@ -53,6 +53,20 @@ function mapAgentSessionEvent(
     return { type: 'message_end', sessionId, runId };
   }
 
+  if (event.type === 'compaction_start') {
+    return { type: 'compaction_start', sessionId, reason: event.reason };
+  }
+
+  if (event.type === 'compaction_end') {
+    return {
+      type: 'compaction_end',
+      sessionId,
+      reason: event.reason,
+      aborted: event.aborted,
+      errorMessage: event.errorMessage,
+    };
+  }
+
   return null;
 }
 
@@ -158,6 +172,7 @@ export function createPiClient(): PiClient {
           }
         }
         session.agentSession = agentSession;
+
         if (agentSession.model) {
           session.model = {
             provider: agentSession.model.provider,
@@ -201,17 +216,20 @@ export function createPiClient(): PiClient {
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
       if (session.agentSession) {
-        // 首次发消息时，先把角色 prompt 注入
+        // 首次发消息时先注入角色 prompt（bindToolRuntime 会重建 agent session，需要重新注入）
         if (session.prompt && !session.promptSent) {
           console.log('[pi-client] sendMessage → injecting role prompt', { sessionId, promptLen: session.prompt.length, preview: session.prompt.slice(0, 120) });
           await session.agentSession.prompt(session.prompt);
           session.promptSent = true;
-        } else if (!session.prompt) {
-          console.log('[pi-client] sendMessage → no role prompt to inject', { sessionId });
         }
-        console.log('[pi-client] sendMessage → agentSession.prompt', { sessionId, content: content.slice(0, 80) });
-        await session.agentSession.prompt(content);
-        console.log('[pi-client] sendMessage ← agentSession.prompt done', { sessionId });
+        // 有实际内容时才发送用户消息；空内容（如 spawn_session 场景）略过
+        if (content) {
+          console.log('[pi-client] sendMessage → agentSession.prompt', { sessionId, content: content.slice(0, 80) });
+          await session.agentSession.prompt(content);
+          console.log('[pi-client] sendMessage ← agentSession.prompt done', { sessionId });
+        } else {
+          console.log('[pi-client] sendMessage → content is empty, nothing to send', { sessionId });
+        }
         return { sessionId, runId };
       }
 
@@ -428,6 +446,67 @@ export function createPiClient(): PiClient {
         provider: session.model?.provider ?? null,
         id: session.model?.id ?? null,
       });
+    },
+
+    async getContextUsage(sessionId, locator) {
+      const session = runtimeRegistry.get(sessionId);
+
+      // If AgentSession is alive, use its getContextUsage() for accurate data
+      if (session?.agentSession) {
+        const usage = session.agentSession.getContextUsage();
+        if (usage) return usage;
+      }
+
+      // Fallback: estimate from session file
+      try {
+        const { estimateTokens } = await import('@earendil-works/pi-coding-agent');
+
+        const sessionManager = SessionManager.open(locator.sessionFile);
+        const ctx = sessionManager.buildSessionContext();
+
+        // Estimate from all messages using chars/4 heuristic
+        const tokens = ctx.messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
+
+        // Try to find model's context window
+        let contextWindow = 128000;
+        if (ctx.model) {
+          try {
+            const available = await modelRegistry.getAvailable();
+            const matched = available.find(
+              (m: any) => m.provider === ctx.model!.provider && m.id === ctx.model!.modelId,
+            );
+            if (matched?.contextWindow) {
+              contextWindow = matched.contextWindow;
+            }
+          } catch { /* keep default */ }
+        }
+
+        return {
+          tokens,
+          contextWindow,
+          percent: Math.min(100, Math.round((tokens / contextWindow) * 100)),
+        };
+      } catch {
+        return null;
+      }
+    },
+
+    async compactSession(sessionId, locator, cwd) {
+      const session = runtimeRegistry.ensure(sessionId, locator, cwd);
+
+      if (!session.agentSession) {
+        await this.restoreRuntime(sessionId, locator, cwd);
+      }
+
+      if (!session.agentSession) {
+        throw new Error('pi_session_runtime_unavailable');
+      }
+
+      if (session.agentSession.isStreaming) {
+        throw new Error('pi_session_busy');
+      }
+
+      await session.agentSession.compact();
     },
 
     async registerTools(_tools: PiToolDef[]) {

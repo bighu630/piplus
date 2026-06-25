@@ -171,4 +171,99 @@ describe('model routes', () => {
 
     expect(conflict.status).toBe(409);
   });
+
+  test('saves provider with all optional fields (api, headers, cost, compat, thinkingLevelMap, input)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+    const token = await login(app);
+
+    const res = await app.request('/api/v1/models/providers', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        providerKey: 'advanced-llm',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'sk-advanced',
+        authHeader: true,
+        api: 'anthropic-messages',
+        headers: { 'x-custom': 'value1' },
+        compat: {
+          supportsDeveloperRole: true,
+          supportsReasoningEffort: true,
+          supportsUsageInStreaming: false,
+          maxTokensField: 'max_tokens',
+        },
+        models: [
+          {
+            id: 'claude-opus-4',
+            name: 'Claude Opus 4',
+            reasoning: true,
+            contextWindow: 200000,
+            maxTokens: 4096,
+            input: ['text', 'image'],
+            cost: { input: 15, output: 75, cacheRead: 7.5, cacheWrite: 15 },
+            compat: {
+              forceAdaptiveThinking: true,
+            },
+            thinkingLevelMap: {
+              off: null,
+              medium: 'medium',
+              high: 'high',
+            },
+          },
+          {
+            id: 'claude-sonnet-4',
+            name: 'Claude Sonnet 4',
+            reasoning: false,
+            inputImage: true,
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const saved = JSON.parse(await readFile(join(tempHome, '.pi', 'agent', 'models.json'), 'utf-8'));
+    const provider = saved.providers['advanced-llm'];
+
+    expect(provider.api).toBe('anthropic-messages');
+    expect(provider.baseURL).toBe('https://api.example.com/v1');
+    expect(provider.headers).toEqual({ 'x-custom': 'value1' });
+    expect(provider.compat).toEqual({
+      supportsDeveloperRole: true,
+      supportsReasoningEffort: true,
+      supportsUsageInStreaming: false,
+      maxTokensField: 'max_tokens',
+    });
+
+    expect(provider.models).toHaveLength(2);
+
+    // First model: explicit input
+    expect(provider.models[0]).toEqual({
+      id: 'claude-opus-4',
+      name: 'Claude Opus 4',
+      reasoning: true,
+      contextWindow: 200000,
+      maxTokens: 4096,
+      input: ['text', 'image'],
+      cost: { input: 15, output: 75, cacheRead: 7.5, cacheWrite: 15 },
+      compat: { forceAdaptiveThinking: true },
+      thinkingLevelMap: {
+        off: null,
+        medium: 'medium',
+        high: 'high',
+      },
+    });
+
+    // Second model: inputImage shorthand (reasoning=false omitted, same pattern as existing code)
+    expect(provider.models[1]).toEqual({
+      id: 'claude-sonnet-4',
+      name: 'Claude Sonnet 4',
+      input: ['text', 'image'],
+    });
+  });
 });

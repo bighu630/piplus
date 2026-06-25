@@ -16,15 +16,24 @@ type ProviderModelInput = {
   name?: string;
   reasoning?: boolean;
   inputImage?: boolean;
+  input?: string[];
+  api?: string;
   contextWindow?: number;
   maxTokens?: number;
+  cost?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
+  compat?: Record<string, unknown>;
+  thinkingLevelMap?: Record<string, string | null>;
 };
 
 type ProviderCreateBody = ProviderTestBody & {
-  compat?: {
-    supportsDeveloperRole?: boolean;
-    supportsReasoningEffort?: boolean;
-  };
+  api?: string;
+  headers?: Record<string, string>;
+  compat?: Record<string, unknown>;
   models?: ProviderModelInput[];
 };
 
@@ -147,24 +156,76 @@ export function registerModelRoutes(app: Hono) {
       return c.json({ error: { code: 'PROVIDER_EXISTS', message: 'Provider already exists' } }, 409);
     }
 
-    config.providers[validated.providerKey] = {
-      api: 'openai-completions',
+    const providerConfig: Record<string, unknown> = {
+      api: body.api?.trim() || 'openai-completions',
       baseURL: validated.baseUrl,
       apiKey: validated.apiKey,
       authHeader: validated.authHeader,
-      compat: {
-        supportsDeveloperRole: Boolean(body.compat?.supportsDeveloperRole),
-        supportsReasoningEffort: Boolean(body.compat?.supportsReasoningEffort),
-      },
-      models: models.map((model) => ({
-        id: String(model.id).trim(),
-        ...(model.name?.trim() ? { name: model.name.trim() } : {}),
-        ...(model.reasoning ? { reasoning: true } : {}),
-        ...(model.contextWindow ? { contextWindow: Number(model.contextWindow) } : {}),
-        ...(model.maxTokens ? { maxTokens: Number(model.maxTokens) } : {}),
-        input: model.inputImage ? ['text', 'image'] : ['text'],
-      })),
     };
+
+    if (body.headers && Object.keys(body.headers).length > 0) {
+      providerConfig.headers = body.headers;
+    }
+
+    if (body.compat && Object.keys(body.compat).length > 0) {
+      providerConfig.compat = body.compat;
+    }
+
+    providerConfig.models = models.map((model) => {
+      const modelEntry: Record<string, unknown> = {
+        id: String(model.id).trim(),
+      };
+
+      if (model.name?.trim()) {
+        modelEntry.name = model.name.trim();
+      }
+
+      if (model.api?.trim()) {
+        modelEntry.api = model.api.trim();
+      }
+
+      if (model.reasoning) {
+        modelEntry.reasoning = true;
+      }
+
+      if (model.contextWindow) {
+        modelEntry.contextWindow = Number(model.contextWindow);
+      }
+
+      if (model.maxTokens) {
+        modelEntry.maxTokens = Number(model.maxTokens);
+      }
+
+      if (model.cost) {
+        const cost: Record<string, number> = {};
+        if (model.cost.input !== undefined) cost.input = Number(model.cost.input);
+        if (model.cost.output !== undefined) cost.output = Number(model.cost.output);
+        if (model.cost.cacheRead !== undefined) cost.cacheRead = Number(model.cost.cacheRead);
+        if (model.cost.cacheWrite !== undefined) cost.cacheWrite = Number(model.cost.cacheWrite);
+        if (Object.keys(cost).length > 0) modelEntry.cost = cost;
+      }
+
+      if (model.compat && Object.keys(model.compat).length > 0) {
+        modelEntry.compat = model.compat;
+      }
+
+      if (model.thinkingLevelMap && Object.keys(model.thinkingLevelMap).length > 0) {
+        modelEntry.thinkingLevelMap = model.thinkingLevelMap;
+      }
+
+      // input: prefer explicit input array over inputImage shorthand
+      if (model.input && Array.isArray(model.input) && model.input.length > 0) {
+        modelEntry.input = model.input;
+      } else if (model.inputImage) {
+        modelEntry.input = ['text', 'image'];
+      } else {
+        modelEntry.input = ['text'];
+      }
+
+      return modelEntry;
+    });
+
+    config.providers[validated.providerKey] = providerConfig;
 
     await writeModelsConfig(config);
     const refreshed = await piClient.listAvailableModels();

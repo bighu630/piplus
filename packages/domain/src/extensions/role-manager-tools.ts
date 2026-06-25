@@ -94,6 +94,7 @@ export type RoleManagerToolContext = {
   piClient: PiClient;
   sessionId: string;
   userId: string;
+  onSessionCreated?: (payload: { sessionId: string; projectId: string }) => void | Promise<void>;
 };
 
 export async function invokeRoleManagerTool(
@@ -134,11 +135,17 @@ export async function invokeRoleManagerTool(
       wait,
     });
 
+    // Broadcast new session to frontend via the registered callback
+    await ctx.onSessionCreated?.({
+      sessionId: result.sessionId,
+      projectId: parent.projectId,
+    });
+
     // Always auto-start the child session — no extra kickoff message needed.
     // The compiled prompt (with objective/scope/task) is already injected as
     // the system prompt via piClient.createSession. The AI executes based on
     // that prompt alone.
-    await startChildSessionRun(ctx, result.sessionId, '', requestId);
+    await startChildSessionRun(ctx, result.sessionId, '', requestId, ctx.onSessionCreated);
 
     if (wait) {
       return await waitForChildWriteback(ctx, result.sessionId, requestId);
@@ -179,7 +186,7 @@ export async function invokeRoleManagerTool(
     });
 
     // 启动目标 session 处理这条后续消息
-    await startChildSessionRun(ctx, targetSessionId, content, requestId);
+    await startChildSessionRun(ctx, targetSessionId, content, requestId, ctx.onSessionCreated);
 
     if (wait) {
       return await waitForChildWriteback(ctx, targetSessionId, requestId);
@@ -212,6 +219,7 @@ async function startChildSessionRun(
   childSessionId: string,
   content: string,
   requestId: string,
+  onToolSessionCreated?: (payload: { sessionId: string; projectId: string }) => void | Promise<void>,
 ) {
   setRequestContext(childSessionId, requestId);
   console.log('[role-manager-tools] startChildSessionRun', { childSessionId, requestId });
@@ -223,6 +231,7 @@ async function startChildSessionRun(
     userId: ctx.userId,
     content,
     requestId,
+    onToolSessionCreated,
   });
 }
 

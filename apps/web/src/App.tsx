@@ -25,6 +25,7 @@ import {
   useSendMessageMutation,
   useStopSessionMutation,
   useArchiveSessionMutation,
+  useCompactSessionMutation,
   useLoginMutation,
   useLogoutMutation,
   useModelsStatus,
@@ -104,8 +105,13 @@ function createEmptyProviderModel(): ProviderModelForm {
     name: '',
     reasoning: false,
     inputImage: false,
+    input: undefined,
+    api: '',
     contextWindow: undefined,
     maxTokens: undefined,
+    cost: undefined,
+    compat: '',
+    thinkingLevelMap: '',
   };
 }
 
@@ -142,6 +148,9 @@ export default function App() {
   const [providerAuthHeader, setProviderAuthHeader] = useState(true);
   const [supportsDeveloperRole, setSupportsDeveloperRole] = useState(false);
   const [supportsReasoningEffort, setSupportsReasoningEffort] = useState(false);
+  const [providerApi, setProviderApi] = useState('');
+  const [providerHeaders, setProviderHeaders] = useState('');
+  const [providerCompatJson, setProviderCompatJson] = useState('');
   const [providerModels, setProviderModels] = useState<ProviderModelForm[]>([createEmptyProviderModel()]);
   const [providerError, setProviderError] = useState<string | null>(null);
   const [providerTestResult, setProviderTestResult] = useState<string | null>(null);
@@ -210,6 +219,7 @@ export default function App() {
   const sendMessageMut = useSendMessageMutation(selectedSessionId);
   const stopSessionMut = useStopSessionMutation();
   const archiveSessionMut = useArchiveSessionMutation();
+  const compactSessionMut = useCompactSessionMutation();
   const archiveProjectMut = useArchiveProjectMutation();
   const deleteProjectMut = useDeleteProjectMutation();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
@@ -280,6 +290,7 @@ export default function App() {
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['tree'] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
+                queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', selectedSessionId] }),
               ]);
             }
             if (message.phase === 'error') setStreamNote('error');
@@ -300,6 +311,12 @@ export default function App() {
           }
           if (message.kind === 'event' && (message.type === 'tree.changed' || message.type === 'project.created' || message.type === 'session.created' || message.type === 'session.archived')) {
             treeQuery.refetch();
+          }
+          if (message.kind === 'event' && (message.type === 'session.compaction_end' || message.type === 'session.compacted')) {
+            const eventSessionId = (message.payload as Record<string, unknown>)?.session_id ?? selectedSessionId;
+            if (typeof eventSessionId === 'string' && eventSessionId) {
+              queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', eventSessionId] });
+            }
           }
         } catch {}
       },
@@ -411,15 +428,25 @@ export default function App() {
     setStreamNote('stopping');
   }, [selectedSessionId, stopSessionMut]);
 
-  const handleArchiveSession = useCallback(async () => {
+  const handleCompactSession = useCallback(async () => {
     if (!selectedSessionId) return;
-    const rootId = currentSessionNode?.root_session_id ?? sessionInfo?.session.root_session_id;
-    await archiveSessionMut.mutateAsync(selectedSessionId);
+    try {
+      await compactSessionMut.mutateAsync(selectedSessionId);
+    } catch { /* compaction errors are non-critical */ }
+  }, [selectedSessionId, compactSessionMut]);
+
+  const handleArchiveSession = useCallback(async (sessionId?: string) => {
+    const targetId = sessionId ?? selectedSessionId;
+    if (!targetId) return;
+    const targetNode = findSessionNode(tree, targetId);
+    const rootId = targetNode?.root_session_id;
+    await archiveSessionMut.mutateAsync(targetId);
     await treeQuery.refetch();
-    if (rootId && rootId !== selectedSessionId) {
-      handleSelectSession(selectedProjectId ?? '', rootId);
+    const pid = rootId ? findProjectId(tree, rootId) : null;
+    if (rootId && rootId !== targetId && pid) {
+      handleSelectSession(pid, rootId);
     }
-  }, [selectedSessionId, currentSessionNode, sessionInfo, archiveSessionMut, treeQuery, handleSelectSession, selectedProjectId]);
+  }, [selectedSessionId, tree, archiveSessionMut, treeQuery, handleSelectSession]);
 
   const handleModelSelect = useCallback(async (provider: string, id: string) => {
     if (!selectedSessionId) return;
@@ -444,6 +471,9 @@ export default function App() {
     setProviderAuthHeader(true);
     setSupportsDeveloperRole(false);
     setSupportsReasoningEffort(false);
+    setProviderApi('');
+    setProviderHeaders('');
+    setProviderCompatJson('');
     setProviderModels([createEmptyProviderModel()]);
     setProviderError(null);
     setProviderTestResult(null);
@@ -473,24 +503,61 @@ export default function App() {
     setProviderModels((current) => current.length === 1 ? current : current.filter((_, modelIndex) => modelIndex !== index));
   }, []);
 
-  const buildProviderPayload = useCallback((): ProviderFormPayload => ({
-    providerKey: providerKey.trim(),
-    baseUrl: providerBaseUrl.trim(),
-    apiKey: providerApiKey,
-    authHeader: providerAuthHeader,
-    compat: {
+  const buildProviderPayload = useCallback((): ProviderFormPayload => {
+    // Parse compat JSON: merge explicit checkboxes with extra compat fields
+    const compatObj: Record<string, unknown> = {
       supportsDeveloperRole,
       supportsReasoningEffort,
-    },
-    models: providerModels.map((model) => ({
-      id: model.id.trim(),
-      name: model.name?.trim() || undefined,
-      reasoning: Boolean(model.reasoning),
-      inputImage: Boolean(model.inputImage),
-      contextWindow: model.contextWindow ? Number(model.contextWindow) : undefined,
-      maxTokens: model.maxTokens ? Number(model.maxTokens) : undefined,
-    })),
-  }), [providerKey, providerBaseUrl, providerApiKey, providerAuthHeader, supportsDeveloperRole, supportsReasoningEffort, providerModels]);
+    };
+    if (providerCompatJson.trim()) {
+      try {
+        const extra = JSON.parse(providerCompatJson.trim());
+        Object.assign(compatObj, extra);
+      } catch { /* invalid JSON, skip */ }
+    }
+
+    // Parse headers JSON
+    let headersObj: Record<string, string> | undefined;
+    if (providerHeaders.trim()) {
+      try {
+        headersObj = JSON.parse(providerHeaders.trim());
+      } catch { /* invalid JSON, skip */ }
+    }
+
+    return {
+      providerKey: providerKey.trim(),
+      baseUrl: providerBaseUrl.trim(),
+      apiKey: providerApiKey,
+      authHeader: providerAuthHeader,
+      api: providerApi.trim() || undefined,
+      headers: headersObj,
+      compat: Object.keys(compatObj).length > 0 ? compatObj : undefined,
+      models: providerModels.map((model) => ({
+        id: model.id.trim(),
+        name: model.name?.trim() || undefined,
+        reasoning: Boolean(model.reasoning),
+        inputImage: Boolean(model.inputImage),
+        input: model.input,
+        api: model.api?.trim() || undefined,
+        contextWindow: model.contextWindow ? Number(model.contextWindow) : undefined,
+        maxTokens: model.maxTokens ? Number(model.maxTokens) : undefined,
+        cost: model.cost
+          ? {
+              ...(model.cost.input !== undefined && !Number.isNaN(Number(model.cost.input)) ? { input: Number(model.cost.input) } : {}),
+              ...(model.cost.output !== undefined && !Number.isNaN(Number(model.cost.output)) ? { output: Number(model.cost.output) } : {}),
+              ...(model.cost.cacheRead !== undefined && !Number.isNaN(Number(model.cost.cacheRead)) ? { cacheRead: Number(model.cost.cacheRead) } : {}),
+              ...(model.cost.cacheWrite !== undefined && !Number.isNaN(Number(model.cost.cacheWrite)) ? { cacheWrite: Number(model.cost.cacheWrite) } : {}),
+            }
+          : undefined,
+        compat: model.compat?.trim()
+          ? (() => { try { const p = JSON.parse(model.compat!.trim()); return p; } catch { return undefined; } })()
+          : undefined,
+        thinkingLevelMap: model.thinkingLevelMap?.trim()
+          ? (() => { try { const p = JSON.parse(model.thinkingLevelMap!.trim()); return p; } catch { return undefined; } })()
+          : undefined,
+      })),
+    };
+  }, [providerKey, providerBaseUrl, providerApiKey, providerAuthHeader, supportsDeveloperRole, supportsReasoningEffort, providerApi, providerHeaders, providerCompatJson, providerModels]);
 
   const validateProviderPayload = useCallback((payload: ProviderFormPayload) => {
     if (!payload.providerKey) return '请填写 providerKey';
@@ -655,6 +722,8 @@ export default function App() {
                   onArchiveSession={handleArchiveSession}
                   archivePending={archiveSessionMut.isPending}
                   showArchiveButton={!isPlannerRoot}
+                  onCompactSession={handleCompactSession}
+                  compactPending={compactSessionMut.isPending}
                 />
               )}
               {activeTab === 'info' && <TabSessionInfo sessionInfo={sessionInfo ?? null} isLoading={sessionInfoQuery.isLoading} />}
@@ -759,7 +828,7 @@ export default function App() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">模型提供商</div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400">当前仅支持 `openai-completions` 兼容接口</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">支持 openai-completions、anthropic-messages、google-generative-ai、openai-responses</div>
               </div>
               <button onClick={handleOpenProviderModal} className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer">添加模型提供商</button>
             </div>
@@ -781,6 +850,16 @@ export default function App() {
               <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">baseUrl</label>
               <input value={providerBaseUrl} onChange={(e) => setProviderBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
             </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">api</label>
+              <select value={providerApi} onChange={(e) => setProviderApi(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950">
+                <option value="">openai-completions（默认）</option>
+                <option value="openai-completions">openai-completions</option>
+                <option value="openai-responses">openai-responses</option>
+                <option value="anthropic-messages">anthropic-messages</option>
+                <option value="google-generative-ai">google-generative-ai</option>
+              </select>
+            </div>
             <div className="md:col-span-2">
               <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">apiKey</label>
               <input value={providerApiKey} onChange={(e) => setProviderApiKey(e.target.value)} type="password" placeholder="sk-..." className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
@@ -791,6 +870,22 @@ export default function App() {
             <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={providerAuthHeader} onChange={(e) => setProviderAuthHeader(e.target.checked)} /> authHeader</label>
             <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsDeveloperRole} onChange={(e) => setSupportsDeveloperRole(e.target.checked)} /> compat.supportsDeveloperRole</label>
             <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsReasoningEffort} onChange={(e) => setSupportsReasoningEffort(e.target.checked)} /> compat.supportsReasoningEffort</label>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">headers（JSON，可选）</label>
+              <textarea value={providerHeaders} onChange={(e) => setProviderHeaders(e.target.value)} placeholder='{
+  "x-custom-header": "value"
+}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">compat 额外字段（JSON，可选）</label>
+              <textarea value={providerCompatJson} onChange={(e) => setProviderCompatJson(e.target.value)} placeholder='{
+  "supportsUsageInStreaming": false,
+  "maxTokensField": "max_tokens",
+  "thinkingFormat": "deepseek"
+}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
+            </div>
           </div>
 
           <div className="space-y-3">
@@ -807,12 +902,60 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <input value={model.id} onChange={(e) => updateProviderModel(index, { id: e.target.value })} placeholder="id" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
                   <input value={model.name ?? ''} onChange={(e) => updateProviderModel(index, { name: e.target.value })} placeholder="name（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <select value={model.api ?? ''} onChange={(e) => updateProviderModel(index, { api: e.target.value })} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950">
+                      <option value="">api（继承提供商）</option>
+                      <option value="openai-completions">openai-completions</option>
+                      <option value="openai-responses">openai-responses</option>
+                      <option value="anthropic-messages">anthropic-messages</option>
+                      <option value="google-generative-ai">google-generative-ai</option>
+                    </select>
+                  </div>
                   <input value={model.contextWindow ?? ''} onChange={(e) => updateProviderModel(index, { contextWindow: e.target.value ? Number(e.target.value) : undefined })} type="number" placeholder="contextWindow（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
                   <input value={model.maxTokens ?? ''} onChange={(e) => updateProviderModel(index, { maxTokens: e.target.value ? Number(e.target.value) : undefined })} type="number" placeholder="maxTokens（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
                 </div>
-                <div className="flex flex-wrap gap-4">
-                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.reasoning} onChange={(e) => updateProviderModel(index, { reasoning: e.target.checked })} /> reasoning</label>
-                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.inputImage} onChange={(e) => updateProviderModel(index, { inputImage: e.target.checked })} /> inputImage</label>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                  <input value={model.cost?.input ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, input: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.input" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                  <input value={model.cost?.output ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, output: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.output" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                  <input value={model.cost?.cacheRead ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, cacheRead: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.cacheRead" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                  <input value={model.cost?.cacheWrite ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, cacheWrite: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.cacheWrite" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">compat（可选）</label>
+                    <textarea value={model.compat ?? ''} onChange={(e) => updateProviderModel(index, { compat: e.target.value })} placeholder='例：{ &quot;forceAdaptiveThinking&quot;: true, &quot;thinkingFormat&quot;: &quot;deepseek&quot; }' rows={2} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 font-mono" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">thinkingLevelMap（可选）</label>
+                    <textarea value={model.thinkingLevelMap ?? ''} onChange={(e) => updateProviderModel(index, { thinkingLevelMap: e.target.value })} placeholder='例：{ &quot;off&quot;: null, &quot;medium&quot;: &quot;medium&quot;, &quot;high&quot;: &quot;high&quot; }' rows={2} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 font-mono" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="flex flex-wrap gap-4">
+                    <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.reasoning} onChange={(e) => updateProviderModel(index, { reasoning: e.target.checked })} /> reasoning</label>
+                    <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.inputImage} onChange={(e) => updateProviderModel(index, { inputImage: e.target.checked })} /> inputImage</label>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">input（可选）</label>
+                    <div className="flex flex-wrap gap-4">
+                      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.input?.includes('text') ?? false} onChange={(e) => {
+                        const current = model.input ?? [];
+                        const next = e.target.checked
+                          ? [...current, 'text']
+                          : current.filter((t) => t !== 'text');
+                        updateProviderModel(index, { input: next.length > 0 ? next : undefined });
+                      }} /> text</label>
+                      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.input?.includes('image') ?? false} onChange={(e) => {
+                        const current = model.input ?? [];
+                        const next = e.target.checked
+                          ? [...current, 'image']
+                          : current.filter((t) => t !== 'image');
+                        updateProviderModel(index, { input: next.length > 0 ? next : undefined });
+                      }} /> image</label>
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}

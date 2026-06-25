@@ -41,7 +41,12 @@ export function registerSocket() {
       for (const ws of sockets) {
         const context = contexts.get(ws);
         if (!shouldDeliver(message, context)) continue;
-        ws.send(payload);
+        try {
+          ws.send(payload);
+        } catch {
+          sockets.delete(ws);
+          contexts.delete(ws);
+        }
       }
     },
     sendToSession(sessionId: string, message: ServerMessage) {
