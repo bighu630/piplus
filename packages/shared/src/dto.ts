@@ -120,3 +120,24 @@ export type SessionContextUsageDTO = {
   context_window: number;
   percent: number | null;
 };
+
+export type GitBranchDTO = {
+  name: string;
+  is_current: boolean;
+};
+
+export type GitBranchesResponseDTO = {
+  session_id: string;
+  cwd: string;
+  current_branch: string;
+  branches: GitBranchDTO[];
+};
+
+export type GitCheckoutResponseDTO = {
+  session_id: string;
+  cwd: string;
+  result: 'ok' | 'error';
+  stdout?: string;
+  stderr?: string;
+  branch: string;
+};

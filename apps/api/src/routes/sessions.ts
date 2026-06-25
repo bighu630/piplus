@@ -695,6 +695,98 @@ export function registerSessionRoutes(app: Hono) {
 
   /**
    * @swagger
+   * /api/v1/sessions/{sessionId}/git/branches:
+   *   get:
+   *     summary: 获取项目 Git 分支列表及当前分支
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 返回项目当前 Git 分支列表及当前所在分支。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   *       500:
+   *         description: Git 操作失败。
+   */
+  app.get('/api/v1/sessions/:sessionId/git/branches', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      // Get current branch
+      const currentBranch = execGit(cwd, 'rev-parse --abbrev-ref HEAD').trim();
+
+      // Get all local branches
+      const branchOutput = execGit(cwd, 'branch --format=\'%(refname:short)|||%(HEAD)\' ');
+      const branches = branchOutput
+        .split('\n')
+        .filter(Boolean)
+        .map((line: string) => {
+          const [name, headMarker] = line.split('|||');
+          return { name: name.trim(), is_current: headMarker.trim() === '*' };
+        });
+
+      return c.json({ session_id: sessionId, cwd, current_branch: currentBranch, branches });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
+    }
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git/checkout:
+   *   post:
+   *     summary: 切换到指定 Git 分支
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 切换到指定分支。
+   *     responses:
+   *       200:
+   *         description: 切换成功。
+   *       400:
+   *         description: 分支名为空。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   *       500:
+   *         description: Git 操作失败。
+   */
+  app.post('/api/v1/sessions/:sessionId/git/checkout', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const branch = String((body as { branch?: string }).branch ?? '').trim();
+
+    if (!branch) {
+      return c.json({ error: { code: 'EMPTY_BRANCH', message: 'Branch name is required' } }, 400);
+    }
+
+    // Validate branch name format (allow letters, numbers, dots, hyphens, underscores, slashes)
+    if (!/^[a-zA-Z0-9._\-/]+$/.test(branch)) {
+      return c.json({ error: { code: 'INVALID_BRANCH', message: 'Branch name contains invalid characters' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      const stdout = execGit(cwd, `checkout "${branch.replace(/"/g, '\\"')}"`);
+      return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim(), branch });
+    } catch (err: unknown) {
+      const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
+      return c.json({ session_id: sessionId, cwd, result: 'error', stderr, branch }, 500);
+    }
+  });
+
+  /**
+   * @swagger
    * /api/v1/sessions/{sessionId}/context-usage:
    *   get:
    *     summary: 获取会话上下文使用情况

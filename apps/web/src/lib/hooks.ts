@@ -25,6 +25,8 @@ import {
   gitPush,
   gitCommit,
   addGitignore,
+  getGitBranches,
+  gitCheckout,
   testModelProvider,
   createModelProvider,
   type ModelInfo,
@@ -271,6 +273,27 @@ export function useGitCommitMutation() {
 export function useAddGitignoreMutation() {
   return useMutation({
     mutationFn: ({ sessionId, path }: { sessionId: string; path: string }) => addGitignore(sessionId, path),
+  });
+}
+
+export function useGitBranches(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'git-branches', sessionId],
+    queryFn: () => getGitBranches(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
+export function useGitCheckoutMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, branch }: { sessionId: string; branch: string }) => gitCheckout(sessionId, branch),
+    onSuccess: (_data, { sessionId }) => {
+      // Invalidate both branches list and git diff since checkout may change working tree
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-branches', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+    },
   });
 }
 
