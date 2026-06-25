@@ -402,8 +402,8 @@ export default function TabGitDiff({
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50/60 dark:bg-slate-900/10 overflow-hidden">
       {/* Top controls */}
-      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 shrink-0 flex flex-wrap items-center justify-between gap-4 select-none">
-        <div className="flex items-center space-x-3">
+      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 shrink-0 flex items-center justify-between gap-4 select-none overflow-x-auto">
+        <div className="flex items-center space-x-3 shrink-0">
           {/* Branch selector dropdown */}
           <div className="relative">
             <button
