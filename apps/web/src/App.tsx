@@ -39,6 +39,7 @@ import {
   useAddGitignoreMutation,
   useTestModelProviderMutation,
   useCreateModelProviderMutation,
+  useUpdateSessionTitleMutation,
 } from './lib/hooks';
 import {
   Settings,
@@ -46,6 +47,7 @@ import {
   PlusCircle,
   Database,
   Trash2,
+  Pencil,
 } from 'lucide-react';
 
 type Tab = 'chat' | 'info' | 'diff' | 'files';
@@ -129,6 +131,9 @@ export default function App() {
   const [showArchived, setShowArchived] = useState(() => {
     try { return localStorage.getItem('pi-show-archived') === 'true'; } catch { return false; }
   });
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editTitleValue, setEditTitleValue] = useState('');
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const [showWorker, setShowWorker] = useState(() => {
     try { return localStorage.getItem('pi-show-worker') !== 'false'; } catch { return true; }
   });
@@ -230,6 +235,8 @@ export default function App() {
     setStreamingContent('');
     setStreamNote('');
     setSelectedFilePath(null);
+    setEditingTitle(false);
+    setEditTitleValue('');
   }, [selectedSessionId]);
 
   useEffect(() => {
@@ -365,6 +372,8 @@ export default function App() {
     setSelectedProjectId(projectId);
     setSelectedSessionId(sessionId);
     setActiveTab('chat');
+    setEditingTitle(false);
+    setEditTitleValue('');
     const targetPath = getSessionPath(sessionId);
     if (window.location.pathname !== targetPath) {
       window.history.pushState(null, '', targetPath);
@@ -463,6 +472,7 @@ export default function App() {
   const gitPushMut = useGitPushMutation();
   const gitCommitMut = useGitCommitMutation();
   const addGitignoreMut = useAddGitignoreMutation();
+  const updateTitleMut = useUpdateSessionTitleMutation();
 
   const resetProviderForm = useCallback(() => {
     setProviderKey('');
@@ -621,6 +631,38 @@ export default function App() {
     }
   }, [messagesQuery]);
 
+  const handleStartEditTitle = useCallback(() => {
+    titleSavedRef.current = false;
+    setEditTitleValue(sessionInfo?.session.title ?? '');
+    setEditingTitle(true);
+    requestAnimationFrame(() => titleInputRef.current?.select());
+  }, [sessionInfo]);
+
+  const [titleSavedRef] = useState(() => ({ current: false }));
+
+  const handleSaveTitle = useCallback(() => {
+    if (titleSavedRef.current) return;
+    if (!selectedSessionId) return;
+    if (!editTitleValue.trim()) {
+      setEditingTitle(false);
+      return;
+    }
+    titleSavedRef.current = true;
+    updateTitleMut.mutate({ sessionId: selectedSessionId, title: editTitleValue.trim() });
+    setEditingTitle(false);
+  }, [selectedSessionId, editTitleValue, updateTitleMut]);
+
+  const handleCancelEditTitle = useCallback(() => {
+    titleSavedRef.current = true;
+    setEditingTitle(false);
+    setEditTitleValue('');
+  }, []);
+
+  const handleTitleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') handleSaveTitle();
+    else if (e.key === 'Escape') handleCancelEditTitle();
+  }, [handleSaveTitle, handleCancelEditTitle]);
+
   const handleArchiveProject = useCallback((projectId: string) => {
     archiveProjectMut.mutate(projectId);
   }, [archiveProjectMut]);
@@ -681,10 +723,32 @@ export default function App() {
       <div className="flex-1 min-w-0 flex flex-col h-full bg-slate-50 dark:bg-slate-900 relative">
         <header className="border-b border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
           {sessionInfo && (
-            <div className="flex items-center space-x-3 py-1">
-              <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">
-                {sessionInfo.session.title}
-              </h1>
+            <div className="flex items-center space-x-3 py-1 group/title">
+              {editingTitle ? (
+                <input
+                  ref={titleInputRef}
+                  type="text"
+                  value={editTitleValue}
+                  onChange={(e) => setEditTitleValue(e.target.value)}
+                  onBlur={handleCancelEditTitle}
+                  onKeyDown={handleTitleKeyDown}
+                  className="text-sm font-bold font-sans leading-none px-1 py-0.5 border border-blue-500 rounded-md bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 outline-none w-64"
+                  autoFocus
+                />
+              ) : (
+                <>
+                  <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">
+                    {sessionInfo.session.title}
+                  </h1>
+                  <button
+                    onClick={handleStartEditTitle}
+                    className="opacity-0 group-hover/title:opacity-100 transition-opacity p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                    title="编辑标题"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                  </button>
+                </>
+              )}
             </div>
           )}
 
