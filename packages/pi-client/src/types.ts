@@ -102,6 +102,34 @@ export type PiClient = {
   getContextUsage(sessionId: string, locator: PiSessionLocator): Promise<PiContextUsage | null>;
   compactSession(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<void>;
   registerTools?(tools: PiToolDef[]): Promise<void>;
+
+  /**
+   * Dynamically register a custom provider with Pi's model registry.
+   * This makes the provider and its models available for use in sessions
+   * without writing to Pi's models.json file.
+   */
+  registerProvider?(providerName: string, config: {
+    api: string;
+    baseUrl: string;
+    apiKey: string;
+    authHeader?: boolean;
+    headers?: Record<string, string>;
+    compat?: Record<string, unknown>;
+    models: Array<{
+      id: string;
+      name?: string;
+      api?: string;
+      baseUrl?: string;
+      reasoning?: boolean;
+      thinkingLevelMap?: Record<string, string | null>;
+      input?: string[];
+      cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+      contextWindow?: number;
+      maxTokens?: number;
+      headers?: Record<string, string>;
+      compat?: Record<string, unknown>;
+    }>;
+  }): Promise<void>;
 };
 
 export type PiToolCallContext = {

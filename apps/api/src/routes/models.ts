@@ -41,7 +41,16 @@ type StoredModelsFile = {
   providers: Record<string, Record<string, unknown>>;
 };
 
-function getModelsFilePath() {
+/** Piplus-managed providers file */
+function getPiplusModelsFilePath() {
+  const configDir = process.env.XDG_CONFIG_HOME
+    ? join(process.env.XDG_CONFIG_HOME, 'piplus')
+    : join(process.env.HOME || homedir(), '.config', 'piplus');
+  return join(configDir, 'piplus-models.json');
+}
+
+/** Pi's own models.json — read-only from piplus side, for duplicate checking */
+function getPiModelsFilePath() {
   return join(process.env.HOME || homedir(), '.pi', 'agent', 'models.json');
 }
 
@@ -56,12 +65,15 @@ function buildHeaders(apiKey: string, authHeader: boolean): Record<string, strin
 }
 
 function stripJsonComments(input: string): string {
-  return input.replace(/^\s*\/\/.*$/gm, '');
+  return input
+    .replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/g, (m) => (m[0] === '"' ? m : ''))
+    .replace(/"(?:\\.|[^"\\])*"|,(\s*[}\]])/g, (m, tail) => tail ?? (m[0] === '"' ? m : ''));
 }
 
-async function readModelsConfig(): Promise<StoredModelsFile> {
+/** Read piplus-managed providers from the separate piplus-models.json */
+async function readPiplusModelsConfig(): Promise<StoredModelsFile> {
   try {
-    const raw = await readFile(getModelsFilePath(), 'utf-8');
+    const raw = await readFile(getPiplusModelsFilePath(), 'utf-8');
     const parsed = JSON.parse(stripJsonComments(raw)) as Partial<StoredModelsFile>;
     return { providers: parsed.providers ?? {} };
   } catch (error) {
@@ -72,10 +84,29 @@ async function readModelsConfig(): Promise<StoredModelsFile> {
   }
 }
 
-async function writeModelsConfig(content: StoredModelsFile) {
-  const modelsFilePath = getModelsFilePath();
-  await mkdir(join(process.env.HOME || homedir(), '.pi', 'agent'), { recursive: true });
-  await writeFile(modelsFilePath, JSON.stringify(content, null, 2) + '\n', 'utf-8');
+/** Write only piplus-managed providers to the separate piplus-models.json */
+async function writePiplusModelsConfig(content: StoredModelsFile) {
+  const filePath = getPiplusModelsFilePath();
+  await mkdir(join(filePath, '..'), { recursive: true });
+  await writeFile(filePath, JSON.stringify(content, null, 2) + '\n', 'utf-8');
+}
+
+/** Check if a provider key already exists in either pi's models.json or piplus-models.json */
+async function isProviderKeyTaken(providerKey: string): Promise<boolean> {
+  // Check piplus's own file first
+  const piplusConfig = await readPiplusModelsConfig();
+  if (piplusConfig.providers[providerKey]) return true;
+
+  // Also check pi's models.json to avoid collisions
+  try {
+    const raw = await readFile(getPiModelsFilePath(), 'utf-8');
+    const parsed = JSON.parse(stripJsonComments(raw)) as Partial<StoredModelsFile>;
+    if (parsed.providers?.[providerKey]) return true;
+  } catch {
+    // If pi's models.json doesn't exist or can't be read, ignore
+  }
+
+  return false;
 }
 
 function validateProviderBasics(body: ProviderTestBody) {
@@ -94,8 +125,58 @@ function validateProviderBasics(body: ProviderTestBody) {
   return { providerKey, baseUrl, apiKey, authHeader };
 }
 
+/** Re-register all piplus-managed providers with Pi's model registry at startup */
+async function loadPiplusProviders(piClient: ReturnType<typeof createPiClient>) {
+  if (!piClient.registerProvider) return;
+
+  let config: StoredModelsFile;
+  try {
+    config = await readPiplusModelsConfig();
+  } catch {
+    return; // File doesn't exist or is unreadable — nothing to load
+  }
+
+  for (const [providerKey, providerConfig] of Object.entries(config.providers)) {
+    const { api, baseUrl, apiKey, authHeader, headers, compat, models } = providerConfig as Record<string, unknown>;
+    if (!api || !baseUrl) {
+      console.warn(`[models] Skipping provider "${providerKey}": missing api or baseUrl`);
+      continue;
+    }
+
+    try {
+      piClient.registerProvider(providerKey, {
+        api: api as string,
+        baseUrl: baseUrl as string,
+        apiKey: (apiKey as string) ?? '',
+        authHeader: Boolean(authHeader),
+        headers: headers as Record<string, string> | undefined,
+        compat: compat as Record<string, unknown> | undefined,
+        models: (models as Array<Record<string, unknown>> ?? []).map((m) => ({
+          id: String(m.id),
+          name: m.name as string | undefined,
+          api: m.api as string | undefined,
+          reasoning: (m.reasoning as boolean) ?? false,
+          thinkingLevelMap: m.thinkingLevelMap as Record<string, string | null> | undefined,
+          input: m.input as string[] | undefined,
+          cost: m.cost as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined,
+          contextWindow: (m.contextWindow as number) ?? 128000,
+          maxTokens: (m.maxTokens as number) ?? 16384,
+          compat: m.compat as Record<string, unknown> | undefined,
+        })),
+      });
+    } catch (err) {
+      console.warn(`[models] Failed to register provider "${providerKey}":`, err);
+    }
+  }
+}
+
 export function registerModelRoutes(app: Hono) {
   const piClient = createPiClient();
+
+  // Load piplus-managed providers from disk at startup
+  loadPiplusProviders(piClient).catch((err) =>
+    console.error('[models] Failed to load piplus providers at startup:', err),
+  );
 
   app.get('/api/v1/models/status', async (c) => {
     const models = await piClient.listAvailableModels();
@@ -151,14 +232,15 @@ export function registerModelRoutes(app: Hono) {
       return c.json({ error: { code: 'INVALID_MODEL_ID', message: 'Each model id is required' } }, 400);
     }
 
-    const config = await readModelsConfig();
-    if (config.providers[validated.providerKey]) {
+    // Check both piplus and pi's models.json for duplicate provider keys
+    if (await isProviderKeyTaken(validated.providerKey)) {
       return c.json({ error: { code: 'PROVIDER_EXISTS', message: 'Provider already exists' } }, 409);
     }
 
+    // Build the provider config (same structure as pi's models.json expects)
     const providerConfig: Record<string, unknown> = {
       api: body.api?.trim() || 'openai-completions',
-      baseURL: validated.baseUrl,
+      baseUrl: validated.baseUrl,
       apiKey: validated.apiKey,
       authHeader: validated.authHeader,
     };
@@ -184,8 +266,8 @@ export function registerModelRoutes(app: Hono) {
         modelEntry.api = model.api.trim();
       }
 
-      if (model.reasoning) {
-        modelEntry.reasoning = true;
+      if (model.reasoning !== undefined) {
+        modelEntry.reasoning = model.reasoning;
       }
 
       if (model.contextWindow) {
@@ -198,10 +280,10 @@ export function registerModelRoutes(app: Hono) {
 
       if (model.cost) {
         const cost: Record<string, number> = {};
-        if (model.cost.input !== undefined) cost.input = Number(model.cost.input);
-        if (model.cost.output !== undefined) cost.output = Number(model.cost.output);
-        if (model.cost.cacheRead !== undefined) cost.cacheRead = Number(model.cost.cacheRead);
-        if (model.cost.cacheWrite !== undefined) cost.cacheWrite = Number(model.cost.cacheWrite);
+        if (model.cost.input != null) cost.input = Number(model.cost.input);
+        if (model.cost.output != null) cost.output = Number(model.cost.output);
+        if (model.cost.cacheRead != null) cost.cacheRead = Number(model.cost.cacheRead);
+        if (model.cost.cacheWrite != null) cost.cacheWrite = Number(model.cost.cacheWrite);
         if (Object.keys(cost).length > 0) modelEntry.cost = cost;
       }
 
@@ -225,9 +307,43 @@ export function registerModelRoutes(app: Hono) {
       return modelEntry;
     });
 
-    config.providers[validated.providerKey] = providerConfig;
+    // Register with Pi's model registry FIRST (may throw on invalid config).
+    // If registration succeeds, models are immediately available for sessions.
+    if (!piClient.registerProvider) {
+      return c.json({ error: { code: 'REGISTRATION_FAILED', message: 'Provider registration is not available' } }, 500);
+    }
+    await piClient.registerProvider(validated.providerKey, {
+      api: body.api?.trim() || 'openai-completions',
+      baseUrl: validated.baseUrl,
+      apiKey: validated.apiKey,
+      authHeader: validated.authHeader,
+      headers: body.headers,
+      compat: body.compat,
+      models: models.map((model) => ({
+        id: String(model.id).trim(),
+        name: model.name?.trim() || undefined,
+        api: model.api?.trim() || undefined,
+        reasoning: model.reasoning ?? false,
+        thinkingLevelMap: model.thinkingLevelMap,
+        input: model.input?.length
+          ? model.input
+          : model.inputImage
+            ? ['text', 'image']
+            : ['text'],
+        cost: model.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: model.contextWindow ? Number(model.contextWindow) : 128000,
+        maxTokens: model.maxTokens ? Number(model.maxTokens) : 16384,
+        compat: model.compat as Record<string, unknown> | undefined,
+      })),
+    });
 
-    await writeModelsConfig(config);
+    // Then persist to disk (if this fails, the provider is still registered in-memory
+    // for the current process lifetime; restart will pick it up from the file)
+    const config = await readPiplusModelsConfig();
+    config.providers[validated.providerKey] = providerConfig;
+    await writePiplusModelsConfig(config);
+
+    // Return the newly registered models
     const refreshed = await piClient.listAvailableModels();
     const providerModels = refreshed.filter((model) => model.provider === validated.providerKey);
     return c.json({ ok: true, providerKey: validated.providerKey, models: providerModels });

@@ -513,5 +513,9 @@ export function createPiClient(): PiClient {
       // Stub: tools are registered in-memory only.
       // Real PI SDK adapter will register tools with the PI agent runtime.
     },
+
+    async registerProvider(providerName, config) {
+      modelRegistry.registerProvider(providerName, config);
+    },
   };
 }

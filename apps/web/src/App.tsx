@@ -632,6 +632,7 @@ export default function App() {
   }, [messagesQuery]);
 
   const handleStartEditTitle = useCallback(() => {
+    if (sessionInfo?.role_template.key === 'planner' && sessionInfo.lineage.depth === 0) return;
     titleSavedRef.current = false;
     setEditTitleValue(sessionInfo?.session.title ?? '');
     setEditingTitle(true);
@@ -723,7 +724,7 @@ export default function App() {
       <div className="flex-1 min-w-0 flex flex-col h-full bg-slate-50 dark:bg-slate-900 relative">
         <header className="border-b border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
           {sessionInfo && (
-            <div className="flex items-center space-x-3 py-1 group/title">
+            <div className={`flex items-center space-x-3 py-1 ${!isPlannerRoot ? 'group/title' : ''}`}>
               {editingTitle ? (
                 <input
                   ref={titleInputRef}
@@ -740,13 +741,15 @@ export default function App() {
                   <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">
                     {sessionInfo.session.title}
                   </h1>
-                  <button
-                    onClick={handleStartEditTitle}
-                    className="opacity-0 group-hover/title:opacity-100 transition-opacity p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
-                    title="编辑标题"
-                  >
-                    <Pencil className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
-                  </button>
+                  {!isPlannerRoot && (
+                    <button
+                      onClick={handleStartEditTitle}
+                      className="opacity-0 group-hover/title:opacity-100 transition-opacity p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                      title="编辑标题"
+                    >
+                      <Pencil className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                    </button>
+                  )}
                 </>
               )}
             </div>
