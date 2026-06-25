@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { Hono } from 'hono';
 import { createPiClient } from '@piplus/pi-client';
 
@@ -87,7 +87,7 @@ async function readPiplusModelsConfig(): Promise<StoredModelsFile> {
 /** Write only piplus-managed providers to the separate piplus-models.json */
 async function writePiplusModelsConfig(content: StoredModelsFile) {
   const filePath = getPiplusModelsFilePath();
-  await mkdir(join(filePath, '..'), { recursive: true });
+  await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, JSON.stringify(content, null, 2) + '\n', 'utf-8');
 }
 
@@ -158,7 +158,7 @@ async function loadPiplusProviders(piClient: ReturnType<typeof createPiClient>) 
           reasoning: (m.reasoning as boolean) ?? false,
           thinkingLevelMap: m.thinkingLevelMap as Record<string, string | null> | undefined,
           input: m.input as string[] | undefined,
-          cost: m.cost as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined,
+          cost: (m.cost as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: (m.contextWindow as number) ?? 128000,
           maxTokens: (m.maxTokens as number) ?? 16384,
           compat: m.compat as Record<string, unknown> | undefined,
