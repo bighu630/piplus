@@ -173,17 +173,19 @@ async function loadPiplusProviders(piClient: ReturnType<typeof createPiClient>) 
 export function registerModelRoutes(app: Hono) {
   const piClient = createPiClient();
 
-  // Load piplus-managed providers from disk at startup
-  loadPiplusProviders(piClient).catch((err) =>
+  // Load piplus-managed providers at startup — routes wait for this before handling requests
+  const initPromise = loadPiplusProviders(piClient).catch((err) =>
     console.error('[models] Failed to load piplus providers at startup:', err),
   );
 
   app.get('/api/v1/models/status', async (c) => {
+    await initPromise;
     const models = await piClient.listAvailableModels();
     return c.json({ ok: models.length > 0, count: models.length, models });
   });
 
   app.get('/api/v1/models', async (c) => {
+    await initPromise;
     const models = await piClient.listAvailableModels();
     return c.json({ models });
   });

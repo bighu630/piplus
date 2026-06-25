@@ -103,6 +103,7 @@ export function createPiClient(): PiClient {
         cwd,
         sessionManager: SessionManager.create(cwd),
         model,
+        modelRegistry,
       });
       const locator: PiSessionLocator = {
         piSessionId: session.sessionId,
@@ -142,6 +143,7 @@ export function createPiClient(): PiClient {
         const options: Parameters<typeof createAgentSession>[0] = {
           cwd: runtimeCwd,
           sessionManager,
+          modelRegistry,
         };
 
         if (!sessionContext.model) {
@@ -289,7 +291,7 @@ export function createPiClient(): PiClient {
       return models.map((m) => ({
         provider: m.provider,
         id: m.id,
-        label: m.name ?? `${m.provider}/${m.id}`,
+        label: m.name ?? m.id,
       }));
     },
 
@@ -399,6 +401,7 @@ export function createPiClient(): PiClient {
         cwd: session.cwd,
         resourceLoader: loader,
         sessionManager,
+        modelRegistry,
       };
 
       if (!sessionContext.model) {
