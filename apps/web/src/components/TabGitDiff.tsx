@@ -246,7 +246,20 @@ export default function TabGitDiff({
   const [treeExpanded, setTreeExpanded] = useState<Record<string, boolean>>({});
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
+  const branchSelectorRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // Close branch dropdown on outside click
+  useEffect(() => {
+    if (!branchDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (branchSelectorRef.current && !branchSelectorRef.current.contains(e.target as Node)) {
+        setBranchDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [branchDropdownOpen]);
 
   const clearFeedback = useCallback(() => {
     setOpFeedback(null);
@@ -405,7 +418,7 @@ export default function TabGitDiff({
       <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 shrink-0 flex items-center justify-between gap-4 select-none overflow-x-auto">
         <div className="flex items-center space-x-3 shrink-0">
           {/* Branch selector dropdown */}
-          <div className="relative">
+          <div className="relative" ref={branchSelectorRef}>
             <button
               type="button"
               onClick={() => setBranchDropdownOpen(!branchDropdownOpen)}
@@ -418,10 +431,7 @@ export default function TabGitDiff({
             </button>
 
             {branchDropdownOpen && (
-              <>
-                {/* Backdrop to handle click-outside */}
-                <div className="fixed inset-0 z-10" onClick={() => setBranchDropdownOpen(false)} />
-                <div className="absolute left-0 top-full mt-1 z-20 w-56 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg overflow-hidden">
+              <div className="absolute left-0 top-full mt-1 z-20 w-56 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg overflow-hidden">
                   <div className="px-3 py-2 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider border-b border-slate-100 dark:border-slate-700">
                     分支 ({branches?.length ?? 0})
                   </div>
@@ -474,7 +484,6 @@ export default function TabGitDiff({
                     )}
                   </div>
                 </div>
-              </>
             )}
           </div>
 
