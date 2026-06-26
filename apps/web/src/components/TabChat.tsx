@@ -465,6 +465,9 @@ export default function TabChat({
                 argsStr = msg.tool_args_json;
               }
             }
+            const spawnSessionRole = toolName === 'spawn_session' && typeof parsedArgs?.role === 'string'
+              ? parsedArgs.role
+              : null;
 
             return (
               <div key={msg.id} className="flex justify-start items-start w-full">
@@ -487,6 +490,7 @@ export default function TabChat({
                       <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                       <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 font-mono">
                         {toolName}
+                        {spawnSessionRole ? ` (${spawnSessionRole})` : ''}
                       </span>
                     </div>
                     {isExpanded && argsStr && (

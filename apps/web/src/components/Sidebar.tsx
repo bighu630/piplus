@@ -3,6 +3,7 @@ import type { ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
 import {
   Folder,
   FolderOpen,
+  Github,
   FileText,
   ChevronDown,
   ChevronRight,
@@ -68,6 +69,12 @@ function roleIcon(key: string) {
     blank: User,
   };
   return map[key] ?? FileText;
+}
+
+function projectInitials(name: string): string {
+  const trimmed = name?.trim() ?? '';
+  if (trimmed.length === 0) return '?';
+  return trimmed[0].toUpperCase();
 }
 
 function runtimeColor(status: string): string | null {
@@ -369,8 +376,8 @@ export default function Sidebar({
       </div>
 
       {/* New Project button */}
-      <div className="p-3 shrink-0">
-        {!isSidebarCollapsed ? (
+      {!isSidebarCollapsed && (
+        <div className="p-3 shrink-0">
           <button
             onClick={onCreateProject}
             className="w-full bg-blue-600 hover:bg-blue-700 hover:shadow-sm text-white font-medium py-2 px-4 rounded-xl text-xs flex items-center justify-center space-x-2 transition cursor-pointer"
@@ -378,16 +385,8 @@ export default function Sidebar({
             <Plus className="w-4 h-4" />
             <span>新建项目</span>
           </button>
-        ) : (
-          <button
-            onClick={onCreateProject}
-            className="w-8 h-8 mx-auto bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center transition cursor-pointer"
-            title="新建项目"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Search */}
       {!isSidebarCollapsed && (
@@ -433,7 +432,24 @@ export default function Sidebar({
 
       {/* Tree */}
       <div className="flex-1 overflow-y-auto px-2 space-y-1 py-2">
-        {treeLoading ? (
+        {isSidebarCollapsed ? (
+          treeLoading ? (
+            <div className="text-xs text-slate-400 text-center py-4">加载中…</div>
+          ) : filteredProjects.length === 0 ? null : (
+            <div className="flex flex-col items-center space-y-2 py-2">
+              {filteredProjects.map((project) => (
+                <button
+                  key={project.id}
+                  onClick={onToggleSidebar}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 text-sm font-semibold cursor-pointer transition-colors"
+                  title={project.name}
+                >
+                  {projectInitials(project.name)}
+                </button>
+              ))}
+            </div>
+          )
+        ) : treeLoading ? (
           <div className="text-xs text-slate-400 text-center py-4">加载中…</div>
         ) : filteredProjects.length === 0 ? (
           <div className="text-xs text-slate-400 text-center py-4">暂无项目</div>
@@ -543,25 +559,35 @@ export default function Sidebar({
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-row items-center">
-        <button
-          onClick={onLogout}
-          className={`flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 p-1.5 rounded-lg text-slate-600 dark:text-slate-300 transition text-[11.5px] font-sans cursor-pointer ${
-            isSidebarCollapsed ? 'justify-center' : ''
-          }`}
-        >
-          <LogOut className="w-4 h-4 text-slate-500 dark:text-slate-400" />
-          {!isSidebarCollapsed && <span>退出登录</span>}
-        </button>
+      {!isSidebarCollapsed && (
+        <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-row items-center">
+          <button
+            onClick={onLogout}
+            className="flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 p-1.5 rounded-lg text-slate-600 dark:text-slate-300 transition text-[11.5px] font-sans cursor-pointer"
+          >
+            <LogOut className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+            <span>退出登录</span>
+          </button>
 
-        <button
-          onClick={onOpenSettings}
-          className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
-          title="设置"
-        >
-          <Settings className="w-4 h-4" />
-        </button>
-      </div>
+          <a
+            href="https://github.com/bighu630/piplus"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer inline-flex items-center"
+            title="GitHub 仓库"
+          >
+            <Github className="w-4 h-4" />
+          </a>
+
+          <button
+            onClick={onOpenSettings}
+            className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
+            title="设置"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
