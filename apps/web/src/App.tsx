@@ -244,7 +244,7 @@ export default function App() {
   const archiveProjectMut = useArchiveProjectMutation();
   const deleteProjectMut = useDeleteProjectMutation();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
-  const runtimeStatus = sessionInfo?.session.runtime_status ?? currentSessionNode?.runtime_status ?? 'idle';
+  const runtimeStatus = currentSessionNode?.runtime_status ?? sessionInfo?.session.runtime_status ?? 'idle';
   const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null, 20, runtimeStatus === 'running' ? 1500 : false);
   const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [];
   const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
