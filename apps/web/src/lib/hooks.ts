@@ -128,7 +128,7 @@ export function useSessionInfo(sessionId: string | null) {
   });
 }
 
-export function useSessionMessages(sessionId: string | null, limit = 20) {
+export function useSessionMessages(sessionId: string | null, limit = 20, refetchInterval?: number | false) {
   return useInfiniteQuery({
     queryKey: ['session', 'messages', sessionId],
     queryFn: ({ pageParam }) => getSessionMessages(sessionId!, { cursor: pageParam, limit }),
@@ -136,6 +136,7 @@ export function useSessionMessages(sessionId: string | null, limit = 20) {
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     enabled: Boolean(sessionId),
     staleTime: 0,
+    refetchInterval,
   });
 }
 
