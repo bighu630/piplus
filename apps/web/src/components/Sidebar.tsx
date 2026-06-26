@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
 import {
   Folder,
@@ -25,6 +25,8 @@ interface SidebarProps {
   projects: ProjectDTO[];
   activeSessionId: string | null;
   isSidebarCollapsed: boolean;
+  sidebarWidth: number;
+  onWidthChange: (width: number) => void;
   onSelectSession: (projectId: string, sessionId: string) => void;
   onSelectProject: (projectId: string) => void;
   onToggleSidebar: () => void;
@@ -85,6 +87,8 @@ export default function Sidebar({
   projects,
   activeSessionId,
   isSidebarCollapsed,
+  sidebarWidth,
+  onWidthChange,
   onSelectSession,
   onSelectProject,
   onToggleSidebar,
@@ -120,6 +124,42 @@ export default function Sidebar({
       return {};
     }
   });
+
+  const [isDragging, setIsDragging] = useState(false);
+  const dragInfo = useRef({ startX: 0, startWidth: 0 });
+  const draggingRef = useRef(false);
+
+  const handleResizePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    dragInfo.current = { startX: e.clientX, startWidth: sidebarWidth };
+    draggingRef.current = true;
+    setIsDragging(true);
+  }, [sidebarWidth]);
+
+  const handleResizePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!draggingRef.current) return;
+    const delta = e.clientX - dragInfo.current.startX;
+    const newWidth = Math.max(240, Math.min(520, dragInfo.current.startWidth + delta));
+    onWidthChange(newWidth);
+  }, [onWidthChange]);
+
+  const finishResize = useCallback(() => {
+    draggingRef.current = false;
+    setIsDragging(false);
+  }, []);
+
+  const handleResizePointerUp = finishResize;
+  const handleResizePointerCancel = finishResize;
+  const handleLostPointerCapture = finishResize;
+
+  // Cleanup dragging state on unmount, in case the component is removed mid-drag
+  useEffect(() => {
+    return () => {
+      draggingRef.current = false;
+      setIsDragging(false);
+    };
+  }, []);
 
   const toggleProject = (id: string) => {
     setCollapsedProjects((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -292,10 +332,22 @@ export default function Sidebar({
 
   return (
     <div
-      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col transition-all duration-300 ${
-        isSidebarCollapsed ? 'w-16' : 'w-64'
-      } h-screen select-none`}
+      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-screen select-none relative ${
+        isDragging ? '' : 'transition-all duration-200'
+      }`}
+      style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
     >
+      {!isSidebarCollapsed && (
+        <div
+          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 z-10"
+          style={{ touchAction: 'none' }}
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerCancel}
+          onLostPointerCapture={handleLostPointerCapture}
+        />
+      )}
       {/* Header */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
         {!isSidebarCollapsed && (
