@@ -342,6 +342,10 @@ export default function App() {
               setStreamingContent('');
               setStreamNote('');
               setPendingUserMessages([]);
+              const idleError = message.payload?.error;
+              if (idleError && typeof idleError === 'string' && idleError) {
+                setRuntimeErrors([{ runId: 'runtime-status', error: idleError }]);
+              }
               Promise.all([
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
