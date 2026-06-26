@@ -143,6 +143,13 @@ export default function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const saved = localStorage.getItem('pi-sidebar-width');
+      const parsed = saved ? Number(saved) : 256;
+      return Number.isFinite(parsed) ? Math.max(240, Math.min(520, parsed)) : 256;
+    } catch { return 256; }
+  });
   const [showArchived, setShowArchived] = useState(() => {
     try { return localStorage.getItem('pi-show-archived') === 'true'; } catch { return false; }
   });
@@ -219,6 +226,12 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem('pi-send-shortcut-mode', sendShortcutMode); } catch {}
   }, [sendShortcutMode]);
+
+  useEffect(() => {
+    if (Number.isFinite(sidebarWidth)) {
+      try { localStorage.setItem('pi-sidebar-width', String(sidebarWidth)); } catch {}
+    }
+  }, [sidebarWidth]);
 
   const queryClient = useQueryClient();
   const treeQuery = useTree();
@@ -825,6 +838,8 @@ export default function App() {
         projects={tree}
         activeSessionId={selectedSessionId}
         isSidebarCollapsed={sidebarCollapsed}
+        sidebarWidth={sidebarWidth}
+        onWidthChange={setSidebarWidth}
         onSelectSession={handleSelectSession}
         onSelectProject={setSelectedProjectId}
         onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
