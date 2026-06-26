@@ -182,6 +182,7 @@ export default function App() {
   const [streamNote, setStreamNote] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
+  const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
   const [wsConnected, setWsConnected] = useState(false);
 
   const initialUrlSessionId = useMemo(() => getSessionIdFromPath(window.location.pathname), []);
@@ -254,6 +255,7 @@ export default function App() {
     setPendingUserMessages([]);
     setStreamingContent('');
     setStreamNote('');
+    setRuntimeErrors([]);
     setSelectedFilePath(null);
     setEditingTitle(false);
     setEditTitleValue('');
@@ -306,7 +308,10 @@ export default function App() {
             if (activeTabRef.current === 'chat') {
               const delta = message.payload?.delta ?? '';
               setStreamNote(`${message.phase}${delta ? ' · streaming' : ''}`);
-              if (message.phase === 'start') setStreamingContent('');
+              if (message.phase === 'start') {
+                setStreamingContent('');
+                setRuntimeErrors([]);  // clear old error
+              }
               else if (message.phase === 'delta') setStreamingContent((prev) => prev + delta);
             }
             if (message.phase === 'complete') {
@@ -320,7 +325,11 @@ export default function App() {
                 queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', selectedSessionId] }),
               ]);
             }
-            if (message.phase === 'error') setStreamNote('error');
+            if (message.phase === 'error') {
+              const errorText = message.payload?.error ?? 'Unknown agent loop error';
+              setRuntimeErrors([{ runId: message.payload?.stream_id ?? 'unknown', error: errorText }]);
+              setStreamingContent('');
+            }
           }
           if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
             treeQuery.refetch();
@@ -449,6 +458,7 @@ export default function App() {
 
   const handleSend = useCallback(async (content: string) => {
     if (!selectedSessionId) return;
+    setRuntimeErrors([]);
     const optimisticMessage: ChatMessageDTO = {
       id: `optimistic_${Date.now()}`,
       role: 'user',
@@ -865,6 +875,7 @@ export default function App() {
                   runtimeStatus={runtimeStatus}
                   streamNote={streamNote}
                   streamingContent={streamingContent}
+                  runtimeErrors={runtimeErrors}
                   sessionTitle={sessionInfo?.session.title}
                   wsConnected={wsConnected}
                   selectedSessionId={selectedSessionId}
