@@ -1,4 +1,7 @@
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
 import { createPiClient } from './client';
 
@@ -108,6 +111,50 @@ describe('pi client gateway', () => {
       'hello from persisted history',
       'assistant persisted reply',
     ]);
+  });
+
+  test('getHistory preserves user image content blocks from persisted pi session history', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pi-client-history-'));
+    const sessionFile = join(dir, 'session.jsonl');
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({ type: 'session', version: 2, id: 'pi_test_history', timestamp: '2026-06-26T04:05:00.000Z', cwd: process.cwd() })}\n${JSON.stringify({
+        type: 'message',
+        id: 'msg_user_1',
+        parentId: null,
+        timestamp: '2026-06-26T04:05:00.000Z',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'please inspect this' },
+            { type: 'image', data: 'ZmFrZQ==', mimeType: 'image/png' },
+          ],
+          timestamp: Date.now(),
+        },
+      })}\n`,
+    );
+
+    const client = createPiClient();
+    const page = await client.getHistory('persisted_history', {
+      piSessionId: 'pi_test_history',
+      sessionFile,
+    }, null, 20);
+    expect(page.messages).toHaveLength(1);
+    expect(page.messages[0]).toMatchObject({
+      role: 'user',
+      text: 'please inspect this',
+      contentBlocks: [
+        { type: 'text', text: 'please inspect this' },
+        {
+          type: 'image',
+          mediaType: 'image/png',
+          mimeType: 'image/png',
+          dataBase64: 'ZmFrZQ==',
+          filename: null,
+          uri: null,
+        },
+      ],
+    });
   });
 
   test('sendMessage persists conversation to pi session history after runtime is closed', async () => {
@@ -230,4 +277,51 @@ describe('pi client gateway', () => {
     await client.closeRuntime(created.sessionId);
   });
 
+  // ─── Stop session / error resilience ──────────────────────────────────────
+
+  test('stopSession returns stopped status for unknown session (never created)', async () => {
+    const client = createPiClient();
+    // Calling stopSession on a session-id that was never created must not throw
+    // and must return { status: 'stopped' }.
+    const result = await client.stopSession('never_created_session');
+    expect(result).toMatchObject({ status: 'stopped' });
+  });
+
+  test('stopSession returns stopped status for session without runtime (restoreRuntime never called)', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Stop No Runtime Test' });
+    // Created but never restored — agentSession is undefined.
+    // stopSession must not throw and must return { status: 'stopped' }.
+    const result = await client.stopSession(created.sessionId);
+    expect(result).toMatchObject({ status: 'stopped' });
+  });
+
+  test('stopSession returns promptly for session with active runtime', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Stop Runtime Test' });
+    await client.restoreRuntime(created.sessionId, created.locator);
+
+    // Confirm the session has an agentSession (runtime is alive)
+    // stopSession must NOT await abort() — it must return promptly.
+    const start = performance.now();
+    const result = await client.stopSession(created.sessionId);
+    const elapsed = performance.now() - start;
+
+    expect(result).toMatchObject({ status: 'stopped' });
+    // If stopSession incorrectly awaits abort(), the runtime's prompt cycle could
+    // block. Since we just restored (no streaming), the call should complete in
+    // under 2 seconds.
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  test('stopSession can be called twice (idempotent)', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Stop Idempotent Test' });
+
+    const r1 = await client.stopSession(created.sessionId);
+    expect(r1).toMatchObject({ status: 'stopped' });
+
+    const r2 = await client.stopSession(created.sessionId);
+    expect(r2).toMatchObject({ status: 'stopped' });
+  });
 });

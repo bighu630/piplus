@@ -3,6 +3,7 @@ import { createDb } from '@piplus/db/client';
 import { messages, projects, roleTemplates, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
 import { and, desc, eq, lt, or } from 'drizzle-orm';
 import { createPiClient } from '@piplus/pi-client';
+import type { PiContentBlock, PiImageInput, PiModelInfo } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import { getDbPath } from '../db-context';
 import { registerWebSocketRoutes, socketHub } from '../ws/server';
@@ -13,7 +14,19 @@ import { createAuditService, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
 import { readdir, readFile, appendFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
+
+function getPiplusModelsFilePath() {
+  const configDir = process.env.XDG_CONFIG_HOME
+    ? path.join(process.env.XDG_CONFIG_HOME, 'piplus')
+    : path.join(process.env.HOME || homedir(), '.config', 'piplus');
+  return path.join(configDir, 'piplus-models.json');
+}
+
+function getPiModelsFilePath() {
+  return path.join(process.env.HOME || homedir(), '.pi', 'agent', 'models.json');
+}
 
 function randomId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
@@ -46,6 +59,8 @@ function nextMessageTime() {
 }
 
 const log = createLogger('routes.sessions');
+const MAX_CHAT_IMAGE_ATTACHMENTS = 4;
+const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const MAX_FILE_TREE_DEPTH = 6;
 const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
 const TEXT_FILE_EXTENSIONS = new Set([
@@ -76,6 +91,96 @@ function looksLikeBinary(buffer: Buffer) {
   }
 
   return sample.length > 0 && suspiciousBytes / sample.length > 0.1;
+}
+
+type ChatImageAttachmentInput = {
+  type?: string;
+  mime_type?: string;
+  data_base64?: string;
+  filename?: string | null;
+};
+
+function normalizeImageAttachments(raw: unknown) {
+  if (raw == null) return [] as ChatImageAttachmentInput[];
+  if (!Array.isArray(raw)) throw new Error('invalid_attachments');
+  return raw as ChatImageAttachmentInput[];
+}
+
+function parseImageAttachments(raw: unknown) {
+  const attachments = normalizeImageAttachments(raw);
+  if (attachments.length > MAX_CHAT_IMAGE_ATTACHMENTS) {
+    return { error: { code: 'TOO_MANY_ATTACHMENTS', message: `At most ${MAX_CHAT_IMAGE_ATTACHMENTS} images are allowed` }, status: 400 as const };
+  }
+
+  const images: PiImageInput[] = [];
+  const blocks: PiContentBlock[] = [];
+  for (const attachment of attachments) {
+    if (attachment?.type !== 'image') {
+      return { error: { code: 'INVALID_ATTACHMENT_TYPE', message: 'Only image attachments are supported' }, status: 400 as const };
+    }
+
+    const mimeType = String(attachment.mime_type ?? '').trim().toLowerCase();
+    if (!ALLOWED_IMAGE_MIME_TYPES.has(mimeType)) {
+      return { error: { code: 'UNSUPPORTED_IMAGE_MIME_TYPE', message: 'Unsupported image MIME type' }, status: 400 as const };
+    }
+
+    const data = String(attachment.data_base64 ?? '').trim();
+    if (!data) {
+      return { error: { code: 'INVALID_IMAGE_DATA', message: 'Image data is required' }, status: 400 as const };
+    }
+
+    try {
+      const buffer = Buffer.from(data, 'base64');
+      if (!buffer.byteLength || buffer.toString('base64') !== data.replace(/\s+/g, '')) {
+        return { error: { code: 'INVALID_IMAGE_DATA', message: 'Image data must be valid base64' }, status: 400 as const };
+      }
+    } catch {
+      return { error: { code: 'INVALID_IMAGE_DATA', message: 'Image data must be valid base64' }, status: 400 as const };
+    }
+
+    const filename = typeof attachment.filename === 'string' && attachment.filename.trim() ? attachment.filename.trim() : null;
+    images.push({ dataBase64: data, mimeType, mediaType: mimeType, filename: filename ?? undefined });
+    blocks.push({ type: 'image', mimeType, mediaType: mimeType, filename, uri: null, dataBase64: data });
+  }
+
+  return { images, blocks };
+}
+
+async function readModelCapabilitiesFromFile(filePath: string, provider: string, id: string) {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw) as {
+      providers?: Record<string, { models?: Array<{ id?: string; input?: string[] }> }>;
+    };
+    const models = parsed.providers?.[provider]?.models;
+    const matched = models?.find((candidate) => candidate.id === id);
+    return matched?.input;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readModelCapabilities(provider: string, id: string) {
+  const piplusInput = await readModelCapabilitiesFromFile(getPiplusModelsFilePath(), provider, id);
+  if (piplusInput) return piplusInput;
+  return readModelCapabilitiesFromFile(getPiModelsFilePath(), provider, id);
+}
+
+async function resolveSessionModelWithCapabilities(piClient: ReturnType<typeof createPiClient>, session: typeof sessions.$inferSelect) {
+  const runtimeModel = await piClient.getCurrentModel(session.id);
+  const model = runtimeModel ?? (session.currentModelProvider && session.currentModelId
+    ? { provider: session.currentModelProvider, id: session.currentModelId, label: session.currentModelId }
+    : null);
+  if (!model) return null;
+
+  const availableModels = await piClient.listAvailableModels();
+  const matched = availableModels.find((candidate: any) => candidate.provider === model.provider && candidate.id === model.id) as (PiModelInfo & { input?: string[] }) | undefined;
+  const input = matched?.input ?? await readModelCapabilities(model.provider, model.id);
+  return input ? { ...model, input } : (matched ?? model);
+}
+
+function modelSupportsImageInput(model: (PiModelInfo & { input?: string[] }) | null) {
+  return Array.isArray(model?.input) && model!.input.includes('image');
 }
 
 async function buildFileTree(rootPath: string, relativePath = '', depth = 0): Promise<Array<{ name: string; path: string; kind: 'file' | 'directory'; children?: any[] }>> {
@@ -244,6 +349,16 @@ export function registerSessionRoutes(app: Hono) {
         message_kind: row.messageKind ?? 'normal',
         source_session_id: null,
         content_text: row.text,
+        content_blocks: row.contentBlocks?.map((block) => block.type === 'text'
+          ? { type: 'text' as const, text: block.text }
+          : {
+              type: 'image' as const,
+              mime_type: block.mimeType,
+              media_type: block.mediaType,
+              filename: block.filename,
+              uri: block.uri,
+              data_base64: block.dataBase64,
+            }) ?? null,
         created_at: row.createdAt,
         tool_name: row.toolName ?? null,
         tool_args_json: row.toolArgs ? JSON.stringify(row.toolArgs) : null,
@@ -274,9 +389,18 @@ export function registerSessionRoutes(app: Hono) {
     const sessionId = decodeURIComponent(c.req.param('sessionId'));
     const body = await c.req.json().catch(() => ({}));
     const content = String((body as { content?: string }).content ?? '').trim();
+    let attachmentParse: ReturnType<typeof parseImageAttachments>;
+    try {
+      attachmentParse = parseImageAttachments((body as { attachments?: unknown }).attachments);
+    } catch {
+      return c.json({ error: { code: 'INVALID_ATTACHMENTS', message: 'Attachments must be an array' } }, 400);
+    }
+    if ('error' in attachmentParse) {
+      return c.json({ error: attachmentParse.error }, attachmentParse.status);
+    }
 
-    if (!content) {
-      return c.json({ error: { code: 'EMPTY_MESSAGE', message: 'Message content is required' } }, 400);
+    if (!content && attachmentParse.images.length === 0) {
+      return c.json({ error: { code: 'EMPTY_MESSAGE', message: 'Message content or image attachment is required' } }, 400);
     }
 
     const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
@@ -289,6 +413,16 @@ export function registerSessionRoutes(app: Hono) {
       return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
     }
 
+    const currentModel = await resolveSessionModelWithCapabilities(piClient, session);
+    if (attachmentParse.images.length > 0 && !modelSupportsImageInput(currentModel)) {
+      return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
+    }
+
+    const contentBlocks: PiContentBlock[] = [
+      ...(content ? [{ type: 'text' as const, text: content }] : []),
+      ...attachmentParse.blocks,
+    ];
+
     const now = nextMessageTime();
     const messageId = randomId('message');
     await db.insert(messages).values({
@@ -299,8 +433,8 @@ export function registerSessionRoutes(app: Hono) {
       sourceSessionId: null,
       role: 'user',
       contentText: content,
-      contentBlocksJson: null,
-      contentVersion: 1,
+      contentBlocksJson: contentBlocks.length ? JSON.stringify(contentBlocks) : null,
+      contentVersion: contentBlocks.length ? 2 : 1,
       createdAt: now,
     } as any);
 
@@ -323,14 +457,15 @@ export function registerSessionRoutes(app: Hono) {
       sessionId,
       userId,
       content,
+      images: attachmentParse.images,
       startedAt: now,
       onStreamEvent: async (event) => {
         for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
           socketHub.sendToSession(sessionId, frame);
         }
       },
-      onRuntimeStatusChange: async ({ projectId, runtimeStatus }) => {
-        socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus }, { project_id: projectId, session_id: sessionId }));
+      onRuntimeStatusChange: async ({ projectId, runtimeStatus, error }) => {
+        socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus, error }, { project_id: projectId, session_id: sessionId }));
       },
       onToolSessionCreated: async ({ sessionId: childSessionId, projectId }) => {
         socketHub.broadcast(createEvent('session.created', { session_id: childSessionId }, { project_id: projectId, session_id: childSessionId }));
@@ -425,7 +560,11 @@ export function registerSessionRoutes(app: Hono) {
     const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
-    await piClient.stopSession(sessionId);
+    try {
+      await piClient.stopSession(sessionId);
+    } catch (err) {
+      log.warn('session stop triggered with error (continue to respond 202)', { sessionId, error: String(err) });
+    }
     log.info('session stopping', { sessionId });
     await createAuditService(db).record(userId, "session.stopped", "session", sessionId);
 
@@ -691,6 +830,98 @@ export function registerSessionRoutes(app: Hono) {
 
     await appendFile(gitignorePath, entry, 'utf8');
     return c.json({ session_id: sessionId, path: normalizedEntry, result: 'ok' });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git/branches:
+   *   get:
+   *     summary: 获取项目 Git 分支列表及当前分支
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 返回项目当前 Git 分支列表及当前所在分支。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   *       500:
+   *         description: Git 操作失败。
+   */
+  app.get('/api/v1/sessions/:sessionId/git/branches', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      // Get current branch
+      const currentBranch = execGit(cwd, 'rev-parse --abbrev-ref HEAD').trim();
+
+      // Get all local branches
+      const branchOutput = execGit(cwd, 'branch --format=\'%(refname:short)|||%(HEAD)\' ');
+      const branches = branchOutput
+        .split('\n')
+        .filter(Boolean)
+        .map((line: string) => {
+          const [name, headMarker] = line.split('|||');
+          return { name: name.trim(), is_current: headMarker.trim() === '*' };
+        });
+
+      return c.json({ session_id: sessionId, cwd, current_branch: currentBranch, branches });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
+    }
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git/checkout:
+   *   post:
+   *     summary: 切换到指定 Git 分支
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 切换到指定分支。
+   *     responses:
+   *       200:
+   *         description: 切换成功。
+   *       400:
+   *         description: 分支名为空。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   *       500:
+   *         description: Git 操作失败。
+   */
+  app.post('/api/v1/sessions/:sessionId/git/checkout', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const branch = String((body as { branch?: string }).branch ?? '').trim();
+
+    if (!branch) {
+      return c.json({ error: { code: 'EMPTY_BRANCH', message: 'Branch name is required' } }, 400);
+    }
+
+    // Validate branch name format (allow letters, numbers, dots, hyphens, underscores, slashes)
+    if (!/^[a-zA-Z0-9._\-/]+$/.test(branch)) {
+      return c.json({ error: { code: 'INVALID_BRANCH', message: 'Branch name contains invalid characters' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      const stdout = execGit(cwd, `checkout "${branch.replace(/"/g, '\\"')}"`);
+      return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim(), branch });
+    } catch (err: unknown) {
+      const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
+      return c.json({ session_id: sessionId, cwd, result: 'error', stderr, branch }, 500);
+    }
   });
 
   /**

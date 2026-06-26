@@ -2,12 +2,32 @@ import { createSeedDb } from '@piplus/db/init';
 import { describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
-import { sessions } from '@piplus/db/schema';
+import { messages, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
 
+const imageCapableModelPromise = createPiClient().listAvailableModels().then((models) => models.at(-1) ?? models[0]);
+
 function makeDbPath() {
   return `/tmp/piplus-api-session-${crypto.randomUUID()}.sqlite`;
+}
+
+async function createImageCapableSession(app: ReturnType<typeof createApp>, name: string) {
+  const target = await imageCapableModelPromise;
+  expect(target).toBeTruthy();
+
+  const projectRes = await app.request('/api/v1/projects', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+    body: JSON.stringify({
+      name,
+      mode: 'existing',
+      path: '/tmp',
+      model: { provider: target.provider, id: target.id },
+    }),
+  });
+  expect(projectRes.status).toBe(201);
+  return projectRes.json();
 }
 
 describe('session routes', () => {
@@ -34,18 +54,21 @@ describe('session routes', () => {
     Bun.env.DATABASE_URL = `file:${path}`;
     const app = createApp();
 
-    const projectRes = await app.request('/api/v1/projects', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'LLM History Project', mode: 'existing', path: '/tmp' }),
-    });
-    const projectBody = await projectRes.json();
+    const projectBody = await createImageCapableSession(app, 'LLM History Project');
     const sessionId = projectBody.sessionId as string;
 
     const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ content: 'hello from api test' }),
+      body: JSON.stringify({
+        content: 'hello from api test',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('fake-image').toString('base64'),
+          filename: 'test.png',
+        }],
+      }),
     });
     expect(sendRes.status).toBe(202);
 
@@ -55,6 +78,109 @@ describe('session routes', () => {
     expect(pageRes.status).toBe(200);
     const page = await pageRes.json();
     expect(Array.isArray(page.messages)).toBe(true);
+    for (const message of page.messages) {
+      expect(message).toHaveProperty('content_text');
+      expect(message).toHaveProperty('content_blocks');
+    }
+
+    const db = createDb(`file:${path}`);
+    const rows = await db.select().from(messages).where(eq(messages.sessionId, sessionId));
+    const userMessage = rows.find((row) => row.role === 'user' && row.contentText === 'hello from api test');
+    expect(userMessage?.contentBlocksJson).toContain('hello from api test');
+    expect(userMessage?.contentBlocksJson).toContain('image/png');
+    expect(userMessage?.contentBlocksJson).toContain('test.png');
+  });
+
+  test('chat messages accept image-only content and persist structured blocks', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectBody = await createImageCapableSession(app, 'Image Only Project');
+    const sessionId = projectBody.sessionId as string;
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: '',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('image-only').toString('base64'),
+          filename: 'only.png',
+        }],
+      }),
+    });
+    expect(sendRes.status).toBe(202);
+
+    const db = createDb(`file:${path}`);
+    const rows = await db.select().from(messages).where(eq(messages.sessionId, sessionId));
+    const userMessage = rows.find((row) => row.role === 'user');
+    expect(userMessage?.contentText).toBe('');
+    expect(userMessage?.contentBlocksJson).toContain('image');
+  });
+
+  test('chat messages reject more than four image attachments', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Attachment Limit Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    const attachments = Array.from({ length: 5 }, (_, index) => ({
+      type: 'image',
+      mime_type: 'image/png',
+      data_base64: Buffer.from(`img-${index}`).toString('base64'),
+      filename: `img-${index}.png`,
+    }));
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ content: 'too many', attachments }),
+    });
+    expect(sendRes.status).toBe(400);
+    expect(await sendRes.json()).toMatchObject({ error: { code: 'TOO_MANY_ATTACHMENTS' } });
+  });
+
+  test('chat messages reject images for models without image support', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Text Only Model Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+    expect(sendRes.status).toBe(400);
+    expect(await sendRes.json()).toMatchObject({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } });
   });
 
   test('create top-level session inherits project planner model', async () => {
@@ -184,5 +310,120 @@ describe('session routes', () => {
       body: JSON.stringify({ title: 'No Auth' }),
     });
     expect(res.status).toBe(401);
+  });
+
+  // ─── Stop session / error resilience ──────────────────────────────────────
+
+  test('POST /api/v1/sessions/:id/stop returns 202 for fresh session (no runtime)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'StopTest Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // Stop a session that was just created and has NO runtime restored.
+    // The handler must return 202 immediately — no hanging even when agentSession is absent.
+    const stopRes = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(stopRes.status).toBe(202);
+    const body = await stopRes.json();
+    expect(body).toMatchObject({ session_id: sessionId, status: 'stopping' });
+  });
+
+  test('POST /api/v1/sessions/:id/stop returns 202 after sending a message (runtime active)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'StopTest Active Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // Send a message to activate the runtime
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ content: 'test message for stop' }),
+    });
+    expect(sendRes.status).toBe(202);
+
+    // Stop while runtime may still be active — must return 202 promptly
+    const stopRes = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(stopRes.status).toBe(202);
+    const body = await stopRes.json();
+    expect(body).toMatchObject({ session_id: sessionId, status: 'stopping' });
+  });
+
+  test('POST /api/v1/sessions/:id/stop can be called multiple times (idempotent)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'StopTest Idempotent Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // Stop twice — second call must also return 202
+    const r1 = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(r1.status).toBe(202);
+
+    const r2 = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(r2.status).toBe(202);
+  });
+
+  test('POST /api/v1/sessions/:id/stop requires authentication', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const res = await app.request('/api/v1/sessions/session_nonexistent/stop', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  test('POST /api/v1/sessions/:id/stop returns 404 for nonexistent session', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const res = await app.request('/api/v1/sessions/session_doesnotexist/stop', {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body).toMatchObject({ error: { code: 'NOT_FOUND' } });
   });
 });

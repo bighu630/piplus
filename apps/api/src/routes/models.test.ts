@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createSeedDb } from '@piplus/db/init';
 import { createApp } from '../app';
 
@@ -17,6 +17,11 @@ async function login(app: ReturnType<typeof createApp>) {
   });
   const { token } = await tokenRes.json();
   return token as string;
+}
+
+/** Path to the piplus-managed models file under a temp HOME */
+function piplusModelsPath(home: string) {
+  return join(home, '.config', 'piplus', 'piplus-models.json');
 }
 
 describe('model routes', () => {
@@ -98,7 +103,7 @@ describe('model routes', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://example.com/v1/models');
   });
 
-  test('saves provider config and rejects duplicate keys', async () => {
+  test('saves provider config to piplus-models.json and rejects duplicate keys', async () => {
     const path = makeDbPath();
     createSeedDb(path);
     Bun.env.DATABASE_URL = `file:${path}`;
@@ -134,10 +139,11 @@ describe('model routes', () => {
     });
 
     expect(res.status).toBe(200);
-    const saved = JSON.parse(await readFile(join(tempHome, '.pi', 'agent', 'models.json'), 'utf-8'));
+    // Data should be saved in piplus-models.json, NOT pi's models.json
+    const saved = JSON.parse(await readFile(piplusModelsPath(tempHome), 'utf-8'));
     expect(saved.providers['custom-openai']).toEqual({
       api: 'openai-completions',
-      baseURL: 'https://example.com/v1',
+      baseUrl: 'https://example.com/v1',
       apiKey: 'secret-key',
       authHeader: true,
       compat: {
@@ -166,6 +172,37 @@ describe('model routes', () => {
         providerKey: 'custom-openai',
         baseUrl: 'https://example.com/v1',
         models: [{ id: 'gpt-4.1-mini' }],
+      }),
+    });
+
+    expect(conflict.status).toBe(409);
+  });
+
+  test('detects provider key collision with pi models.json', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+    const token = await login(app);
+
+    // Put a provider in pi's models.json (to verify collision detection)
+    const piModelsPath = join(tempHome, '.pi', 'agent', 'models.json');
+    await writeFile(
+      piModelsPath,
+      JSON.stringify({ providers: { 'pi-managed': { api: 'openai-completions', baseUrl: 'https://pi.example.com', apiKey: 'sk-pi' } } }, null, 2),
+    );
+
+    const conflict = await app.request('/api/v1/models/providers', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        providerKey: 'pi-managed',
+        baseUrl: 'https://other.example.com',
+        apiKey: 'sk-other',
+        models: [{ id: 'test-model' }],
       }),
     });
 
@@ -227,11 +264,11 @@ describe('model routes', () => {
     });
 
     expect(res.status).toBe(200);
-    const saved = JSON.parse(await readFile(join(tempHome, '.pi', 'agent', 'models.json'), 'utf-8'));
+    const saved = JSON.parse(await readFile(piplusModelsPath(tempHome), 'utf-8'));
     const provider = saved.providers['advanced-llm'];
 
     expect(provider.api).toBe('anthropic-messages');
-    expect(provider.baseURL).toBe('https://api.example.com/v1');
+    expect(provider.baseUrl).toBe('https://api.example.com/v1');
     expect(provider.headers).toEqual({ 'x-custom': 'value1' });
     expect(provider.compat).toEqual({
       supportsDeveloperRole: true,
@@ -259,10 +296,11 @@ describe('model routes', () => {
       },
     });
 
-    // Second model: inputImage shorthand (reasoning=false omitted, same pattern as existing code)
+    // Second model: inputImage shorthand, reasoning=false persisted
     expect(provider.models[1]).toEqual({
       id: 'claude-sonnet-4',
       name: 'Claude Sonnet 4',
+      reasoning: false,
       input: ['text', 'image'],
     });
   });

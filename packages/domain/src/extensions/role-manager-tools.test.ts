@@ -318,8 +318,10 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     });
 
     expect(state.created).toHaveLength(1);
+    expect(state.created[0]?.prompt).toContain('writeback_to_parent');
     const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, parentSessionId)).limit(1);
     expect(child).toBeDefined();
+    expect(child?.parentSuppliedPrompt).toContain('writeback_to_parent');
 
     // Result resolves with writeback summary
     expect(result).toMatchObject({
@@ -345,5 +347,106 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
 
     const [updatedChild] = await db.select().from(sessions).where(eq(sessions.id, child!.id)).limit(1);
     expect(updatedChild?.lastRuntimeError).toBeNull();
+  });
+
+  test('spawn_session wait=true stops waiting when parent session enters stopping', async () => {
+    const dbPath = makeDbPath();
+    createSeedDb(dbPath);
+    const db = createDb(`file:${dbPath}`);
+
+    const piClient = {
+      async createSession(input: { title?: string; prompt: string; cwd?: string; model?: { provider: string; id: string } }) {
+        const sessionId = `pi_${crypto.randomUUID().slice(0, 8)}`;
+        return {
+          sessionId,
+          locator: {
+            piSessionId: sessionId,
+            sessionFile: `/tmp/${sessionId}.jsonl`,
+          },
+          model: input.model ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` } : undefined,
+        };
+      },
+      async restoreRuntime() { return; },
+      async subscribeSession() { return () => {}; },
+      async getHistory() { return { messages: [], nextCursor: null }; },
+      async stopSession() { return { status: 'stopped' as const }; },
+      async closeRuntime() { return; },
+      async listAvailableModels() { return []; },
+      async getCurrentModel() { return null; },
+      async sendMessage() { return { sessionId: 'child', runId: 'run' }; },
+      async bindToolRuntime() { return; },
+      async setSessionModel(_sessionId: string, _locator: unknown, modelRef: { provider: string; id: string }) {
+        return { provider: modelRef.provider, id: modelRef.id, label: `${modelRef.provider}/${modelRef.id}` };
+      },
+    } as any;
+
+    const parentProjectId = 'project_role_tools_wait_stop';
+    const parentSessionId = 'session_parent_tools_wait_stop';
+    const now = new Date();
+    await db.insert(projects).values({
+      id: parentProjectId,
+      name: 'Role Tools Project',
+      createdBy: 'user_seed',
+      status: 'active',
+      projectPath: '',
+      sourceType: 'existing',
+      sourceUrl: '',
+      archivedAt: null,
+      archivedBy: null,
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    await db.insert(sessions).values({
+      id: parentSessionId,
+      projectId: parentProjectId,
+      parentSessionId: null,
+      rootSessionId: parentSessionId,
+      depth: 0,
+      roleTemplateId: 'rt_planner',
+      piSessionId: 'pi_parent',
+      piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_parent', sessionFile: '/tmp/pi-parent.jsonl' }),
+      requestedByMessageId: null,
+      title: 'Parent',
+      titleSource: 'default',
+      status: 'active',
+      runtimeStatus: 'idle',
+      currentModelProvider: 'anthropic',
+      currentModelId: 'claude-sonnet-4-20250514',
+      lastActivityAt: now,
+      lastRunAt: null,
+      lastStopAt: null,
+      lastRuntimeError: null,
+      createdBy: 'user_seed',
+      archivedAt: null,
+      archivedBy: null,
+      createdAt: now,
+      updatedAt: now,
+      roleBasePromptSnapshot: 'base',
+      userSuppliedPrompt: '',
+      parentSuppliedPrompt: '',
+      compiledPrompt: 'compiled',
+    } as any);
+
+    const waitPromise = invokeRoleManagerTool('spawn_session', {
+      role: 'worker',
+      objective: 'long running task',
+      wait: true,
+    }, {
+      db,
+      piClient,
+      sessionId: parentSessionId,
+      userId: 'user_seed',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await db.update(sessions).set({ runtimeStatus: 'stopping', updatedAt: new Date() }).where(eq(sessions.id, parentSessionId));
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      message: '父会话正在停止，已取消等待子会话结果',
+    });
   });
 });

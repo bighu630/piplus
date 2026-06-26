@@ -16,6 +16,7 @@ import type {
   PiClient,
   PiCreateSessionResult,
   PiHistoryPage,
+  PiImageInput,
   PiMessage,
   PiRunAccepted,
   PiSessionStreamEvent,
@@ -67,12 +68,24 @@ function mapAgentSessionEvent(
     };
   }
 
+  if (event.type === 'auto_retry_end' && event.success === false) {
+    return { type: 'error', sessionId, runId: `auto_retry_${crypto.randomUUID().slice(0, 10)}`, error: event.finalError ?? 'auto_retry_failed' };
+  }
+
   return null;
 }
 
 function sessionFileHasModelChange(sessionManager: SessionManager, provider: string, modelId: string) {
   const entries = sessionManager.getEntries() as SessionEntry[];
   return entries.some((entry) => entry.type === 'model_change' && entry.provider === provider && entry.modelId === modelId);
+}
+
+function normalizeImages(images: PiImageInput[] | undefined) {
+  return images?.map((image) => ({
+    type: 'image' as const,
+    data: image.dataBase64,
+    mimeType: image.mimeType ?? image.mediaType ?? 'image/png',
+  }));
 }
 
 export function createPiClient(): PiClient {
@@ -103,6 +116,7 @@ export function createPiClient(): PiClient {
         cwd,
         sessionManager: SessionManager.create(cwd),
         model,
+        modelRegistry,
       });
       const locator: PiSessionLocator = {
         piSessionId: session.sessionId,
@@ -142,6 +156,7 @@ export function createPiClient(): PiClient {
         const options: Parameters<typeof createAgentSession>[0] = {
           cwd: runtimeCwd,
           sessionManager,
+          modelRegistry,
         };
 
         if (!sessionContext.model) {
@@ -211,7 +226,7 @@ export function createPiClient(): PiClient {
     async getHistory(_sessionId, locator, cursor, limit = 50): Promise<PiHistoryPage> {
       return readHistory(locator, cursor, limit);
     },
-    async sendMessage(sessionId, content): Promise<PiRunAccepted> {
+    async sendMessage(sessionId, content, options): Promise<PiRunAccepted> {
       const session = getOrCreateSession(sessionId);
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
@@ -223,9 +238,26 @@ export function createPiClient(): PiClient {
           session.promptSent = true;
         }
         // 有实际内容时才发送用户消息；空内容（如 spawn_session 场景）略过
-        if (content) {
-          console.log('[pi-client] sendMessage → agentSession.prompt', { sessionId, content: content.slice(0, 80) });
-          await session.agentSession.prompt(content);
+        if (content || options?.images?.length) {
+          console.log('[pi-client] sendMessage → agentSession.prompt', {
+            sessionId,
+            content: content.slice(0, 80),
+            imageCount: options?.images?.length ?? 0,
+          });
+          try {
+            const images = normalizeImages(options?.images);
+            if (images?.length) {
+              await session.agentSession.prompt(content, { images });
+            } else {
+              await session.agentSession.prompt(content);
+            }
+          } catch (err) {
+            const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
+            for (const listener of session.listeners) {
+              await listener(errorEvent);
+            }
+            throw err;
+          }
           console.log('[pi-client] sendMessage ← agentSession.prompt done', { sessionId });
         } else {
           console.log('[pi-client] sendMessage → content is empty, nothing to send', { sessionId });
@@ -273,10 +305,10 @@ export function createPiClient(): PiClient {
     async stopSession(sessionId) {
       const session = getOrCreateSession(sessionId);
       session.stopped = true;
-      // 真正中止 PI SDK agent 的当前运行
-      try {
-        await session.agentSession?.abort();
-      } catch { /* abort may throw if already idle, safe to ignore */ }
+      // Fire abort in background — AgentSession.abort() waits for agent to become idle,
+      // which can block indefinitely during LLM generation. The caller (API route) needs
+      // to return 202 immediately and must not wait for the agent to wind down.
+      session.agentSession?.abort().catch(() => {});
       return { status: 'stopped' as const };
     },
     async closeRuntime(sessionId) {
@@ -289,7 +321,7 @@ export function createPiClient(): PiClient {
       return models.map((m) => ({
         provider: m.provider,
         id: m.id,
-        label: m.name ?? `${m.provider}/${m.id}`,
+        label: m.name ?? m.id,
       }));
     },
 
@@ -399,6 +431,7 @@ export function createPiClient(): PiClient {
         cwd: session.cwd,
         resourceLoader: loader,
         sessionManager,
+        modelRegistry,
       };
 
       if (!sessionContext.model) {
@@ -512,6 +545,37 @@ export function createPiClient(): PiClient {
     async registerTools(_tools: PiToolDef[]) {
       // Stub: tools are registered in-memory only.
       // Real PI SDK adapter will register tools with the PI agent runtime.
+    },
+
+    async registerProvider(providerName, config) {
+      // Normalize the loosely-typed PiClient config to strict ProviderConfigInput
+      const models = (config.models ?? []).map((m) => ({
+        id: m.id,
+        name: m.name ?? m.id,
+        api: m.api as any,
+        baseUrl: m.baseUrl,
+        reasoning: m.reasoning ?? false,
+        thinkingLevelMap: m.thinkingLevelMap as any,
+        input: m.input?.length ? (m.input as any) : ['text'],
+        cost: {
+          input: m.cost?.input ?? 0,
+          output: m.cost?.output ?? 0,
+          cacheRead: m.cost?.cacheRead ?? 0,
+          cacheWrite: m.cost?.cacheWrite ?? 0,
+        },
+        contextWindow: m.contextWindow ?? 128000,
+        maxTokens: m.maxTokens ?? 16384,
+        headers: m.headers,
+        compat: m.compat as any,
+      }));
+      modelRegistry.registerProvider(providerName, {
+        api: config.api as any,
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        authHeader: config.authHeader,
+        headers: config.headers,
+        models,
+      } as any);
     },
   };
 }

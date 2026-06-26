@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Download,
   ChevronRight,
+  ChevronDown,
   Info,
   GitPullRequest,
   GitCommitVertical,
@@ -37,6 +38,11 @@ interface TabGitDiffProps {
   isPushing: boolean;
   isCommitting: boolean;
   isAddingGitignore: boolean;
+  currentBranch: string | null;
+  branches: Array<{ name: string; is_current: boolean }> | null;
+  onCheckout: (branch: string) => Promise<GitActionResult>;
+  isCheckingOut: boolean;
+  cwd: string | null;
 }
 
 interface DiffLine {
@@ -57,7 +63,7 @@ interface FileTreeNode {
   children: FileTreeNode[];
 }
 
-type GitOp = 'pull' | 'push' | 'commit';
+type GitOp = 'pull' | 'push' | 'commit' | 'checkout';
 
 function buildFileTree(files: string[]): FileTreeNode[] {
   const root: FileTreeNode[] = [];
@@ -226,6 +232,11 @@ export default function TabGitDiff({
   isPushing,
   isCommitting,
   isAddingGitignore,
+  currentBranch,
+  branches,
+  onCheckout,
+  isCheckingOut,
+  cwd,
 }: TabGitDiffProps) {
   const [copied, setCopied] = useState(false);
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({});
@@ -234,7 +245,21 @@ export default function TabGitDiff({
   const [opFeedback, setOpFeedback] = useState<{ op: GitOp; result: 'ok' | 'error'; message: string } | null>(null);
   const [treeExpanded, setTreeExpanded] = useState<Record<string, boolean>>({});
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
+  const branchSelectorRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // Close branch dropdown on outside click
+  useEffect(() => {
+    if (!branchDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (branchSelectorRef.current && !branchSelectorRef.current.contains(e.target as Node)) {
+        setBranchDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [branchDropdownOpen]);
 
   const clearFeedback = useCallback(() => {
     setOpFeedback(null);
@@ -380,7 +405,7 @@ export default function TabGitDiff({
     setCollapsedFiles((prev) => ({ ...prev, [filename]: !prev[filename] }));
   }, []);
 
-  const anyBusy = isPulling || isPushing || isCommitting || isLoading;
+  const anyBusy = isPulling || isPushing || isCommitting || isLoading || isCheckingOut;
 
   const functionalFiles = useMemo(
     () => parsedFiles.filter((f) => f.lines.some((l) => l.type !== 'header')),
@@ -390,17 +415,89 @@ export default function TabGitDiff({
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50/60 dark:bg-slate-900/10 overflow-hidden">
       {/* Top controls */}
-      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 shrink-0 flex flex-wrap items-center justify-between gap-4 select-none">
-        <div className="flex items-center space-x-2">
-          <div className="p-1.5 bg-blue-50 dark:bg-slate-800 text-blue-700 dark:text-blue-400 rounded-lg">
-            <GitBranch className="w-4 h-4" />
+      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 shrink-0 flex items-center justify-between gap-4 select-none">
+        <div className="flex items-center space-x-3 shrink-0">
+          {/* Branch selector dropdown */}
+          <div className="relative" ref={branchSelectorRef}>
+            <button
+              type="button"
+              onClick={() => setBranchDropdownOpen(!branchDropdownOpen)}
+              disabled={isCheckingOut}
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-mono font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition cursor-pointer disabled:opacity-50"
+            >
+              <GitBranch className="w-3.5 h-3.5 text-blue-500" />
+              <span>{currentBranch || '—'}</span>
+              <ChevronDown className={`w-3 h-3 transition ${branchDropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {branchDropdownOpen && (
+              <div className="absolute left-0 top-full mt-1 z-20 w-56 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg overflow-hidden">
+                  <div className="px-3 py-2 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider border-b border-slate-100 dark:border-slate-700">
+                    分支 ({branches?.length ?? 0})
+                  </div>
+                  <div className="max-h-60 overflow-y-auto">
+                    {branches?.map((b) => (
+                      <button
+                        key={b.name}
+                        type="button"
+                        onClick={async () => {
+                          if (!b.is_current) {
+                            setBranchDropdownOpen(false);
+                            try {
+                              const res = await onCheckout(b.name);
+                              setOpFeedback({
+                                op: 'checkout',
+                                result: res.result,
+                                message: res.result === 'ok'
+                                  ? `已切换到分支 "${b.name}"`
+                                  : (res.stderr || `切换到 "${b.name}" 失败`),
+                              });
+                            } catch {
+                              setOpFeedback({
+                                op: 'checkout',
+                                result: 'error',
+                                message: `切换到 "${b.name}" 失败`,
+                              });
+                            }
+                            setTimeout(clearFeedback, 6000);
+                          } else {
+                            setBranchDropdownOpen(false);
+                          }
+                        }}
+                        disabled={b.is_current || isCheckingOut}
+                        className={`w-full flex items-center space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
+                          b.is_current
+                            ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 font-semibold'
+                            : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                        } disabled:opacity-50`}
+                      >
+                        <GitBranch className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{b.name}</span>
+                        {b.is_current && <span className="ml-auto text-[10px] text-blue-500">当前</span>}
+                      </button>
+                    ))}
+                    {!branches && (
+                      <div className="px-3 py-4 text-xs text-slate-400 text-center">加载中…</div>
+                    )}
+                    {branches && branches.length === 0 && (
+                      <div className="px-3 py-4 text-xs text-slate-400 text-center">无分支</div>
+                    )}
+                  </div>
+                </div>
+            )}
           </div>
-          <div>
+
+          <div className="w-px h-6 bg-slate-200 dark:bg-slate-700" />
+
+          <div className="min-w-0">
             <span className="font-bold text-slate-700 dark:text-slate-200 text-sm font-sans tracking-tight">
-              工作区变更
+              变更
             </span>
-            <span className="text-[10px] font-mono text-slate-400 block mt-0.5">
-              当前会话的 Git 操作
+            <span
+              className="text-[10px] font-mono text-slate-400 block mt-0.5 truncate max-w-[320px]"
+              title={cwd ?? undefined}
+            >
+              {cwd || '—'}
             </span>
           </div>
         </div>

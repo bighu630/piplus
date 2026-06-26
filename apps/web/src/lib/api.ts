@@ -4,6 +4,7 @@ import type {
   SessionContextUsageDTO,
   TreeResponse,
   ChatMessageDTO,
+  ChatImageContentBlockDTO,
   SessionFileTreeResponseDTO,
   SessionFileContentResponseDTO,
 } from '@piplus/shared';
@@ -12,6 +13,7 @@ export type ModelInfo = {
   provider: string;
   id: string;
   label: string;
+  input?: string[];
 };
 
 export type ProviderFormModel = {
@@ -137,10 +139,24 @@ export function getSessionMessages(sessionId: string, options?: { cursor?: strin
   return request<SessionMessagesPage>(`/api/v1/sessions/${sessionId}/chat/messages${query ? `?${query}` : ''}`);
 }
 
-export function sendSessionMessage(sessionId: string, content: string) {
+export type SessionMessageImageAttachment = {
+  type: 'image';
+  mime_type: string;
+  data_base64: string;
+  filename?: string | null;
+};
+
+export type SendSessionMessagePayload = {
+  content: string;
+  attachments?: SessionMessageImageAttachment[];
+};
+
+export type OptimisticImageContentBlock = ChatImageContentBlockDTO;
+
+export function sendSessionMessage(sessionId: string, payload: SendSessionMessagePayload) {
   return request<{ accepted: boolean; session_id: string; run_id: string; message_id: string }>(
     `/api/v1/sessions/${sessionId}/chat/messages`,
-    { method: 'POST', body: JSON.stringify({ content }) },
+    { method: 'POST', body: JSON.stringify(payload) },
   );
 }
 
@@ -202,6 +218,19 @@ export function addGitignore(sessionId: string, path: string) {
   );
 }
 
+export function getGitBranches(sessionId: string) {
+  return request<{ session_id: string; cwd: string; current_branch: string; branches: Array<{ name: string; is_current: boolean }> }>(
+    `/api/v1/sessions/${sessionId}/git/branches`,
+  );
+}
+
+export function gitCheckout(sessionId: string, branch: string) {
+  return request<GitActionResult & { branch: string }>(
+    `/api/v1/sessions/${sessionId}/git/checkout`,
+    { method: 'POST', body: JSON.stringify({ branch }) },
+  );
+}
+
 export function createProject(
   name: string,
   mode?: string,
@@ -244,4 +273,15 @@ export function archiveProject(projectId: string) {
 
 export function deleteProject(projectId: string) {
   return request<{ project_id: string; status: string }>(`/api/v1/projects/${projectId}`, { method: 'DELETE' });
+}
+
+export function getProjectRoleModels(projectId: string) {
+  return request<Record<string, { provider: string; id: string } | null>>(`/api/v1/projects/${projectId}/role-models`);
+}
+
+export function setProjectRoleModels(projectId: string, models: Record<string, { provider: string; id: string } | null>) {
+  return request<{ ok: boolean; role_default_models: Record<string, { provider: string; id: string } | null> }>(`/api/v1/projects/${projectId}/role-models`, {
+    method: 'PUT',
+    body: JSON.stringify(models),
+  });
 }

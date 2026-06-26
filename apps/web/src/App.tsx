@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ServerMessage } from '@piplus/shared';
-import type { ProviderFormPayload } from './lib/api';
+import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ChatImageContentBlockDTO, ServerMessage } from '@piplus/shared';
+import type { ProviderFormPayload, SessionMessageImageAttachment } from './lib/api';
 import hljsLight from 'highlight.js/styles/github.css?url';
 import hljsDark from 'highlight.js/styles/github-dark.css?url';
 import Sidebar from './components/Sidebar';
@@ -37,9 +37,13 @@ import {
   useGitPushMutation,
   useGitCommitMutation,
   useAddGitignoreMutation,
+  useGitBranches,
+  useGitCheckoutMutation,
   useTestModelProviderMutation,
   useCreateModelProviderMutation,
   useUpdateSessionTitleMutation,
+  useProjectRoleModels,
+  useSetProjectRoleModelsMutation,
 } from './lib/hooks';
 import {
   Settings,
@@ -117,6 +121,17 @@ function createEmptyProviderModel(): ProviderModelForm {
   };
 }
 
+const ROLE_CONFIG_KEYS = [
+  { key: 'planner', label: '负责人' },
+  { key: 'worker', label: '执行者' },
+  { key: 'reviewer', label: '审查者' },
+  { key: 'feature_lead', label: '需求负责人' },
+  { key: 'bugfix_lead', label: 'Bug负责人' },
+  { key: 'blank', label: '空白' },
+];
+
+const CONFIGURABLE_ROLE_KEYS = ROLE_CONFIG_KEYS.filter((r) => r.key !== 'planner');
+
 export default function App() {
   const authQuery = useAuthSession();
   const isLoggedIn = Boolean(authQuery.data?.ok);
@@ -128,6 +143,13 @@ export default function App() {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const saved = localStorage.getItem('pi-sidebar-width');
+      const parsed = saved ? Number(saved) : 256;
+      return Number.isFinite(parsed) ? Math.max(240, Math.min(520, parsed)) : 256;
+    } catch { return 256; }
+  });
   const [showArchived, setShowArchived] = useState(() => {
     try { return localStorage.getItem('pi-show-archived') === 'true'; } catch { return false; }
   });
@@ -146,6 +168,9 @@ export default function App() {
   const [createPath, setCreatePath] = useState('');
   const [createRepoUrl, setCreateRepoUrl] = useState('');
   const [createProjectModelKey, setCreateProjectModelKey] = useState('');
+  const [showProjectSettings, setShowProjectSettings] = useState(false);
+  const [editRoleModels, setEditRoleModels] = useState<Record<string, string>>({});
+  const [roleDefaultModels, setRoleDefaultModels] = useState<Record<string, { provider: string; id: string } | null>>({});
 
   const [providerKey, setProviderKey] = useState('');
   const [providerBaseUrl, setProviderBaseUrl] = useState('');
@@ -164,6 +189,8 @@ export default function App() {
   const [streamNote, setStreamNote] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
+  const [currentModelSupportsImages, setCurrentModelSupportsImages] = useState<boolean | null>(null);
+  const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
   const [wsConnected, setWsConnected] = useState(false);
 
   const initialUrlSessionId = useMemo(() => getSessionIdFromPath(window.location.pathname), []);
@@ -200,6 +227,12 @@ export default function App() {
     try { localStorage.setItem('pi-send-shortcut-mode', sendShortcutMode); } catch {}
   }, [sendShortcutMode]);
 
+  useEffect(() => {
+    if (Number.isFinite(sidebarWidth)) {
+      try { localStorage.setItem('pi-sidebar-width', String(sidebarWidth)); } catch {}
+    }
+  }, [sidebarWidth]);
+
   const queryClient = useQueryClient();
   const treeQuery = useTree();
   const refetchTree = treeQuery.refetch;
@@ -210,14 +243,12 @@ export default function App() {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const fileTreeQuery = useSessionFileTree(activeTab === 'files' ? selectedSessionId : null);
   const fileContentQuery = useSessionFileContent(activeTab === 'files' ? selectedSessionId : null, activeTab === 'files' ? selectedFilePath : null);
-  const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null);
-  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [];
-  const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
-  const loadingMoreMessages = messagesQuery.isFetchingNextPage;
   const modelsQuery = useModels();
   const setModelMut = useSetSessionModelMutation();
   const testProviderMut = useTestModelProviderMutation();
   const createProviderMut = useCreateModelProviderMutation();
+  const setProjectRoleModelsMut = useSetProjectRoleModelsMutation();
+  const projectRoleModelsQuery = useProjectRoleModels(showProjectSettings ? selectedProjectId : null);
 
   const createProjectMut = useCreateProjectMutation();
   const createSessionMut = useCreateSessionMutation();
@@ -228,12 +259,17 @@ export default function App() {
   const archiveProjectMut = useArchiveProjectMutation();
   const deleteProjectMut = useDeleteProjectMutation();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
-  const runtimeStatus = sessionInfo?.session.runtime_status ?? currentSessionNode?.runtime_status ?? 'idle';
+  const runtimeStatus = currentSessionNode?.runtime_status ?? sessionInfo?.session.runtime_status ?? 'idle';
+  const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null, 20, runtimeStatus === 'running' ? 1500 : false);
+  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [];
+  const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
+  const loadingMoreMessages = messagesQuery.isFetchingNextPage;
 
   useEffect(() => {
     setPendingUserMessages([]);
     setStreamingContent('');
     setStreamNote('');
+    setRuntimeErrors([]);
     setSelectedFilePath(null);
     setEditingTitle(false);
     setEditTitleValue('');
@@ -286,7 +322,10 @@ export default function App() {
             if (activeTabRef.current === 'chat') {
               const delta = message.payload?.delta ?? '';
               setStreamNote(`${message.phase}${delta ? ' · streaming' : ''}`);
-              if (message.phase === 'start') setStreamingContent('');
+              if (message.phase === 'start') {
+                setStreamingContent('');
+                setRuntimeErrors([]);  // clear old error
+              }
               else if (message.phase === 'delta') setStreamingContent((prev) => prev + delta);
             }
             if (message.phase === 'complete') {
@@ -300,15 +339,27 @@ export default function App() {
                 queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', selectedSessionId] }),
               ]);
             }
-            if (message.phase === 'error') setStreamNote('error');
+            if (message.phase === 'error') {
+              const errorText = message.payload?.error ?? 'Unknown agent loop error';
+              setRuntimeErrors([{ runId: message.payload?.stream_id ?? 'unknown', error: errorText }]);
+              setStreamingContent('');
+            }
           }
           if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
             treeQuery.refetch();
             const status = message.payload?.runtime_status;
+            if (status === 'running') {
+              // Refetch messages immediately so tool_call entries appear promptly
+              queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+            }
             if (status === 'idle') {
               setStreamingContent('');
               setStreamNote('');
               setPendingUserMessages([]);
+              const idleError = message.payload?.error;
+              if (idleError && typeof idleError === 'string' && idleError) {
+                setRuntimeErrors([{ runId: 'runtime-status', error: idleError }]);
+              }
               Promise.all([
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
@@ -394,18 +445,25 @@ export default function App() {
           return provider && id ? { provider, id, label: createProjectModelKey } : null;
         })() : null,
       });
+      // Save role default models after project creation
+      if (Object.keys(roleDefaultModels).length > 0) {
+        try {
+          await setProjectRoleModelsMut.mutateAsync({ projectId: result.projectId, models: roleDefaultModels });
+        } catch { /* non-critical */ }
+      }
       setShowCreateProject(false);
       setCreateName('');
       setCreatePath('');
       setCreateRepoUrl('');
       setCreateProjectModelKey('');
+      setRoleDefaultModels({});
       if (result.sessionId) {
         setSelectedProjectId(result.projectId);
         setSelectedSessionId(result.sessionId);
       }
       await treeQuery.refetch();
     } catch {}
-  }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, treeQuery]);
+  }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, treeQuery, roleDefaultModels, setProjectRoleModelsMut]);
 
   const handleCreateSession = useCallback(async () => {
     if (!selectedProjectId) return;
@@ -416,25 +474,49 @@ export default function App() {
     } catch {}
   }, [selectedProjectId, createSessionMut, treeQuery]);
 
-  const handleSend = useCallback(async (content: string) => {
+  const handleSend = useCallback(async (content: string, attachments: SessionMessageImageAttachment[] = []) => {
     if (!selectedSessionId) return;
+    setRuntimeErrors([]);
+    const optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const imageBlocks: ChatImageContentBlockDTO[] = attachments.map((attachment) => ({
+      type: 'image',
+      mime_type: attachment.mime_type,
+      media_type: attachment.mime_type,
+      filename: attachment.filename ?? null,
+      uri: null,
+      data_base64: attachment.data_base64,
+    }));
     const optimisticMessage: ChatMessageDTO = {
-      id: `optimistic_${Date.now()}`,
+      id: optimisticId,
       role: 'user',
       message_kind: 'normal',
       source_session_id: null,
       content_text: content,
+      content_blocks: [
+        ...(content ? [{ type: 'text' as const, text: content }] : []),
+        ...imageBlocks,
+      ],
       created_at: new Date().toISOString(),
     };
     setPendingUserMessages((prev) => [...prev, optimisticMessage]);
-    await sendMessageMut.mutateAsync(content);
-    queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+    try {
+      await sendMessageMut.mutateAsync({ content, attachments });
+      queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+    } catch (error) {
+      setPendingUserMessages((prev) => prev.filter((message) => message.id !== optimisticId));
+      throw error;
+    }
   }, [selectedSessionId, sendMessageMut, queryClient]);
 
   const handleStop = useCallback(async () => {
     if (!selectedSessionId) return;
-    await stopSessionMut.mutateAsync(selectedSessionId);
     setStreamNote('stopping');
+    try {
+      await stopSessionMut.mutateAsync(selectedSessionId);
+    } catch {
+      setStreamNote('');
+      throw new Error('stop_session_failed');
+    }
   }, [selectedSessionId, stopSessionMut]);
 
   const handleCompactSession = useCallback(async () => {
@@ -457,6 +539,22 @@ export default function App() {
     }
   }, [selectedSessionId, tree, archiveSessionMut, treeQuery, handleSelectSession]);
 
+  useEffect(() => {
+    if (!sessionInfo?.session.current_model || !modelsQuery.data) {
+      setCurrentModelSupportsImages(null);
+      return;
+    }
+    const matchedModel = modelsQuery.data.find((model) => (
+      model.provider === sessionInfo.session.current_model?.provider
+      && model.id === sessionInfo.session.current_model?.id
+    ));
+    if (!matchedModel) {
+      setCurrentModelSupportsImages(null);
+      return;
+    }
+    setCurrentModelSupportsImages(matchedModel.input?.includes('image') ?? null);
+  }, [modelsQuery.data, sessionInfo?.session.current_model]);
+
   const handleModelSelect = useCallback(async (provider: string, id: string) => {
     if (!selectedSessionId) return;
     await setModelMut.mutateAsync({ sessionId: selectedSessionId, provider, id });
@@ -472,6 +570,8 @@ export default function App() {
   const gitPushMut = useGitPushMutation();
   const gitCommitMut = useGitCommitMutation();
   const addGitignoreMut = useAddGitignoreMutation();
+  const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
+  const gitCheckoutMut = useGitCheckoutMutation();
   const updateTitleMut = useUpdateSessionTitleMutation();
 
   const resetProviderForm = useCallback(() => {
@@ -632,6 +732,7 @@ export default function App() {
   }, [messagesQuery]);
 
   const handleStartEditTitle = useCallback(() => {
+    if (sessionInfo?.role_template.key === 'planner' && sessionInfo.lineage.depth === 0) return;
     titleSavedRef.current = false;
     setEditTitleValue(sessionInfo?.session.title ?? '');
     setEditingTitle(true);
@@ -671,6 +772,58 @@ export default function App() {
     deleteProjectMut.mutate(projectId);
   }, [deleteProjectMut]);
 
+  // Populate editRoleModels when the project settings modal opens and data arrives
+  useEffect(() => {
+    if (showProjectSettings && projectRoleModelsQuery.data) {
+      const initial: Record<string, string> = {};
+      for (const role of ROLE_CONFIG_KEYS) {
+        const model = projectRoleModelsQuery.data[role.key];
+        initial[role.key] = model ? `${model.provider}/${model.id}` : '';
+      }
+      setEditRoleModels(initial);
+    }
+  }, [showProjectSettings, projectRoleModelsQuery.data]);
+
+  const handleOpenProjectSettings = useCallback((projectId: string) => {
+    setSelectedProjectId(projectId);
+    setShowProjectSettings(true);
+  }, []);
+
+  const handleRoleModelChange = useCallback((roleKey: string, value: string) => {
+    setEditRoleModels((prev) => ({ ...prev, [roleKey]: value }));
+  }, []);
+
+  const handleSaveProjectRoleModels = useCallback(async () => {
+    if (!selectedProjectId) return;
+    const models: Record<string, { provider: string; id: string } | null> = {};
+    for (const [roleKey, value] of Object.entries(editRoleModels)) {
+      if (value) {
+        const [provider, id] = value.split('/');
+        if (provider && id) models[roleKey] = { provider, id };
+      } else {
+        models[roleKey] = null;
+      }
+    }
+    await setProjectRoleModelsMut.mutateAsync({ projectId: selectedProjectId, models });
+    setShowProjectSettings(false);
+  }, [selectedProjectId, editRoleModels, setProjectRoleModelsMut]);
+
+  // Also set roleDefaultModels when creating a project
+  const handleCreateProjectRoleModelChange = useCallback((roleKey: string, value: string) => {
+    setRoleDefaultModels((prev) => {
+      if (!value) {
+        const next = { ...prev };
+        delete next[roleKey];
+        return next;
+      }
+      const [provider, id] = value.split('/');
+      if (provider && id) {
+        return { ...prev, [roleKey]: { provider, id } };
+      }
+      return prev;
+    });
+  }, []);
+
   if (!isLoggedIn) {
     return (
       <LoginScreen
@@ -690,6 +843,8 @@ export default function App() {
         projects={tree}
         activeSessionId={selectedSessionId}
         isSidebarCollapsed={sidebarCollapsed}
+        sidebarWidth={sidebarWidth}
+        onWidthChange={setSidebarWidth}
         onSelectSession={handleSelectSession}
         onSelectProject={setSelectedProjectId}
         onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -700,6 +855,7 @@ export default function App() {
         onDeleteProject={handleDeleteProject}
         onLogout={handleLogout}
         onOpenSettings={() => setShowSettings(true)}
+        onOpenProjectSettings={handleOpenProjectSettings}
         showArchived={showArchived}
         onToggleShowArchived={() => {
           setShowArchived((v) => {
@@ -723,7 +879,7 @@ export default function App() {
       <div className="flex-1 min-w-0 flex flex-col h-full bg-slate-50 dark:bg-slate-900 relative">
         <header className="border-b border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
           {sessionInfo && (
-            <div className="flex items-center space-x-3 py-1 group/title">
+            <div className={`flex items-center space-x-3 py-1 ${!isPlannerRoot ? 'group/title' : ''}`}>
               {editingTitle ? (
                 <input
                   ref={titleInputRef}
@@ -740,13 +896,15 @@ export default function App() {
                   <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">
                     {sessionInfo.session.title}
                   </h1>
-                  <button
-                    onClick={handleStartEditTitle}
-                    className="opacity-0 group-hover/title:opacity-100 transition-opacity p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
-                    title="编辑标题"
-                  >
-                    <Pencil className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
-                  </button>
+                  {!isPlannerRoot && (
+                    <button
+                      onClick={handleStartEditTitle}
+                      className="opacity-0 group-hover/title:opacity-100 transition-opacity p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                      title="编辑标题"
+                    >
+                      <Pencil className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -776,12 +934,14 @@ export default function App() {
                   runtimeStatus={runtimeStatus}
                   streamNote={streamNote}
                   streamingContent={streamingContent}
+                  runtimeErrors={runtimeErrors}
                   sessionTitle={sessionInfo?.session.title}
                   wsConnected={wsConnected}
                   selectedSessionId={selectedSessionId}
                   sendShortcutMode={sendShortcutMode}
                   models={modelsQuery.data ?? []}
                   currentModelValue={sessionInfo?.session.current_model ? `${sessionInfo.session.current_model.provider}/${sessionInfo.session.current_model.id}` : ''}
+                  currentModelSupportsImages={currentModelSupportsImages}
                   onModelSelect={handleModelSelect}
                   onArchiveSession={handleArchiveSession}
                   archivePending={archiveSessionMut.isPending}
@@ -804,6 +964,11 @@ export default function App() {
                   isCommitting={gitCommitMut.isPending}
                   onAddGitignore={(filePath) => addGitignoreMut.mutateAsync({ sessionId: selectedSessionId, path: filePath })}
                   isAddingGitignore={addGitignoreMut.isPending}
+                  currentBranch={gitBranchesQuery.data?.current_branch ?? null}
+                  branches={gitBranchesQuery.data?.branches ?? null}
+                  onCheckout={(branch) => gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId, branch })}
+                  isCheckingOut={gitCheckoutMut.isPending}
+                  cwd={gitDiffQuery.data?.cwd ?? gitBranchesQuery.data?.cwd ?? null}
                 />
               )}
               {activeTab === 'files' && (
@@ -831,7 +996,7 @@ export default function App() {
         </div>
       </div>
 
-      <Modal isOpen={showCreateProject} onClose={() => setShowCreateProject(false)} title="新建项目" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}>
+      <Modal isOpen={showCreateProject} onClose={() => { setShowCreateProject(false); setRoleDefaultModels({}); }} title="新建项目" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}>
         <form onSubmit={handleCreateProject} className="space-y-4">
           <div>
             <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">项目名称 <span className="text-red-500">*</span></label>
@@ -865,8 +1030,33 @@ export default function App() {
               <ChevronDown className="w-3.5 h-3.5 absolute right-2.5 top-2.5 pointer-events-none text-slate-500" />
             </div>
           </div>
+          <details className="group">
+            <summary className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300 select-none">
+              角色默认模型（可选）
+            </summary>
+            <div className="mt-2 space-y-3 pl-2 border-l-2 border-slate-200 dark:border-slate-800">
+              {CONFIGURABLE_ROLE_KEYS.map((role) => (
+                <div key={role.key} className="flex items-center gap-3">
+                  <span className="text-xs text-slate-600 dark:text-slate-400 w-20">{role.label}</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={roleDefaultModels[role.key] ? `${roleDefaultModels[role.key]!.provider}/${roleDefaultModels[role.key]!.id}` : ''}
+                      onChange={(e) => handleCreateProjectRoleModelChange(role.key, e.target.value)}
+                      className="w-full appearance-none px-3 py-2 pr-8 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+                    >
+                      <option value="">继承（使用默认模型）</option>
+                      {(modelsQuery.data ?? []).map((m) => (
+                        <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>{m.provider} / {m.label}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-2.5 pointer-events-none text-slate-500" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
           <div className="flex space-x-2 pt-3 justify-end border-t border-slate-150 dark:border-slate-800">
-            <button type="button" onClick={() => setShowCreateProject(false)} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
+            <button type="button" onClick={() => { setShowCreateProject(false); setRoleDefaultModels({}); }} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
             <button type="submit" disabled={createProjectMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs hover:shadow-xs transition cursor-pointer disabled:opacity-50">{createProjectMut.isPending ? '创建中…' : '确认创建'}</button>
           </div>
         </form>
@@ -899,6 +1089,36 @@ export default function App() {
           </div>
           <div className="flex justify-end pt-3 border-t border-slate-150 dark:border-slate-800">
             <button onClick={() => setShowSettings(false)} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer">关闭</button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={showProjectSettings} onClose={() => setShowProjectSettings(false)} title="项目设置" icon={<Settings className="w-4 h-4" />}>
+        <div className="space-y-4">
+          <div className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">角色默认模型</div>
+          {CONFIGURABLE_ROLE_KEYS.map((role) => (
+            <div key={role.key} className="flex items-center gap-3">
+              <span className="text-xs text-slate-600 dark:text-slate-400 w-20">{role.label}</span>
+              <div className="relative flex-1">
+                <select
+                  value={editRoleModels[role.key] ?? ''}
+                  onChange={(e) => handleRoleModelChange(role.key, e.target.value)}
+                  className="w-full appearance-none px-3 py-2 pr-8 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+                >
+                  <option value="">继承（使用父级模型）</option>
+                  {(modelsQuery.data ?? []).map((m) => (
+                    <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>{m.provider} / {m.label}</option>
+                  ))}
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-2.5 pointer-events-none text-slate-500" />
+              </div>
+            </div>
+          ))}
+          <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <button onClick={() => setShowProjectSettings(false)} className="px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer">取消</button>
+            <button onClick={handleSaveProjectRoleModels} disabled={setProjectRoleModelsMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg cursor-pointer disabled:opacity-50">
+              {setProjectRoleModelsMut.isPending ? '保存中…' : '保存'}
+            </button>
           </div>
         </div>
       </Modal>

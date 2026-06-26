@@ -25,10 +25,15 @@ import {
   gitPush,
   gitCommit,
   addGitignore,
+  getGitBranches,
+  gitCheckout,
   testModelProvider,
   createModelProvider,
+  getProjectRoleModels,
+  setProjectRoleModels,
   type ModelInfo,
   type ProviderFormPayload,
+  type SendSessionMessagePayload,
 } from './api';
 
 export function useAuthSession() {
@@ -126,7 +131,7 @@ export function useSessionInfo(sessionId: string | null) {
   });
 }
 
-export function useSessionMessages(sessionId: string | null, limit = 20) {
+export function useSessionMessages(sessionId: string | null, limit = 20, refetchInterval?: number | false) {
   return useInfiniteQuery({
     queryKey: ['session', 'messages', sessionId],
     queryFn: ({ pageParam }) => getSessionMessages(sessionId!, { cursor: pageParam, limit }),
@@ -134,6 +139,7 @@ export function useSessionMessages(sessionId: string | null, limit = 20) {
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     enabled: Boolean(sessionId),
     staleTime: 0,
+    refetchInterval,
   });
 }
 
@@ -187,7 +193,7 @@ export function useCreateSessionMutation() {
 
 export function useSendMessageMutation(sessionId: string | null) {
   return useMutation({
-    mutationFn: (content: string) => sendSessionMessage(sessionId!, content),
+    mutationFn: (payload: SendSessionMessagePayload) => sendSessionMessage(sessionId!, payload),
   });
 }
 
@@ -274,6 +280,27 @@ export function useAddGitignoreMutation() {
   });
 }
 
+export function useGitBranches(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'git-branches', sessionId],
+    queryFn: () => getGitBranches(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
+export function useGitCheckoutMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, branch }: { sessionId: string; branch: string }) => gitCheckout(sessionId, branch),
+    onSuccess: (_data, { sessionId }) => {
+      // Invalidate both branches list and git diff since checkout may change working tree
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-branches', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+    },
+  });
+}
+
 export function useSessionContextUsage(sessionId: string | null) {
   return useQuery({
     queryKey: ['session', 'context-usage', sessionId],
@@ -294,6 +321,27 @@ export function useCompactSessionMutation() {
       if (data.accepted) {
         queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', data.session_id] });
       }
+    },
+  });
+}
+
+export function useProjectRoleModels(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project', 'role-models', projectId],
+    queryFn: () => getProjectRoleModels(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 10_000,
+  });
+}
+
+export function useSetProjectRoleModelsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, models }: { projectId: string; models: Record<string, { provider: string; id: string } | null> }) =>
+      setProjectRoleModels(projectId, models),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'role-models', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['tree'] });
     },
   });
 }

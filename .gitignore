@@ -12,3 +12,4 @@ bun.lock
 pi.db
 /piplus.sqlite-shm
 /piplus.sqlite-wal
+.worktrees

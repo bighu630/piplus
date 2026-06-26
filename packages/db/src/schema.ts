@@ -23,6 +23,7 @@ export const projects = sqliteTable('projects', {
   lastActivityAt: integer('last_activity_at', { mode: 'timestamp_ms' }).notNull(),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  roleDefaultModels: text('role_default_models').notNull().default('{}'),
 });
 
 export const roleTemplates = sqliteTable('role_templates', {

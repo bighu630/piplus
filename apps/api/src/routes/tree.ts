@@ -105,6 +105,7 @@ export function registerTreeRoutes(app: Hono) {
           archived_at: project.archivedAt ? new Date(project.archivedAt).toISOString() : null,
           last_activity_at: new Date(project.lastActivityAt).toISOString(),
           created_at: new Date(project.createdAt).toISOString(),
+          role_default_models: (() => { try { return JSON.parse(project.roleDefaultModels ?? '{}'); } catch { return {}; } })(),
           sessions: buildTree(null),
         };
       }),

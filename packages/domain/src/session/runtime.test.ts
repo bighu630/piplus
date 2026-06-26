@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
-import { projects, sessions } from '@piplus/db/schema';
+import { projects, sessionEvents, sessions } from '@piplus/db/schema';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
 import { startSessionRun } from './runtime';
@@ -62,6 +62,12 @@ function makePiClient(options?: { sendError?: Error }) {
     },
     async setSessionModel() {
       throw new Error('not_implemented');
+    },
+    async getContextUsage() {
+      return null;
+    },
+    async compactSession() {
+      return;
     },
     async bindToolRuntime(sessionId, tools, _handler, cwd) {
       state.bound.push({ sessionId, cwd, tools });
@@ -188,5 +194,14 @@ describe('startSessionRun', () => {
     expect(session?.lastRuntimeError).toBe('pi_send_failed');
     expect(statusEvents[0]).toEqual({ runtimeStatus: 'running', error: null });
     expect(statusEvents.at(-1)).toEqual({ runtimeStatus: 'idle', error: 'pi_send_failed' });
+
+    // Verify sessionEvents row was inserted
+    const errEvents = await db.select()
+      .from(sessionEvents)
+      .where(eq(sessionEvents.sessionId, 'session_test_runtime'))
+      .all();
+    expect(errEvents.length).toBeGreaterThan(0);
+    expect(errEvents.at(-1)?.type).toBe('chat_runtime_error');
+    expect(errEvents.at(-1)?.payload).toContain('pi_send_failed');
   });
 });

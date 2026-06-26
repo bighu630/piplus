@@ -11,6 +11,7 @@ export type ProjectDTO = {
   last_activity_at: string;
   created_at: string;
   sessions: SessionTreeNodeDTO[];
+  role_default_models: Record<string, { provider: string; id: string } | null>;
 };
 
 export type SessionTreeNodeDTO = {
@@ -83,12 +84,29 @@ export type SessionInfoDTO = {
   }>;
 };
 
+export type ChatTextContentBlockDTO = {
+  type: 'text';
+  text: string;
+};
+
+export type ChatImageContentBlockDTO = {
+  type: 'image';
+  mime_type: string | null;
+  media_type: string | null;
+  filename: string | null;
+  uri: string | null;
+  data_base64: string | null;
+};
+
+export type ChatMessageContentBlockDTO = ChatTextContentBlockDTO | ChatImageContentBlockDTO;
+
 export type ChatMessageDTO = {
   id: string;
   role: keyof typeof MessageRole | 'tool';
   message_kind: keyof typeof MessageKind | 'tool_call' | 'tool';
   source_session_id: string | null;
   content_text: string;
+  content_blocks?: ChatMessageContentBlockDTO[];
   created_at: string;
   tool_name?: string | null;
   tool_args_json?: string | null;
@@ -119,4 +137,25 @@ export type SessionContextUsageDTO = {
   tokens: number | null;
   context_window: number;
   percent: number | null;
+};
+
+export type GitBranchDTO = {
+  name: string;
+  is_current: boolean;
+};
+
+export type GitBranchesResponseDTO = {
+  session_id: string;
+  cwd: string;
+  current_branch: string;
+  branches: GitBranchDTO[];
+};
+
+export type GitCheckoutResponseDTO = {
+  session_id: string;
+  cwd: string;
+  result: 'ok' | 'error';
+  stdout?: string;
+  stderr?: string;
+  branch: string;
 };

@@ -115,6 +115,9 @@ export async function invokeRoleManagerTool(
     const wait = Boolean(args.wait ?? false);
     const role = String(args.role ?? 'worker');
     const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
+    const waitPrompt = wait
+      ? 'When you are done, you must call `writeback_to_parent` to report the result back to the parent session before stopping. Do not just answer normally — write back your final result with the `writeback_to_parent` tool.'
+      : undefined;
 
     const result = await roleManager.spawnSession({
       projectId: parent.projectId,
@@ -124,6 +127,7 @@ export async function invokeRoleManagerTool(
       objective: String(args.objective ?? ''),
       scope: args.scope ? String(args.scope) : undefined,
       task: args.task ? String(args.task) : undefined,
+      parentSuppliedPrompt: waitPrompt,
       constraints: Array.isArray(args.constraints) ? args.constraints.map(String) : [],
     });
 
@@ -245,10 +249,39 @@ async function waitForChildWriteback(
   const pollIntervalMs = 2000;
   const deadline = Date.now() + timeoutMs;
 
-  const reqCtx = getRequestContext(childSessionId);
-  const startedAt = reqCtx?.startedAt ?? Date.now();
-
   while (Date.now() < deadline) {
+    const [parent] = await ctx.db
+      .select({ runtimeStatus: sessions.runtimeStatus })
+      .from(sessions)
+      .where(eq(sessions.id, ctx.sessionId))
+      .limit(1);
+
+    if (!parent) {
+      console.log('[role-manager-tools] waitForChildWriteback parent missing', {
+        parentSessionId: ctx.sessionId,
+        childSessionId,
+        requestId,
+      });
+      return {
+        status: 'cancelled',
+        session_id: childSessionId,
+        message: '父会话不存在，已取消等待子会话结果',
+      };
+    }
+
+    if (parent.runtimeStatus === 'stopping') {
+      console.log('[role-manager-tools] waitForChildWriteback parent stopping', {
+        parentSessionId: ctx.sessionId,
+        childSessionId,
+        requestId,
+      });
+      return {
+        status: 'cancelled',
+        session_id: childSessionId,
+        message: '父会话正在停止，已取消等待子会话结果',
+      };
+    }
+
     const [writeback] = await ctx.db
       .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
       .from(messages)

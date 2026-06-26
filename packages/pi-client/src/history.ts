@@ -1,5 +1,5 @@
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import type { PiHistoryMessage, PiHistoryPage } from './types';
+import type { PiContentBlock, PiHistoryMessage, PiHistoryPage, PiImageContentBlock } from './types';
 import type { PiSessionLocator } from './locator';
 
 type ContentBlock = {
@@ -8,6 +8,12 @@ type ContentBlock = {
   id?: string;
   name?: string;
   arguments?: Record<string, unknown>;
+  mediaType?: string;
+  mimeType?: string;
+  filename?: string;
+  uri?: string;
+  data?: string;
+  source?: string | { type?: string; mediaType?: string; mimeType?: string; data?: string; uri?: string; media_type?: string };
 };
 
 type SessionMessageEntry = {
@@ -44,6 +50,66 @@ function isToolCallBlock(block: ContentBlock): block is { type: 'toolCall'; id: 
   return block.type === 'toolCall' && typeof block.id === 'string' && typeof block.name === 'string';
 }
 
+function toImageBlock(block: ContentBlock): PiImageContentBlock | null {
+  if (block.type !== 'image') return null;
+
+  const nestedSource = typeof block.source === 'object' ? block.source : null;
+  const dataBase64 = typeof block.data === 'string'
+    ? block.data
+    : typeof nestedSource?.data === 'string'
+      ? nestedSource.data
+      : typeof block.source === 'string'
+        ? block.source
+        : null;
+  const uri = typeof block.uri === 'string'
+    ? block.uri
+    : typeof nestedSource?.uri === 'string'
+      ? nestedSource.uri
+      : null;
+  const mediaType = typeof block.mediaType === 'string'
+    ? block.mediaType
+    : typeof nestedSource?.mediaType === 'string'
+      ? nestedSource.mediaType
+      : typeof nestedSource?.media_type === 'string'
+        ? nestedSource.media_type
+        : typeof block.mimeType === 'string'
+          ? block.mimeType
+          : null;
+  const mimeType = typeof block.mimeType === 'string'
+    ? block.mimeType
+    : typeof nestedSource?.mimeType === 'string'
+      ? nestedSource.mimeType
+      : typeof nestedSource?.media_type === 'string'
+        ? nestedSource.media_type
+        : mediaType;
+
+  return {
+    type: 'image',
+    mimeType,
+    mediaType,
+    filename: typeof block.filename === 'string' ? block.filename : null,
+    uri,
+    dataBase64,
+  };
+}
+
+function toUserContentBlocks(content: string | Array<ContentBlock> | undefined): PiContentBlock[] | undefined {
+  if (typeof content === 'string') {
+    return content ? [{ type: 'text', text: content }] : undefined;
+  }
+  if (!Array.isArray(content)) return undefined;
+
+  const blocks = content.flatMap((block): PiContentBlock[] => {
+    if (block?.type === 'text' && typeof block.text === 'string') {
+      return [{ type: 'text', text: block.text }];
+    }
+    const imageBlock = toImageBlock(block);
+    return imageBlock ? [imageBlock] : [];
+  });
+
+  return blocks.length > 0 ? blocks : undefined;
+}
+
 export function readHistory(locator: PiSessionLocator, cursor?: string | null, limit = 50): PiHistoryPage {
   const manager = SessionManager.open(locator.sessionFile);
   const rawEntries = manager.getEntries() as SessionMessageEntry[];
@@ -60,10 +126,15 @@ export function readHistory(locator: PiSessionLocator, cursor?: string | null, l
         id: entry.id,
         role: 'user',
         text: toText(msg.content),
+        contentBlocks: toUserContentBlocks(msg.content),
         createdAt: entry.timestamp ?? null,
       });
     } else if (msg.role === 'assistant') {
-      const content = Array.isArray(msg.content) ? msg.content : [];
+      const content = Array.isArray(msg.content)
+        ? msg.content
+        : typeof msg.content === 'string'
+          ? [{ type: 'text', text: msg.content }]
+          : [];
 
       // Emit text portion of the assistant message
       const textContent = content

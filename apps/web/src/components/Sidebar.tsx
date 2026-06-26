@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
 import {
   Folder,
   FolderOpen,
+  Github,
   FileText,
   ChevronDown,
   ChevronRight,
@@ -25,6 +26,8 @@ interface SidebarProps {
   projects: ProjectDTO[];
   activeSessionId: string | null;
   isSidebarCollapsed: boolean;
+  sidebarWidth: number;
+  onWidthChange: (width: number) => void;
   onSelectSession: (projectId: string, sessionId: string) => void;
   onSelectProject: (projectId: string) => void;
   onToggleSidebar: () => void;
@@ -35,6 +38,7 @@ interface SidebarProps {
   onDeleteProject?: (projectId: string) => void;
   onLogout: () => void;
   onOpenSettings: () => void;
+  onOpenProjectSettings?: (projectId: string) => void;
   showArchived: boolean;
   onToggleShowArchived: () => void;
   showWorker: boolean;
@@ -67,6 +71,12 @@ function roleIcon(key: string) {
   return map[key] ?? FileText;
 }
 
+function projectInitials(name: string): string {
+  const trimmed = name?.trim() ?? '';
+  if (trimmed.length === 0) return '?';
+  return trimmed[0].toUpperCase();
+}
+
 function runtimeColor(status: string): string | null {
   switch (status) {
     case 'running':
@@ -84,6 +94,8 @@ export default function Sidebar({
   projects,
   activeSessionId,
   isSidebarCollapsed,
+  sidebarWidth,
+  onWidthChange,
   onSelectSession,
   onSelectProject,
   onToggleSidebar,
@@ -94,6 +106,7 @@ export default function Sidebar({
   onDeleteProject,
   onLogout,
   onOpenSettings,
+  onOpenProjectSettings,
   showArchived,
   onToggleShowArchived,
   showWorker,
@@ -119,6 +132,42 @@ export default function Sidebar({
     }
   });
 
+  const [isDragging, setIsDragging] = useState(false);
+  const dragInfo = useRef({ startX: 0, startWidth: 0 });
+  const draggingRef = useRef(false);
+
+  const handleResizePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    dragInfo.current = { startX: e.clientX, startWidth: sidebarWidth };
+    draggingRef.current = true;
+    setIsDragging(true);
+  }, [sidebarWidth]);
+
+  const handleResizePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!draggingRef.current) return;
+    const delta = e.clientX - dragInfo.current.startX;
+    const newWidth = Math.max(240, Math.min(520, dragInfo.current.startWidth + delta));
+    onWidthChange(newWidth);
+  }, [onWidthChange]);
+
+  const finishResize = useCallback(() => {
+    draggingRef.current = false;
+    setIsDragging(false);
+  }, []);
+
+  const handleResizePointerUp = finishResize;
+  const handleResizePointerCancel = finishResize;
+  const handleLostPointerCapture = finishResize;
+
+  // Cleanup dragging state on unmount, in case the component is removed mid-drag
+  useEffect(() => {
+    return () => {
+      draggingRef.current = false;
+      setIsDragging(false);
+    };
+  }, []);
+
   const toggleProject = (id: string) => {
     setCollapsedProjects((prev) => ({ ...prev, [id]: !prev[id] }));
   };
@@ -139,21 +188,44 @@ export default function Sidebar({
     const q = sidebarSearch?.toLowerCase() ?? '';
     const hasSearch = q.length > 0;
 
+    // Check if any session in the tree is running (recursive)
+    function anyRunning(sessions: SessionTreeNodeDTO[]): boolean {
+      return sessions.some((s) => s.runtime_status === 'running' || anyRunning(s.children));
+    }
+
     const filterSessions = (sessions: SessionTreeNodeDTO[], includeSearch: boolean): SessionTreeNodeDTO[] =>
       sessions
-        .filter((s) => {
-          if (!showArchived && s.archived_at) return false;
-          if (s.role_template_key === 'worker') {
-            if (!showWorker) return false;
+        .map((s) => {
+          const filteredChildren = filterSessions(s.children, includeSearch);
+
+          // Running sessions always pass all filters
+          if (s.runtime_status === 'running') {
+            return { ...s, children: filteredChildren };
+          }
+
+          // Check standard filters
+          if (!showArchived && s.archived_at) {
+            // Keep as bridge node only if has running descendant
+            return filteredChildren.length > 0 && anyRunning(filteredChildren)
+              ? { ...s, children: filteredChildren }
+              : null;
+          }
+          if (s.role_template_key === 'worker' && !showWorker) {
+            return filteredChildren.length > 0 && anyRunning(filteredChildren)
+              ? { ...s, children: filteredChildren }
+              : null;
           }
           if (includeSearch && hasSearch) {
             if (!s.title.toLowerCase().includes(q) && !roleLabel(s.role_template_key).includes(q)) {
-              return false;
+              return filteredChildren.length > 0 && anyRunning(filteredChildren)
+                ? { ...s, children: filteredChildren }
+                : null;
             }
           }
-          return true;
+
+          return { ...s, children: filteredChildren };
         })
-        .map((s) => ({ ...s, children: filterSessions(s.children, includeSearch) }));
+        .filter((s): s is SessionTreeNodeDTO => s !== null);
 
     return projects
       .map((p) => {
@@ -267,10 +339,22 @@ export default function Sidebar({
 
   return (
     <div
-      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col transition-all duration-300 ${
-        isSidebarCollapsed ? 'w-16' : 'w-64'
-      } h-screen select-none`}
+      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-screen select-none relative ${
+        isDragging ? '' : 'transition-all duration-200'
+      }`}
+      style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
     >
+      {!isSidebarCollapsed && (
+        <div
+          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 z-10"
+          style={{ touchAction: 'none' }}
+          onPointerDown={handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
+          onPointerUp={handleResizePointerUp}
+          onPointerCancel={handleResizePointerCancel}
+          onLostPointerCapture={handleLostPointerCapture}
+        />
+      )}
       {/* Header */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
         {!isSidebarCollapsed && (
@@ -292,8 +376,8 @@ export default function Sidebar({
       </div>
 
       {/* New Project button */}
-      <div className="p-3 shrink-0">
-        {!isSidebarCollapsed ? (
+      {!isSidebarCollapsed && (
+        <div className="p-3 shrink-0">
           <button
             onClick={onCreateProject}
             className="w-full bg-blue-600 hover:bg-blue-700 hover:shadow-sm text-white font-medium py-2 px-4 rounded-xl text-xs flex items-center justify-center space-x-2 transition cursor-pointer"
@@ -301,16 +385,8 @@ export default function Sidebar({
             <Plus className="w-4 h-4" />
             <span>新建项目</span>
           </button>
-        ) : (
-          <button
-            onClick={onCreateProject}
-            className="w-8 h-8 mx-auto bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center transition cursor-pointer"
-            title="新建项目"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Search */}
       {!isSidebarCollapsed && (
@@ -356,7 +432,24 @@ export default function Sidebar({
 
       {/* Tree */}
       <div className="flex-1 overflow-y-auto px-2 space-y-1 py-2">
-        {treeLoading ? (
+        {isSidebarCollapsed ? (
+          treeLoading ? (
+            <div className="text-xs text-slate-400 text-center py-4">加载中…</div>
+          ) : filteredProjects.length === 0 ? null : (
+            <div className="flex flex-col items-center space-y-2 py-2">
+              {filteredProjects.map((project) => (
+                <button
+                  key={project.id}
+                  onClick={onToggleSidebar}
+                  className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 text-sm font-semibold cursor-pointer transition-colors"
+                  title={project.name}
+                >
+                  {projectInitials(project.name)}
+                </button>
+              ))}
+            </div>
+          )
+        ) : treeLoading ? (
           <div className="text-xs text-slate-400 text-center py-4">加载中…</div>
         ) : filteredProjects.length === 0 ? (
           <div className="text-xs text-slate-400 text-center py-4">暂无项目</div>
@@ -420,6 +513,18 @@ export default function Sidebar({
                             <Archive className="w-3 h-3" />
                           </button>
                         )}
+                        {onOpenProjectSettings && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenProjectSettings(project.id);
+                            }}
+                            className="p-0.5 hover:bg-slate-100 hover:text-slate-600 rounded text-slate-400 cursor-pointer transition-colors"
+                            title="项目设置"
+                          >
+                            <Settings className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {onDeleteProject && projects.length > 1 && (
                           <button
                             onClick={(e) => {
@@ -454,25 +559,35 @@ export default function Sidebar({
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-row items-center">
-        <button
-          onClick={onLogout}
-          className={`flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 p-1.5 rounded-lg text-slate-600 dark:text-slate-300 transition text-[11.5px] font-sans cursor-pointer ${
-            isSidebarCollapsed ? 'justify-center' : ''
-          }`}
-        >
-          <LogOut className="w-4 h-4 text-slate-500 dark:text-slate-400" />
-          {!isSidebarCollapsed && <span>退出登录</span>}
-        </button>
+      {!isSidebarCollapsed && (
+        <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-row items-center">
+          <button
+            onClick={onLogout}
+            className="flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 p-1.5 rounded-lg text-slate-600 dark:text-slate-300 transition text-[11.5px] font-sans cursor-pointer"
+          >
+            <LogOut className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+            <span>退出登录</span>
+          </button>
 
-        <button
-          onClick={onOpenSettings}
-          className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
-          title="设置"
-        >
-          <Settings className="w-4 h-4" />
-        </button>
-      </div>
+          <a
+            href="https://github.com/bighu630/piplus"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer inline-flex items-center"
+            title="GitHub 仓库"
+          >
+            <Github className="w-4 h-4" />
+          </a>
+
+          <button
+            onClick={onOpenSettings}
+            className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
+            title="设置"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

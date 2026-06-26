@@ -1,14 +1,13 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import type { ChatMessageDTO } from '@piplus/shared';
+import type { ChangeEvent, ClipboardEvent } from 'react';
+import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO } from '@piplus/shared';
+import type { SessionMessageImageAttachment } from '../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import {
-  Send,
-  Square,
   Copy,
   Check,
-  Sparkles,
   ArrowUp,
   ScrollText,
   LoaderCircle,
@@ -19,8 +18,11 @@ import {
   Terminal,
   Archive,
   GitMerge,
+  ImagePlus,
+  X,
 } from 'lucide-react';
 import ContextUsageRing from './ContextUsageRing';
+import Modal from './Modal';
 import { useSessionContextUsage } from '../lib/hooks';
 
 interface ModelOption {
@@ -35,7 +37,7 @@ interface TabChatProps {
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
-  onSend: (content: string) => void;
+  onSend: (content: string, attachments: SessionMessageImageAttachment[]) => Promise<void>;
   onStop: () => void;
   sending: boolean;
   runtimeStatus: string;
@@ -47,12 +49,14 @@ interface TabChatProps {
   sendShortcutMode?: 'enter' | 'mod_enter';
   models?: ModelOption[];
   currentModelValue?: string;
+  currentModelSupportsImages?: boolean | null;
   onModelSelect?: (provider: string, id: string) => void;
   onArchiveSession?: () => void;
   archivePending?: boolean;
   showArchiveButton?: boolean;
   onCompactSession?: () => void;
   compactPending?: boolean;
+  runtimeErrors?: Array<{runId: string; error: string}>;
 }
 
 function extractCodeText(node: unknown): string {
@@ -62,6 +66,18 @@ function extractCodeText(node: unknown): string {
     return extractCodeText((node as any).props.children);
   }
   return '';
+}
+
+function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessageDTO[]): boolean {
+  const msgIndex = allMsgs.findIndex((m) => m.id === msgId);
+  if (msgIndex === -1) return false;
+  for (let i = msgIndex + 1; i < allMsgs.length; i++) {
+    const m = allMsgs[i];
+    if ((m.message_kind === 'tool' || m.role === 'tool') && m.tool_name && m.tool_name === toolName) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function sanitizeStreamingContent(content: string): string {
@@ -99,16 +115,22 @@ export default function TabChat({
   sendShortcutMode,
   models,
   currentModelValue,
+  currentModelSupportsImages,
   onModelSelect,
   onArchiveSession,
   archivePending,
   showArchiveButton,
   onCompactSession,
   compactPending,
+  runtimeErrors,
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
+  const [attachments, setAttachments] = useState<SessionMessageImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<ChatImageContentBlockDTO | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -121,15 +143,90 @@ export default function TabChat({
     messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
+  const canSendImages = currentModelSupportsImages !== false;
+  const allowedImageMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+  const imageBlockToDataUrl = (block: ChatImageContentBlockDTO) => {
+    if (!block.data_base64 || !block.mime_type) return block.uri;
+    return `data:${block.mime_type};base64,${block.data_base64}`;
+  };
+
+  const fileToAttachment = (file: File): Promise<SessionMessageImageAttachment> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`读取图片失败：${file.name}`));
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      if (!base64) {
+        reject(new Error(`读取图片失败：${file.name}`));
+        return;
+      }
+      resolve({
+        type: 'image',
+        mime_type: file.type,
+        data_base64: base64,
+        filename: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const addImageFiles = async (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (!files.length) return;
+    if (!canSendImages) {
+      setAttachmentError('当前模型不支持图片输入，请先切换到支持图片的模型。');
+      return;
+    }
+    const imageFiles = files.filter((file) => allowedImageMimeTypes.has(file.type));
+    if (imageFiles.length !== files.length) {
+      setAttachmentError('仅支持 PNG、JPEG、WebP、GIF 图片。');
+      return;
+    }
+    if (attachments.length + imageFiles.length > 4) {
+      setAttachmentError('最多只能添加 4 张图片。');
+      return;
+    }
+    try {
+      const nextAttachments = await Promise.all(imageFiles.map(fileToAttachment));
+      setAttachments((prev) => [...prev, ...nextAttachments]);
+      setAttachmentError(null);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : '读取图片失败');
+    }
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index));
+    setAttachmentError(null);
+  };
+
+  const imageBlocks = (msg: ChatMessageDTO): ChatImageContentBlockDTO[] =>
+    (msg.content_blocks ?? []).filter((block): block is ChatImageContentBlockDTO => block.type === 'image');
+
+  const textBlocks = (msg: ChatMessageDTO): ChatMessageContentBlockDTO[] =>
+    (msg.content_blocks ?? []).filter((block) => block.type === 'text');
+
   const allMessages = [...messages];
   // Append pending user messages that haven't been confirmed.
-  // The optimistic message id differs from the persisted backend id,
-  // so dedupe by latest user message content instead of id only.
+  // Reconcile by comparing both text and image block identity to avoid
+  // dropping image-only or same-text messages sent close together.
+  const imageSignature = (blocks?: ChatMessageContentBlockDTO[]) => JSON.stringify(
+    (blocks ?? [])
+      .filter((block): block is ChatImageContentBlockDTO => block.type === 'image')
+      .map((block) => ({
+        filename: block.filename,
+        mime_type: block.mime_type,
+        data_base64: block.data_base64,
+      })),
+  );
   for (const pm of pendingUserMessages) {
+    const pendingImageSignature = imageSignature(pm.content_blocks);
     const hasConfirmedMatch = allMessages.some((m) =>
-      m.role === 'user' &&
-      m.content_text === pm.content_text &&
-      Math.abs(new Date(m.created_at).getTime() - new Date(pm.created_at).getTime()) < 60_000,
+      m.role === 'user'
+      && m.content_text === pm.content_text
+      && imageSignature(m.content_blocks) === pendingImageSignature
+      && Math.abs(new Date(m.created_at).getTime() - new Date(pm.created_at).getTime()) < 60_000,
     );
     const hasPendingMatch = allMessages.some((m) => m.id === pm.id);
     if (!hasConfirmedMatch && !hasPendingMatch) {
@@ -207,6 +304,20 @@ export default function TabChat({
     return () => observer.disconnect();
   }, [hasMore, loadingMore, onLoadMore]);
 
+  // Track runtime run start index to avoid showing spinners on interrupted tool calls
+  const prevRuntimeStatusRef = useRef(runtimeStatus);
+  const currentRunStartIdxRef = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const prev = prevRuntimeStatusRef.current;
+    prevRuntimeStatusRef.current = runtimeStatus;
+
+    if (runtimeStatus === 'running' && (prev !== 'running' || currentRunStartIdxRef.current === null)) {
+      // New run started — only tool_calls from this point forward can show spinners
+      currentRunStartIdxRef.current = messages.length;
+    }
+  }, [runtimeStatus, messages.length]);
+
   // 独立标记：session 切换时设 flag，等真实消息渲染后再跳到底部
   useEffect(() => {
     sessionJustSwitchedRef.current = true;
@@ -251,11 +362,18 @@ export default function TabChat({
     }
   }, [displayMessages, streamingContent, selectedSessionId]);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const content = draft.trim();
-    if (!content || sending) return;
-    setDraft('');
-    onSend(content);
+    if ((!content && attachments.length === 0) || sending) return;
+    const nextAttachments = attachments;
+    try {
+      await onSend(content, nextAttachments);
+      setDraft('');
+      setAttachments([]);
+      setAttachmentError(null);
+    } catch {
+      setAttachmentError('发送失败，请重试。');
+    }
   };
 
   const handleCopyCode = async (text: string, id: string) => {
@@ -279,6 +397,12 @@ export default function TabChat({
       setCopiedId(null);
     }
   };
+
+  useEffect(() => {
+    setAttachments([]);
+    setAttachmentError(null);
+    setPreviewImage(null);
+  }, [selectedSessionId]);
 
   const contextUsageQuery = useSessionContextUsage(selectedSessionId ?? null);
   const contextPercent = contextUsageQuery.data?.percent ?? null;
@@ -324,17 +448,34 @@ export default function TabChat({
               });
             };
 
+            const msgIndex = messages.findIndex((m) => m.id === msg.id);
+            const isInCurrentRun = currentRunStartIdxRef.current !== null && msgIndex >= currentRunStartIdxRef.current;
+            const isThisToolRunning = isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages);
+
             let argsStr = '';
+            let parsedArgs: Record<string, unknown> | null = null;
             if (msg.tool_args_json) {
               try {
-                argsStr = JSON.stringify(JSON.parse(msg.tool_args_json), null, 2);
+                const parsed: unknown = JSON.parse(msg.tool_args_json);
+                argsStr = JSON.stringify(parsed, null, 2);
+                if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  parsedArgs = parsed as Record<string, unknown>;
+                }
               } catch {
                 argsStr = msg.tool_args_json;
               }
             }
+            const spawnSessionRole = toolName === 'spawn_session' && typeof parsedArgs?.role === 'string'
+              ? parsedArgs.role
+              : null;
 
             return (
               <div key={msg.id} className="flex justify-start items-start w-full">
+                {isThisToolRunning && (
+                  <div className="mr-2 pt-2 shrink-0">
+                    <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
+                  </div>
+                )}
                 <div className="flex flex-col items-start max-w-full flex-1">
                   <div
                     className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden cursor-pointer select-none transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
@@ -349,13 +490,33 @@ export default function TabChat({
                       <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                       <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 font-mono">
                         {toolName}
+                        {spawnSessionRole ? ` (${spawnSessionRole})` : ''}
                       </span>
                     </div>
                     {isExpanded && argsStr && (
                       <div className="border-t border-amber-200 dark:border-amber-800 px-3 py-2">
-                        <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-                          {argsStr}
-                        </pre>
+                        {(toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs ? (
+                          <table className="w-full text-[11px] font-mono leading-relaxed">
+                            <tbody>
+                              {Object.entries(parsedArgs).map(([key, value]) => (
+                                <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
+                                  <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
+                                    {key}
+                                  </td>
+                                  <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
+                                    {typeof value === 'object' && value !== null
+                                      ? JSON.stringify(value)
+                                      : String(value)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                            {argsStr}
+                          </pre>
+                        )}
                       </div>
                     )}
                   </div>
@@ -428,8 +589,31 @@ export default function TabChat({
             <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start w-full min-w-0`}>
               <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0 ${isUser ? 'max-w-[85%]' : 'max-w-full flex-1'}`}>
                 {isUser ? (
-                  <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed">
-                    {msg.content_text}
+                  <div className="space-y-2 max-w-full">
+                    {imageBlocks(msg).length > 0 && (
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {imageBlocks(msg).map((block, index) => {
+                          const src = imageBlockToDataUrl(block);
+                          if (!src) return null;
+                          return (
+                            <button
+                              key={`${msg.id}-image-${index}`}
+                              type="button"
+                              onClick={() => setPreviewImage(block)}
+                              className="overflow-hidden rounded-2xl border border-blue-400/30 bg-blue-500/10 hover:opacity-90 transition cursor-pointer"
+                              title={block.filename ?? '预览图片'}
+                            >
+                              <img src={src} alt={block.filename ?? `attachment-${index + 1}`} className="h-20 w-20 object-cover" />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {(msg.content_text || textBlocks(msg).length > 0) && (
+                      <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed whitespace-pre-wrap break-words">
+                        {msg.content_text}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
@@ -656,6 +840,49 @@ export default function TabChat({
           </div>
         )}
 
+        {/* Runtime error (agent loop) */}
+        {!isRunning && !streamingContent && runtimeErrors && runtimeErrors.length > 0 && (() => {
+          const err = runtimeErrors[runtimeErrors.length - 1];
+          const errId = `runtime-error-${err.runId}`;
+          const isExpanded = expandedToolIds.has(errId);
+          const isLong = err.error.length > 200;
+          const toggleExpand = () => {
+            setExpandedToolIds((prev) => {
+              const next = new Set(prev);
+              if (next.has(errId)) next.delete(errId);
+              else next.add(errId);
+              return next;
+            });
+          };
+          return (
+            <div key={errId} className="flex justify-start items-start w-full">
+              <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
+                <div className="bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded-xl overflow-hidden w-full">
+                  <div
+                    className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
+                    onClick={isLong ? toggleExpand : undefined}
+                  >
+                    <OctagonX className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+                    <span className="text-xs font-semibold text-red-800 dark:text-red-300">
+                      Agent Loop Error / Agent 循环错误
+                    </span>
+                    {isLong && (
+                      isExpanded
+                        ? <ChevronDown className="w-3.5 h-3.5 text-red-400 shrink-0 ml-auto" />
+                        : <ChevronRight className="w-3.5 h-3.5 text-red-400 shrink-0 ml-auto" />
+                    )}
+                  </div>
+                  <div className={`border-t border-red-200 dark:border-red-800 px-3 py-2 ${!isExpanded && isLong ? 'max-h-20 overflow-hidden' : ''}`}>
+                    <pre className="text-[11px] text-red-900 dark:text-red-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                      {err.error}
+                    </pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -663,13 +890,13 @@ export default function TabChat({
       {false && allMessages.length > 0 && !isRunning && (
         <div className="px-6 py-2 flex flex-wrap gap-2 select-none shrink-0 bg-white/40 dark:bg-slate-900/60 border-t border-slate-100 dark:border-slate-800/60">
           <button
-            onClick={() => onSend('生成当前会话的 Git Diff')}
+            onClick={() => onSend('生成当前会话的 Git Diff', [])}
             className="text-[11px] bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 text-slate-600 dark:text-slate-300 shadow-3xs cursor-pointer transition-colors"
           >
             📊 生成 Git Diff
           </button>
           <button
-            onClick={() => onSend('分析当前会话状态并总结')}
+            onClick={() => onSend('分析当前会话状态并总结', [])}
             className="text-[11px] bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 text-slate-600 dark:text-slate-300 shadow-3xs cursor-pointer transition-colors"
           >
             🧩 分析会话
@@ -735,10 +962,50 @@ export default function TabChat({
       <div className="shrink-0 px-4 py-2 md:px-5 bg-slate-50 dark:bg-slate-900">
         <div className="mx-auto max-w-[900px]">
           <div className="flex flex-col gap-2">
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/60 p-2">
+                {attachments.map((attachment, index) => (
+                  <div key={`${attachment.filename ?? 'attachment'}-${index}`} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewImage({
+                        type: 'image',
+                        mime_type: attachment.mime_type,
+                        media_type: attachment.mime_type,
+                        filename: attachment.filename ?? null,
+                        uri: null,
+                        data_base64: attachment.data_base64,
+                      })}
+                      className="block overflow-hidden rounded-lg border border-slate-300 dark:border-slate-600"
+                    >
+                      <img
+                        src={`data:${attachment.mime_type};base64,${attachment.data_base64}`}
+                        alt={attachment.filename ?? `attachment-${index + 1}`}
+                        className="h-16 w-16 object-cover"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(index)}
+                      className="absolute -right-1.5 -top-1.5 rounded-full bg-slate-900/80 p-1 text-white hover:bg-slate-900 cursor-pointer"
+                      title="移除图片"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
               className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition"
               disabled={isRunning || sending}
               onChange={(e) => setDraft(e.target.value)}
+              onPaste={async (e: ClipboardEvent<HTMLTextAreaElement>) => {
+                const files = Array.from(e.clipboardData.files ?? []);
+                if (!files.some((file) => allowedImageMimeTypes.has(file.type))) return;
+                e.preventDefault();
+                await addImageFiles(files.filter((file) => allowedImageMimeTypes.has(file.type)));
+              }}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter') return;
 
@@ -746,7 +1013,7 @@ export default function TabChat({
                   // Ctrl/Cmd+Enter 发送，Enter 换行
                   if (e.metaKey || e.ctrlKey) {
                     e.preventDefault();
-                    handleSubmit();
+                    void handleSubmit();
                     return;
                   }
                   // 回车（无修饰键）→ 换行
@@ -754,7 +1021,7 @@ export default function TabChat({
                   // Enter 发送，Ctrl/Cmd+Enter 换行（默认）
                   if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
                     e.preventDefault();
-                    handleSubmit();
+                    void handleSubmit();
                     return;
                   }
                   // Shift+Enter / Ctrl+Enter → 换行
@@ -773,7 +1040,7 @@ export default function TabChat({
               placeholder="向当前会话发送消息…"
               value={draft}
             />
-            <div className="flex items-center gap-2.5 px-1">
+            <div className="flex items-center gap-2.5 px-1 flex-wrap">
               {/* WS connection indicator */}
               <div className="flex items-center gap-1.5">
                 <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500' : 'bg-red-400'}`} />
@@ -781,9 +1048,40 @@ export default function TabChat({
                   {wsConnected ? 'WS' : 'WS 离线'}
                 </span>
               </div>
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  multiple
+                  className="hidden"
+                  onChange={async (e: ChangeEvent<HTMLInputElement>) => {
+                    const files = e.target.files;
+                    if (files) await addImageFiles(files);
+                    e.target.value = '';
+                  }}
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isRunning || !canSendImages || attachments.length >= 4}
+                    className="flex items-center space-x-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
+                    title={isRunning ? '对话进行中，暂时不能添加图片' : canSendImages ? '添加图片' : '当前模型不支持图片输入'}
+                  >
+                    <ImagePlus className="w-3.5 h-3.5" />
+                    <span>图片</span>
+                  </button>
+                  {(attachmentError || currentModelSupportsImages === false) && (
+                    <span className="text-[10px] text-red-500 dark:text-red-400 font-medium whitespace-nowrap">
+                      {attachmentError ?? '当前模型不支持图片输入'}
+                    </span>
+                  )}
+                </div>
+              </>
               {!isRunning && (
                 <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">
-                  {sendShortcutMode === 'mod_enter' ? 'Ctrl/Cmd+Enter 发送' : 'Enter 发送 · Ctrl/Cmd+Enter 换行'}
+                  {sendShortcutMode === 'mod_enter' ? 'Ctrl/Cmd+Enter 发送' : 'Enter 发送 · Ctrl/Cmd+Enter 换行'} · 支持粘贴图片，最多 4 张
                 </span>
               )}
               {isRunning && (
@@ -797,8 +1095,8 @@ export default function TabChat({
               )}
               <button
                 className="flex items-center space-x-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
-                disabled={isRunning || sending || draft.trim().length === 0}
-                onClick={handleSubmit}
+                disabled={isRunning || sending || (draft.trim().length === 0 && attachments.length === 0)}
+                onClick={() => { void handleSubmit(); }}
               >
                 <span>{sending ? '发送中…' : '发送'}</span>
                 <ArrowUp className="w-3.5 h-3.5" />
@@ -807,6 +1105,23 @@ export default function TabChat({
           </div>
         </div>
       </div>
+
+      <Modal
+        isOpen={Boolean(previewImage)}
+        onClose={() => setPreviewImage(null)}
+        title={previewImage?.filename ?? '图片预览'}
+        maxWidthClassName="max-w-4xl"
+      >
+        {previewImage && imageBlockToDataUrl(previewImage) && (
+          <div className="flex items-center justify-center">
+            <img
+              src={imageBlockToDataUrl(previewImage)!}
+              alt={previewImage.filename ?? 'preview'}
+              className="max-h-[70vh] w-auto rounded-xl border border-slate-200 dark:border-slate-700"
+            />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
