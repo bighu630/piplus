@@ -53,6 +53,7 @@ interface TabChatProps {
   showArchiveButton?: boolean;
   onCompactSession?: () => void;
   compactPending?: boolean;
+  runtimeErrors?: Array<{runId: string; error: string}>;
 }
 
 function extractCodeText(node: unknown): string {
@@ -117,6 +118,7 @@ export default function TabChat({
   showArchiveButton,
   onCompactSession,
   compactPending,
+  runtimeErrors,
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -690,6 +692,49 @@ export default function TabChat({
             </div>
           </div>
         )}
+
+        {/* Runtime error (agent loop) */}
+        {!isRunning && !streamingContent && runtimeErrors && runtimeErrors.length > 0 && (() => {
+          const err = runtimeErrors[runtimeErrors.length - 1];
+          const errId = `runtime-error-${err.runId}`;
+          const isExpanded = expandedToolIds.has(errId);
+          const isLong = err.error.length > 200;
+          const toggleExpand = () => {
+            setExpandedToolIds((prev) => {
+              const next = new Set(prev);
+              if (next.has(errId)) next.delete(errId);
+              else next.add(errId);
+              return next;
+            });
+          };
+          return (
+            <div key={errId} className="flex justify-start items-start w-full">
+              <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
+                <div className="bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded-xl overflow-hidden w-full">
+                  <div
+                    className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
+                    onClick={isLong ? toggleExpand : undefined}
+                  >
+                    <OctagonX className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+                    <span className="text-xs font-semibold text-red-800 dark:text-red-300">
+                      Agent Loop Error / Agent 循环错误
+                    </span>
+                    {isLong && (
+                      isExpanded
+                        ? <ChevronDown className="w-3.5 h-3.5 text-red-400 shrink-0 ml-auto" />
+                        : <ChevronRight className="w-3.5 h-3.5 text-red-400 shrink-0 ml-auto" />
+                    )}
+                  </div>
+                  <div className={`border-t border-red-200 dark:border-red-800 px-3 py-2 ${!isExpanded && isLong ? 'max-h-20 overflow-hidden' : ''}`}>
+                    <pre className="text-[11px] text-red-900 dark:text-red-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                      {err.error}
+                    </pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         <div ref={messagesEndRef} />
       </div>

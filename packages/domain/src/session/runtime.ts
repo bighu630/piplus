@@ -1,4 +1,4 @@
-import { projects, sessions } from '@piplus/db/schema';
+import { projects, sessionEvents, sessions } from '@piplus/db/schema';
 import { and, eq } from 'drizzle-orm';
 import type { PiClient, PiSessionStreamEvent } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
@@ -35,6 +35,22 @@ function formatRuntimeError(error: unknown) {
   }
 }
 
+async function persistRuntimeError(db: RoleManagerDb, sessionId: string, error: string) {
+  try {
+    await db.insert(sessionEvents).values({
+      id: `event_runtime_err_${crypto.randomUUID().slice(0, 12)}`,
+      sessionId,
+      type: 'chat_runtime_error',
+      payload: JSON.stringify({ error, timestamp: new Date().toISOString() }),
+      parentMessageId: null,
+      sequence: 1,
+      createdAt: new Date(),
+    } as any);
+  } catch (insertErr) {
+    console.error('[session-runtime] failed to persist runtime error event', { sessionId, error, insertErr });
+  }
+}
+
 export async function markSessionRunning(db: RoleManagerDb, sessionId: string, timestamp: Date) {
   await db.update(sessions).set({
     runtimeStatus: 'running',
@@ -55,7 +71,7 @@ export async function markSessionIdle(db: RoleManagerDb, sessionId: string, time
 
 export async function startSessionRun(input: StartSessionRunInput) {
   const startedAt = input.startedAt ?? new Date();
-  const safetyTimeoutMs = input.safetyTimeoutMs ?? 5 * 60 * 1000;
+  const safetyTimeoutMs = input.safetyTimeoutMs ?? 10 * 60 * 1000;
 
   const [session] = await input.db.select().from(sessions)
     .where(eq(sessions.id, input.sessionId))
@@ -135,6 +151,9 @@ export async function startSessionRun(input: StartSessionRunInput) {
     if (timeoutHandle) clearTimeout(timeoutHandle);
 
     const runtimeError = error ? formatRuntimeError(error) : null;
+    if (runtimeError) {
+      await persistRuntimeError(input.db, input.sessionId, runtimeError);
+    }
     clearRequestContext(input.sessionId);
     await markSessionIdle(input.db, input.sessionId, new Date(), runtimeError);
     await input.onRuntimeStatusChange?.({

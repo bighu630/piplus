@@ -67,6 +67,10 @@ function mapAgentSessionEvent(
     };
   }
 
+  if (event.type === 'auto_retry_end' && event.success === false) {
+    return { type: 'error', sessionId, runId: `auto_retry_${crypto.randomUUID().slice(0, 10)}`, error: event.finalError };
+  }
+
   return null;
 }
 
@@ -227,7 +231,15 @@ export function createPiClient(): PiClient {
         // 有实际内容时才发送用户消息；空内容（如 spawn_session 场景）略过
         if (content) {
           console.log('[pi-client] sendMessage → agentSession.prompt', { sessionId, content: content.slice(0, 80) });
-          await session.agentSession.prompt(content);
+          try {
+            await session.agentSession.prompt(content);
+          } catch (err) {
+            const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
+            for (const listener of session.listeners) {
+              await listener(errorEvent);
+            }
+            throw err;
+          }
           console.log('[pi-client] sendMessage ← agentSession.prompt done', { sessionId });
         } else {
           console.log('[pi-client] sendMessage → content is empty, nothing to send', { sessionId });
