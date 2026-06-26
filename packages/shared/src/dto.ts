@@ -11,6 +11,7 @@ export type ProjectDTO = {
   last_activity_at: string;
   created_at: string;
   sessions: SessionTreeNodeDTO[];
+  role_default_models: Record<string, { provider: string; id: string } | null>;
 };
 
 export type SessionTreeNodeDTO = {

@@ -35,6 +35,7 @@ interface SidebarProps {
   onDeleteProject?: (projectId: string) => void;
   onLogout: () => void;
   onOpenSettings: () => void;
+  onOpenProjectSettings?: (projectId: string) => void;
   showArchived: boolean;
   onToggleShowArchived: () => void;
   showWorker: boolean;
@@ -94,6 +95,7 @@ export default function Sidebar({
   onDeleteProject,
   onLogout,
   onOpenSettings,
+  onOpenProjectSettings,
   showArchived,
   onToggleShowArchived,
   showWorker,
@@ -441,6 +443,18 @@ export default function Sidebar({
                             title="归档项目"
                           >
                             <Archive className="w-3 h-3" />
+                          </button>
+                        )}
+                        {onOpenProjectSettings && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenProjectSettings(project.id);
+                            }}
+                            className="p-0.5 hover:bg-slate-100 hover:text-slate-600 rounded text-slate-400 cursor-pointer transition-colors"
+                            title="项目设置"
+                          >
+                            <Settings className="w-3.5 h-3.5" />
                           </button>
                         )}
                         {onDeleteProject && projects.length > 1 && (

@@ -78,6 +78,12 @@ function makeRecordingPiClient() {
       state.setSessionModelInput = { sessionId, provider: modelRef.provider, id: modelRef.id, cwd };
       return { provider: modelRef.provider, id: modelRef.id, label: 'Stub Model' };
     },
+    async getContextUsage() {
+      return null;
+    },
+    async compactSession() {
+      return;
+    },
   };
 }
 
@@ -125,6 +131,11 @@ describe('role manager service', () => {
       cwd: '',
       model: { provider: 'openai', id: 'gpt-4.1' },
     });
+
+    // Assert role_default_models is persisted
+    expect(project?.roleDefaultModels).toBeTruthy();
+    const parsed = JSON.parse(project?.roleDefaultModels ?? '{}');
+    expect(parsed).toEqual({ planner: { provider: 'openai', id: 'gpt-4.1' } });
   });
 
   test('creates a top-level blank session with project planner model inheritance', async () => {
@@ -190,6 +201,64 @@ describe('role manager service', () => {
     expect(child?.depth).toBe((parent?.depth ?? 0) + 1);
     expect(child?.currentModelProvider).toBe('anthropic');
     expect(child?.currentModelId).toBe('claude-sonnet-4-20250514');
+  });
+
+  test('spawns a child session using role default model when configured', async () => {
+    const { db, roleManager, piClient } = await setupDomain();
+    const { projectId, sessionId: parentSessionId } = await roleManager.createProjectWithPlanner({
+      name: 'Role Default Spawn',
+      createdBy: 'user_seed',
+    });
+
+    // Manually set role_default_models for worker
+    await db.update(projects).set({
+      roleDefaultModels: JSON.stringify({ worker: { provider: 'custom', id: 'custom-model' } }),
+    }).where(eq(projects.id, projectId));
+
+    const result = await roleManager.spawnSession({
+      projectId,
+      parentSessionId,
+      createdBy: 'user_seed',
+      role: 'worker',
+      objective: 'work task',
+      constraints: [],
+    });
+
+    const [child] = await db.select().from(sessions).where(eq(sessions.id, result.sessionId)).limit(1);
+
+    // Should use role default model, not inherit from parent (which has no model)
+    expect(child?.currentModelProvider).toBe('custom');
+    expect(child?.currentModelId).toBe('custom-model');
+    expect(piClient.state.createSessionInput).toMatchObject({
+      model: { provider: 'custom', id: 'custom-model' },
+    });
+  });
+
+  test('spawns a child session falls back to parent model when no role default', async () => {
+    const { db, roleManager, piClient } = await setupDomain();
+    const { projectId, sessionId: parentSessionId } = await roleManager.createProjectWithPlanner({
+      name: 'Fallback Spawn',
+      createdBy: 'user_seed',
+      plannerModel: { provider: 'openai', id: 'gpt-4.1' },
+    });
+
+    const result = await roleManager.spawnSession({
+      projectId,
+      parentSessionId,
+      createdBy: 'user_seed',
+      role: 'worker',
+      objective: 'work task',
+      constraints: [],
+    });
+
+    const [child] = await db.select().from(sessions).where(eq(sessions.id, result.sessionId)).limit(1);
+
+    // No role default for 'worker', should inherit planner's model
+    expect(child?.currentModelProvider).toBe('openai');
+    expect(child?.currentModelId).toBe('gpt-4.1');
+    expect(piClient.state.createSessionInput).toMatchObject({
+      model: { provider: 'openai', id: 'gpt-4.1' },
+    });
   });
 
   test('writes back to the resolved parent session internally', async () => {

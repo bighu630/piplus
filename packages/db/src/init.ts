@@ -39,6 +39,13 @@ function ensureProjectPathColumns(sqlite: Database) {
   }
 }
 
+function ensureRoleDefaultModelsColumn(sqlite: Database) {
+  const columns = sqlite.prepare("SELECT name FROM pragma_table_info('projects')").all() as Array<{ name: string }>;
+  if (!columns.some((col) => col.name === 'role_default_models')) {
+    sqlite.exec("ALTER TABLE projects ADD COLUMN role_default_models TEXT NOT NULL DEFAULT '{}'");
+  }
+}
+
 function ensureMessageRequestIdColumn(sqlite: Database) {
   const columns = sqlite.prepare("SELECT name FROM pragma_table_info('messages')").all() as Array<{ name: string }>;
   if (!columns.some((col) => col.name === 'request_id')) {
@@ -165,6 +172,7 @@ export function createSeedDb(path: string) {
   ensureSessionLocatorColumn(sqlite);
   ensureSessionModelColumns(sqlite);
   ensureProjectPathColumns(sqlite);
+  ensureRoleDefaultModelsColumn(sqlite);
   ensureMessageRequestIdColumn(sqlite);
   ensureBuiltinRows(sqlite);
   sqlite.close();

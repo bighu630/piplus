@@ -258,3 +258,14 @@ export function archiveProject(projectId: string) {
 export function deleteProject(projectId: string) {
   return request<{ project_id: string; status: string }>(`/api/v1/projects/${projectId}`, { method: 'DELETE' });
 }
+
+export function getProjectRoleModels(projectId: string) {
+  return request<Record<string, { provider: string; id: string } | null>>(`/api/v1/projects/${projectId}/role-models`);
+}
+
+export function setProjectRoleModels(projectId: string, models: Record<string, { provider: string; id: string } | null>) {
+  return request<{ ok: boolean; role_default_models: Record<string, { provider: string; id: string } | null> }>(`/api/v1/projects/${projectId}/role-models`, {
+    method: 'PUT',
+    body: JSON.stringify(models),
+  });
+}

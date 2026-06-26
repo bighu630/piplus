@@ -518,7 +518,34 @@ export function createPiClient(): PiClient {
     },
 
     async registerProvider(providerName, config) {
-      modelRegistry.registerProvider(providerName, config);
+      // Normalize the loosely-typed PiClient config to strict ProviderConfigInput
+      const models = (config.models ?? []).map((m) => ({
+        id: m.id,
+        name: m.name ?? m.id,
+        api: m.api as any,
+        baseUrl: m.baseUrl,
+        reasoning: m.reasoning ?? false,
+        thinkingLevelMap: m.thinkingLevelMap as any,
+        input: m.input?.length ? (m.input as any) : ['text'],
+        cost: {
+          input: m.cost?.input ?? 0,
+          output: m.cost?.output ?? 0,
+          cacheRead: m.cost?.cacheRead ?? 0,
+          cacheWrite: m.cost?.cacheWrite ?? 0,
+        },
+        contextWindow: m.contextWindow ?? 128000,
+        maxTokens: m.maxTokens ?? 16384,
+        headers: m.headers,
+        compat: m.compat as any,
+      }));
+      modelRegistry.registerProvider(providerName, {
+        api: config.api as any,
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        authHeader: config.authHeader,
+        headers: config.headers,
+        models,
+      } as any);
     },
   };
 }

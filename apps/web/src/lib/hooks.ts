@@ -29,6 +29,8 @@ import {
   gitCheckout,
   testModelProvider,
   createModelProvider,
+  getProjectRoleModels,
+  setProjectRoleModels,
   type ModelInfo,
   type ProviderFormPayload,
 } from './api';
@@ -318,6 +320,27 @@ export function useCompactSessionMutation() {
       if (data.accepted) {
         queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', data.session_id] });
       }
+    },
+  });
+}
+
+export function useProjectRoleModels(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project', 'role-models', projectId],
+    queryFn: () => getProjectRoleModels(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 10_000,
+  });
+}
+
+export function useSetProjectRoleModelsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, models }: { projectId: string; models: Record<string, { provider: string; id: string } | null> }) =>
+      setProjectRoleModels(projectId, models),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'role-models', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['tree'] });
     },
   });
 }

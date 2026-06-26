@@ -63,6 +63,12 @@ function makePiClient(options?: { sendError?: Error }) {
     async setSessionModel() {
       throw new Error('not_implemented');
     },
+    async getContextUsage() {
+      return null;
+    },
+    async compactSession() {
+      return;
+    },
     async bindToolRuntime(sessionId, tools, _handler, cwd) {
       state.bound.push({ sessionId, cwd, tools });
     },

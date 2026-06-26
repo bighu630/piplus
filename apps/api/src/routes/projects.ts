@@ -171,6 +171,54 @@ export function registerProjectRoutes(app: Hono) {
    *       404:
    *         description: 项目不存在。
    */
+  app.get('/api/v1/projects/:projectId/role-models', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, roleDefaultModels: projects.roleDefaultModels }).from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    if (project.createdBy !== userId) return c.json({ error: { code: 'FORBIDDEN', message: 'Access denied' } }, 403);
+
+    try {
+      const parsed = JSON.parse(project.roleDefaultModels ?? '{}');
+      return c.json(parsed);
+    } catch {
+      return c.json({});
+    }
+  });
+
+  app.put('/api/v1/projects/:projectId/role-models', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    if (project.createdBy !== userId) return c.json({ error: { code: 'FORBIDDEN', message: 'Access denied' } }, 403);
+
+    // Validate: each value must be null or an object with non-empty string provider and id
+    const validated: Record<string, { provider: string; id: string } | null> = {};
+    for (const [key, value] of Object.entries(body)) {
+      if (value === null) {
+        validated[key] = null;
+      } else if (typeof value === 'object' && value !== null) {
+        const v = value as Record<string, unknown>;
+        if (typeof v.provider !== 'string' || !v.provider || typeof v.id !== 'string' || !v.id) {
+          return c.json({ error: { code: 'VALIDATION_ERROR', message: `Invalid entry for role '${key}': provider and id must be non-empty strings` } }, 400);
+        }
+        validated[key] = { provider: v.provider, id: v.id };
+      } else {
+        return c.json({ error: { code: 'VALIDATION_ERROR', message: `Invalid entry for role '${key}': must be null or an object with provider and id` } }, 400);
+      }
+    }
+
+    await db.update(projects).set({ roleDefaultModels: JSON.stringify(validated) }).where(eq(projects.id, projectId));
+    socketHub.broadcast(createEvent('tree.changed', { project_id: projectId }, { project_id: projectId }));
+    return c.json({ ok: true, role_default_models: validated });
+  });
+
   app.delete('/api/v1/projects/:projectId', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const projectId = c.req.param('projectId');

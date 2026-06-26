@@ -149,6 +149,25 @@ async function touchProject(db: RoleManagerDb, projectId: string) {
   await db.update(projects).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(projects.id, projectId));
 }
 
+async function findRoleDefaultModel(db: RoleManagerDb, projectId: string, roleKey: string): Promise<{ provider: string; id: string } | null> {
+  const [project] = await db
+    .select({ roleDefaultModels: projects.roleDefaultModels })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+  if (!project?.roleDefaultModels) return null;
+  try {
+    const parsed = JSON.parse(project.roleDefaultModels) as Record<string, { provider: string; id: string } | null>;
+    const entry = parsed[roleKey];
+    if (entry && entry.provider && entry.id) {
+      return { provider: entry.provider, id: entry.id };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function findProjectResponsibleModel(db: RoleManagerDb, projectId: string) {
   const [planner] = await db
     .select({
@@ -203,6 +222,14 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         updatedAt: timestamp,
       } as any);
 
+      if (input.plannerModel?.provider && input.plannerModel?.id) {
+        const roleDefaults: Record<string, { provider: string; id: string } | null> = {};
+        roleDefaults.planner = { provider: input.plannerModel.provider, id: input.plannerModel.id };
+        await db.update(projects)
+          .set({ roleDefaultModels: JSON.stringify(roleDefaults) })
+          .where(eq(projects.id, projectId));
+      }
+
       const { sessionId, piSessionId } = await this.createTopLevelPlannerSession({
         projectId,
         projectName: input.name,
@@ -256,7 +283,8 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
     async createTopLevelBlankSession(input: CreateSessionInput) {
       const blankTemplate = await findRoleTemplate(db, 'blank');
       const [project] = await db.select({ projectPath: projects.projectPath }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
-      const inheritedModel = await findProjectResponsibleModel(db, input.projectId);
+      const roleDefaultModel = await findRoleDefaultModel(db, input.projectId, 'blank');
+      const inheritedModel = roleDefaultModel ?? await findProjectResponsibleModel(db, input.projectId);
       const sessionId = id('session');
       const title = 'Blank Session';
       const compiledPrompt = compilePrompt({
@@ -313,9 +341,10 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         constraints: input.constraints,
       });
       const cwd = project?.projectPath ?? process.cwd();
-      const inheritedModel = parent.currentModelProvider && parent.currentModelId
+      const roleDefaultModel = await findRoleDefaultModel(db, input.projectId, input.role);
+      const inheritedModel = roleDefaultModel ?? (parent.currentModelProvider && parent.currentModelId
         ? { provider: parent.currentModelProvider, id: parent.currentModelId }
-        : null;
+        : null);
       console.log('[role-manager] spawnSession model inheritance', {
         parentSessionId: parent.id,
         parentModelProvider: parent.currentModelProvider,
