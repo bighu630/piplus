@@ -64,6 +64,18 @@ function extractCodeText(node: unknown): string {
   return '';
 }
 
+function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessageDTO[]): boolean {
+  const msgIndex = allMsgs.findIndex((m) => m.id === msgId);
+  if (msgIndex === -1) return false;
+  for (let i = msgIndex + 1; i < allMsgs.length; i++) {
+    const m = allMsgs[i];
+    if ((m.message_kind === 'tool' || m.role === 'tool') && m.tool_name === toolName) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function sanitizeStreamingContent(content: string): string {
   const lastFenceIdx = content.lastIndexOf('```');
   if (lastFenceIdx === -1) return content;
@@ -207,6 +219,20 @@ export default function TabChat({
     return () => observer.disconnect();
   }, [hasMore, loadingMore, onLoadMore]);
 
+  // Track runtime run start index to avoid showing spinners on interrupted tool calls
+  const prevRuntimeStatusRef = useRef(runtimeStatus);
+  const currentRunStartIdxRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const prev = prevRuntimeStatusRef.current;
+    prevRuntimeStatusRef.current = runtimeStatus;
+
+    if (runtimeStatus === 'running' && prev !== 'running') {
+      // New run started — only tool_calls from this point forward can show spinners
+      currentRunStartIdxRef.current = messages.length;
+    }
+  }, [runtimeStatus, messages.length]);
+
   // 独立标记：session 切换时设 flag，等真实消息渲染后再跳到底部
   useEffect(() => {
     sessionJustSwitchedRef.current = true;
@@ -324,6 +350,10 @@ export default function TabChat({
               });
             };
 
+            const msgIndex = messages.findIndex((m) => m.id === msg.id);
+            const isInCurrentRun = msgIndex >= currentRunStartIdxRef.current;
+            const isThisToolRunning = isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages);
+
             let argsStr = '';
             if (msg.tool_args_json) {
               try {
@@ -363,6 +393,11 @@ export default function TabChat({
                     {new Date(msg.created_at).toLocaleTimeString()}
                   </span>
                 </div>
+                {isThisToolRunning && (
+                  <div className="ml-2 pt-2 shrink-0">
+                    <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
+                  </div>
+                )}
               </div>
             );
           }
