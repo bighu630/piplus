@@ -77,6 +77,22 @@ function projectInitials(name: string): string {
   return trimmed[0].toUpperCase();
 }
 
+/**
+ * Lightweight fuzzy match: checks if all characters of `query` appear in order (non-contiguous) within `text`.
+ * Case-insensitive. Empty query matches everything.
+ */
+function fuzzyMatch(query: string, text: string): boolean {
+  if (query.length === 0) return true;
+  const lower = text.toLowerCase();
+  let qi = 0;
+  for (let ti = 0; ti < lower.length && qi < query.length; ti++) {
+    if (lower[ti] === query[qi]) {
+      qi++;
+    }
+  }
+  return qi === query.length;
+}
+
 function runtimeColor(status: string): string | null {
   switch (status) {
     case 'running':
@@ -216,7 +232,7 @@ export default function Sidebar({
               : null;
           }
           if (includeSearch && hasSearch) {
-            if (!s.title.toLowerCase().includes(q) && !roleLabel(s.role_template_key).includes(q)) {
+            if (!fuzzyMatch(q, s.title) && !fuzzyMatch(q, roleLabel(s.role_template_key))) {
               return filteredChildren.length > 0 && anyRunning(filteredChildren)
                 ? { ...s, children: filteredChildren }
                 : null;
@@ -229,7 +245,7 @@ export default function Sidebar({
 
     return projects
       .map((p) => {
-        if (hasSearch && p.name.toLowerCase().includes(q)) {
+        if (hasSearch && fuzzyMatch(q, p.name)) {
           // project name matched — only apply archive/worker filters to sessions, skip search
           return { ...p, sessions: filterSessions(p.sessions, false) };
         }
@@ -573,7 +589,7 @@ export default function Sidebar({
             href="https://github.com/bighu630/piplus"
             target="_blank"
             rel="noopener noreferrer"
-            className="ml-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer inline-flex items-center"
+            className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer inline-flex items-center"
             title="GitHub 仓库"
           >
             <Github className="w-4 h-4" />
@@ -581,7 +597,7 @@ export default function Sidebar({
 
           <button
             onClick={onOpenSettings}
-            className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
+            className="ml-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
             title="设置"
           >
             <Settings className="w-4 h-4" />

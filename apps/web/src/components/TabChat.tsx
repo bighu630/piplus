@@ -371,8 +371,21 @@ export default function TabChat({
       setDraft('');
       setAttachments([]);
       setAttachmentError(null);
-    } catch {
-      setAttachmentError('发送失败，请重试。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (/does not support image input/i.test(message)) {
+        setAttachmentError('当前模型不支持图片输入，请切换到支持图片的模型。');
+        return;
+      }
+      if (/unsupported image mime type/i.test(message)) {
+        setAttachmentError('仅支持 PNG、JPEG、WebP、GIF 图片。');
+        return;
+      }
+      if (/at most 4 images are allowed/i.test(message)) {
+        setAttachmentError('最多只能添加 4 张图片。');
+        return;
+      }
+      setAttachmentError(message || '发送失败，请重试。');
     }
   };
 
