@@ -45,6 +45,12 @@ interface SidebarProps {
   onToggleShowWorker: () => void;
   treeLoading: boolean;
   creatingSession: boolean;
+  /** 移动端模式：全宽展示树，无折叠/拖拽交互 */
+  isMobile?: boolean;
+  /** 移动端模式下控制侧边栏显示/隐藏 */
+  isMobileVisible?: boolean;
+  /** 移动端返回目录树回调 */
+  onReturnToTree?: () => void;
 }
 
 function roleLabel(key: string): string {
@@ -129,6 +135,9 @@ export default function Sidebar({
   onToggleShowWorker,
   treeLoading,
   creatingSession,
+  isMobile,
+  isMobileVisible,
+  onReturnToTree,
 }: SidebarProps) {
   const [sidebarSearch, setSidebarSearch] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(() => {
@@ -281,7 +290,7 @@ export default function Sidebar({
       <div key={session.id} className="w-full flex flex-col">
         <div
           onClick={() => onSelectSession(projectId, session.id)}
-          style={{ paddingLeft: isSidebarCollapsed ? '0px' : `${Math.max(0, depth * 14 + 8 - 20)}px` }}
+          style={{ paddingLeft: effectiveCollapsed ? '0px' : `${Math.max(0, depth * 14 + 8 - 20)}px` }}
           className={`group flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition ${
             isActive
               ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold shadow-2xs'
@@ -290,7 +299,7 @@ export default function Sidebar({
         >
           <div className="flex items-center flex-1 min-w-0">
             {/* 固定宽度的 chevron 位，有按钮显示按钮，无按钮留空 — 保证图标文字对齐 */}
-            {!isSidebarCollapsed && (
+            {!effectiveCollapsed && (
               <div className="w-4 shrink-0 flex items-center justify-start">
                 {hasChildren && (
                   <button
@@ -307,9 +316,9 @@ export default function Sidebar({
               </div>
             )}
             <div className="flex items-center space-x-1.5 min-w-0">
-              {!isSidebarCollapsed && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}` })}
+              {!effectiveCollapsed && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}` })}
 
-            {!isSidebarCollapsed && (
+            {!effectiveCollapsed && (
               <span
                 className="text-[11.5px] truncate font-sans tracking-tight"
                 title={session.title}
@@ -320,7 +329,7 @@ export default function Sidebar({
             </div>
           </div>
 
-          {!isSidebarCollapsed && (
+          {!effectiveCollapsed && (
             <div className="flex items-center gap-1 shrink-0 select-none">
               <span
                 className="text-[9px] text-slate-400 dark:text-slate-500 font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity cursor-context-menu"
@@ -353,14 +362,22 @@ export default function Sidebar({
     );
   };
 
+  const isMobileMode = isMobile === true;
+  const isVisible = isMobileMode ? isMobileVisible === true : true;
+  // 移动端：把 isSidebarCollapsed 视为 false（始终展开），禁用折叠/拖拽
+  const effectiveCollapsed = isMobileMode ? false : isSidebarCollapsed;
+
   return (
     <div
-      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-screen select-none relative ${
+      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-[100dvh] min-h-0 overflow-hidden select-none relative ${
         isDragging ? '' : 'transition-all duration-200'
-      }`}
-      style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
+      } ${!isVisible ? 'hidden' : ''}`}
+      style={{
+        width: isMobileMode ? '100%' : effectiveCollapsed ? 64 : sidebarWidth,
+      }}
     >
-      {!isSidebarCollapsed && (
+      {/* 移动端不显示拖拽手柄 */}
+      {!isMobileMode && !effectiveCollapsed && (
         <div
           className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 z-10"
           style={{ touchAction: 'none' }}
@@ -373,7 +390,7 @@ export default function Sidebar({
       )}
       {/* Header */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
-        {!isSidebarCollapsed && (
+        {!isMobileMode && !effectiveCollapsed && (
           <div className="flex items-center space-x-2">
             <div className="bg-blue-600 text-white font-black px-2 py-1 rounded text-sm tracking-widest font-sans flex items-center">
               Pi
@@ -383,16 +400,37 @@ export default function Sidebar({
             </span>
           </div>
         )}
-        <button
-          onClick={onToggleSidebar}
-          className="p-1 px-1.5 hover:bg-slate-200/70 text-slate-500 rounded transition ml-auto flex items-center cursor-pointer"
-        >
-          {isSidebarCollapsed ? <ChevronRight className="w-4 h-4" /> : <span className="text-xs font-mono font-bold">«</span>}
-        </button>
+
+        {/* 移动端：返回按钮 + 标题 */}
+        {isMobileMode && (
+          <div className="flex items-center space-x-2 w-full">
+            <button
+              onClick={onReturnToTree}
+              className="p-1.5 hover:bg-slate-200/70 text-slate-500 rounded transition flex items-center cursor-pointer"
+              title="返回目录树"
+              aria-label="返回目录树"
+            >
+              <ChevronRight className="w-5 h-5 rotate-180" />
+            </button>
+            <span className="font-semibold text-slate-800 dark:text-slate-100 text-sm tracking-tight font-sans">
+              Piplus
+            </span>
+          </div>
+        )}
+
+        {/* 桌面端：折叠切换按钮 */}
+        {!isMobileMode && (
+          <button
+            onClick={onToggleSidebar}
+            className="p-1 px-1.5 hover:bg-slate-200/70 text-slate-500 rounded transition ml-auto flex items-center cursor-pointer"
+          >
+            {effectiveCollapsed ? <ChevronRight className="w-4 h-4" /> : <span className="text-xs font-mono font-bold">«</span>}
+          </button>
+        )}
       </div>
 
       {/* New Project button */}
-      {!isSidebarCollapsed && (
+      {!effectiveCollapsed && (
         <div className="p-3 shrink-0">
           <button
             onClick={onCreateProject}
@@ -405,7 +443,7 @@ export default function Sidebar({
       )}
 
       {/* Search */}
-      {!isSidebarCollapsed && (
+      {!effectiveCollapsed && (
         <div className="px-3 mb-2 relative">
           <input
             type="text"
@@ -419,7 +457,7 @@ export default function Sidebar({
       )}
 
       {/* Filter toggles */}
-      {!isSidebarCollapsed && (
+      {!effectiveCollapsed && (
         <div className="px-3 mb-2 flex flex-row items-center">
           <label className="flex items-center gap-1.5 cursor-pointer select-none">
             <input
@@ -448,7 +486,7 @@ export default function Sidebar({
 
       {/* Tree */}
       <div className="flex-1 overflow-y-auto px-2 space-y-1 py-2">
-        {isSidebarCollapsed ? (
+        {effectiveCollapsed ? (
           treeLoading ? (
             <div className="text-xs text-slate-400 text-center py-4">加载中…</div>
           ) : filteredProjects.length === 0 ? null : (
@@ -476,12 +514,12 @@ export default function Sidebar({
               <div key={project.id} className="space-y-0.5">
                 <div
                   className={`group flex items-center justify-between p-1.5 rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300 cursor-pointer ${
-                    isSidebarCollapsed ? 'justify-center' : ''
+                    effectiveCollapsed ? 'justify-center' : ''
                   }`}
-                  onClick={() => !isSidebarCollapsed && toggleProject(project.id)}
+                  onClick={() => !effectiveCollapsed && toggleProject(project.id)}
                 >
                   <div className="flex items-center space-x-1.5 flex-1 min-w-0">
-                    {!isSidebarCollapsed ? (
+                    {!effectiveCollapsed ? (
                       <>
                         <FolderOpen className="w-4 h-4 shrink-0 text-blue-400/80 dark:text-blue-500/80" />
                         <span className="text-xs font-semibold truncate text-slate-700 dark:text-slate-200 leading-tight">
@@ -495,7 +533,7 @@ export default function Sidebar({
                     )}
                   </div>
 
-                  {!isSidebarCollapsed && (
+                  {!effectiveCollapsed && (
                     <div className="flex items-center space-x-1 pl-1">
                       <button
                         onClick={(e) => {
@@ -564,7 +602,7 @@ export default function Sidebar({
 
                 {/* Sessions */}
                 {!isCollapsed && (
-                  <div className={isSidebarCollapsed ? 'space-y-1' : 'space-y-0.5'}>
+                  <div className={effectiveCollapsed ? 'space-y-1' : 'space-y-0.5'}>
                     {project.sessions.map((session) => renderSessionNode(session, project.id, 1))}
                   </div>
                 )}
@@ -575,7 +613,7 @@ export default function Sidebar({
       </div>
 
       {/* Footer */}
-      {!isSidebarCollapsed && (
+      {!effectiveCollapsed && (
         <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-row items-center">
           <button
             onClick={onLogout}

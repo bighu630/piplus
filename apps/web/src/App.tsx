@@ -52,6 +52,7 @@ import {
   Database,
   Trash2,
   Pencil,
+  PanelLeft,
 } from 'lucide-react';
 
 type Tab = 'chat' | 'info' | 'diff' | 'files';
@@ -132,6 +133,31 @@ const ROLE_CONFIG_KEYS = [
 
 const CONFIGURABLE_ROLE_KEYS = ROLE_CONFIG_KEYS.filter((r) => r.key !== 'planner');
 
+function useIsMobile(breakpoint = 768): boolean {
+  const getIsMobile = useCallback(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia(`(max-width: ${breakpoint - 1}px)`).matches;
+  }, [breakpoint]);
+
+  const [isMobile, setIsMobile] = useState(getIsMobile);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    const update = () => setIsMobile(mediaQuery.matches);
+
+    update();
+    mediaQuery.addEventListener('change', update);
+    window.addEventListener('resize', update);
+
+    return () => {
+      mediaQuery.removeEventListener('change', update);
+      window.removeEventListener('resize', update);
+    };
+  }, [breakpoint]);
+
+  return isMobile;
+}
+
 export default function App() {
   const authQuery = useAuthSession();
   const isLoggedIn = Boolean(authQuery.data?.ok);
@@ -210,6 +236,10 @@ export default function App() {
       return 'enter';
     }
   });
+  const isMobile = useIsMobile();
+  const [showMobileSidebar, setShowMobileSidebar] = useState(() => !(typeof window !== 'undefined' && getSessionIdFromPath(window.location.pathname)));
+  const isSidebarVisible = !isMobile || showMobileSidebar;
+  const isContentVisible = !isMobile || !showMobileSidebar;
 
   useEffect(() => {
     try { localStorage.setItem('pi-workspace-theme', theme); } catch {}
@@ -305,6 +335,14 @@ export default function App() {
     const pid = findProjectId(tree, selectedSessionId);
     if (pid) setSelectedProjectId(pid);
   }, [selectedSessionId, tree]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setShowMobileSidebar(false);
+      return;
+    }
+    setShowMobileSidebar(!selectedSessionId);
+  }, [isMobile, selectedSessionId]);
 
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
@@ -425,11 +463,12 @@ export default function App() {
     setActiveTab('chat');
     setEditingTitle(false);
     setEditTitleValue('');
+    if (isMobile) setShowMobileSidebar(false);
     const targetPath = getSessionPath(sessionId);
     if (window.location.pathname !== targetPath) {
       window.history.pushState(null, '', targetPath);
     }
-  }, []);
+  }, [isMobile]);
 
   const handleCreateProject = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -838,84 +877,148 @@ export default function App() {
   const isPlannerRoot = sessionInfo?.role_template.key === 'planner' && sessionInfo.lineage.depth === 0;
 
   return (
-    <div className={`flex h-screen w-full overflow-hidden bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
-      <Sidebar
-        projects={tree}
-        activeSessionId={selectedSessionId}
-        isSidebarCollapsed={sidebarCollapsed}
-        sidebarWidth={sidebarWidth}
-        onWidthChange={setSidebarWidth}
-        onSelectSession={handleSelectSession}
-        onSelectProject={setSelectedProjectId}
-        onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
-        onCreateProject={() => setShowCreateProject(true)}
-        onCreateSession={handleCreateSession}
-        onArchiveProject={handleArchiveProject}
-        onArchiveSession={handleArchiveSession}
-        onDeleteProject={handleDeleteProject}
-        onLogout={handleLogout}
-        onOpenSettings={() => setShowSettings(true)}
-        onOpenProjectSettings={handleOpenProjectSettings}
-        showArchived={showArchived}
-        onToggleShowArchived={() => {
-          setShowArchived((v) => {
-            const next = !v;
-            try { localStorage.setItem('pi-show-archived', String(next)); } catch {}
-            return next;
-          });
-        }}
-        showWorker={showWorker}
-        onToggleShowWorker={() => {
-          setShowWorker((v) => {
-            const next = !v;
-            try { localStorage.setItem('pi-show-worker', String(next)); } catch {}
-            return next;
-          });
-        }}
-        treeLoading={treeQuery.isLoading}
-        creatingSession={createSessionMut.isPending}
-      />
+    <div className={`flex flex-col md:flex-row h-[100dvh] min-h-0 w-full overflow-hidden overscroll-none bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
+      <div className={`${isSidebarVisible ? 'flex' : 'hidden'} w-full min-w-0 flex-1 md:w-auto md:flex-none`}>
+        <Sidebar
+          projects={tree}
+          activeSessionId={selectedSessionId}
+          isSidebarCollapsed={sidebarCollapsed}
+          sidebarWidth={sidebarWidth}
+          onWidthChange={setSidebarWidth}
+          onSelectSession={handleSelectSession}
+          onSelectProject={setSelectedProjectId}
+          onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onCreateProject={() => setShowCreateProject(true)}
+          onCreateSession={handleCreateSession}
+          onArchiveProject={handleArchiveProject}
+          onArchiveSession={handleArchiveSession}
+          onDeleteProject={handleDeleteProject}
+          onLogout={handleLogout}
+          onOpenSettings={() => setShowSettings(true)}
+          onOpenProjectSettings={handleOpenProjectSettings}
+          showArchived={showArchived}
+          onToggleShowArchived={() => {
+            setShowArchived((v) => {
+              const next = !v;
+              try { localStorage.setItem('pi-show-archived', String(next)); } catch {}
+              return next;
+            });
+          }}
+          showWorker={showWorker}
+          onToggleShowWorker={() => {
+            setShowWorker((v) => {
+              const next = !v;
+              try { localStorage.setItem('pi-show-worker', String(next)); } catch {}
+              return next;
+            });
+          }}
+          treeLoading={treeQuery.isLoading}
+          creatingSession={createSessionMut.isPending}
+          isMobile={isMobile}
+          isMobileVisible={showMobileSidebar}
+          onReturnToTree={() => setShowMobileSidebar(true)}
+        />
+      </div>
 
-      <div className="flex-1 min-w-0 flex flex-col h-full bg-slate-50 dark:bg-slate-900 relative">
-        <header className="border-b border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 px-6 py-2 shrink-0 flex flex-wrap items-center justify-between select-none">
-          {sessionInfo && (
-            <div className={`flex items-center space-x-3 py-1 ${!isPlannerRoot ? 'group/title' : ''}`}>
-              {editingTitle ? (
-                <input
-                  ref={titleInputRef}
-                  type="text"
-                  value={editTitleValue}
-                  onChange={(e) => setEditTitleValue(e.target.value)}
-                  onBlur={handleCancelEditTitle}
-                  onKeyDown={handleTitleKeyDown}
-                  className="text-sm font-bold font-sans leading-none px-1 py-0.5 border border-blue-500 rounded-md bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 outline-none w-64"
-                  autoFocus
-                />
-              ) : (
-                <>
-                  <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">
-                    {sessionInfo.session.title}
-                  </h1>
-                  {!isPlannerRoot && (
-                    <button
-                      onClick={handleStartEditTitle}
-                      className="opacity-0 group-hover/title:opacity-100 transition-opacity p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
-                      title="编辑标题"
-                    >
-                      <Pencil className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
-                    </button>
+      <div className={`${isContentVisible ? 'flex' : 'hidden'} w-full flex-1 min-w-0 flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-900 relative`}>
+        <header className={`border-b border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 shrink-0 select-none ${isMobile ? 'px-4 py-2' : 'px-6 py-2 flex flex-wrap items-center justify-between'}`}>
+          {isMobile ? (
+            <>
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <button
+                    onClick={() => setShowMobileSidebar(true)}
+                    className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer shrink-0"
+                    title="打开目录树"
+                    aria-label="打开目录树"
+                  >
+                    <PanelLeft className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+                  </button>
+                  {sessionInfo && (
+                    <div className={`flex items-center gap-2 py-1 min-w-0 ${!isPlannerRoot ? 'group/title' : ''}`}>
+                      {editingTitle ? (
+                        <input
+                          ref={titleInputRef}
+                          type="text"
+                          value={editTitleValue}
+                          onChange={(e) => setEditTitleValue(e.target.value)}
+                          onBlur={handleCancelEditTitle}
+                          onKeyDown={handleTitleKeyDown}
+                          className="text-sm font-bold font-sans leading-none px-1 py-0.5 border border-blue-500 rounded-md bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 outline-none w-48"
+                          autoFocus
+                        />
+                      ) : (
+                        <>
+                          <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm font-sans leading-none truncate">
+                            {sessionInfo.session.title}
+                          </h1>
+                          {!isPlannerRoot && (
+                            <button
+                              onClick={handleStartEditTitle}
+                              className="opacity-100 transition-opacity p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer shrink-0"
+                              title="编辑标题"
+                            >
+                              <Pencil className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   )}
-                </>
-              )}
-            </div>
-          )}
+                </div>
+              </div>
 
-          <div className="flex space-x-1">
-            <button onClick={() => setActiveTab('chat')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'chat' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Chat</button>
-            <button onClick={() => setActiveTab('info')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'info' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Session Info</button>
-            <button onClick={() => setActiveTab('diff')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'diff' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Git</button>
-            <button onClick={() => setActiveTab('files')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'files' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Files</button>
-          </div>
+              <div className="mt-2 -mx-1 px-1 overflow-x-auto overflow-y-hidden">
+                <div className="flex min-w-max space-x-1">
+                  <button onClick={() => setActiveTab('chat')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'chat' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Chat</button>
+                  <button onClick={() => setActiveTab('info')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'info' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Session Info</button>
+                  <button onClick={() => setActiveTab('diff')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'diff' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Git</button>
+                  <button onClick={() => setActiveTab('files')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'files' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Files</button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {sessionInfo && (
+                <div className={`flex items-center space-x-3 py-1 ${!isPlannerRoot ? 'group/title' : ''}`}>
+                  {editingTitle ? (
+                    <input
+                      ref={titleInputRef}
+                      type="text"
+                      value={editTitleValue}
+                      onChange={(e) => setEditTitleValue(e.target.value)}
+                      onBlur={handleCancelEditTitle}
+                      onKeyDown={handleTitleKeyDown}
+                      className="text-sm font-bold font-sans leading-none px-1 py-0.5 border border-blue-500 rounded-md bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 outline-none w-64"
+                      autoFocus
+                    />
+                  ) : (
+                    <>
+                      <h1 className="text-slate-800 dark:text-slate-100 font-bold text-sm mr-2 font-sans leading-none">
+                        {sessionInfo.session.title}
+                      </h1>
+                      {!isPlannerRoot && (
+                        <button
+                          onClick={handleStartEditTitle}
+                          className="opacity-0 group-hover/title:opacity-100 transition-opacity p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer"
+                          title="编辑标题"
+                        >
+                          <Pencil className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              <div className="flex space-x-1">
+                <button onClick={() => setActiveTab('chat')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'chat' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Chat</button>
+                <button onClick={() => setActiveTab('info')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'info' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Session Info</button>
+                <button onClick={() => setActiveTab('diff')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'diff' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Git</button>
+                <button onClick={() => setActiveTab('files')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'files' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Files</button>
+              </div>
+            </>
+          )}
         </header>
 
         <div className="flex-1 overflow-hidden relative">
