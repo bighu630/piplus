@@ -141,19 +141,31 @@ export default function Sidebar({
 
     const filterSessions = (sessions: SessionTreeNodeDTO[], includeSearch: boolean): SessionTreeNodeDTO[] =>
       sessions
-        .filter((s) => {
-          if (!showArchived && s.archived_at) return false;
-          if (s.role_template_key === 'worker') {
-            if (!showWorker) return false;
+        .map((s) => {
+          const filteredChildren = filterSessions(s.children, includeSearch);
+
+          // Running sessions always pass all filters
+          if (s.runtime_status === 'running') {
+            return { ...s, children: filteredChildren };
+          }
+
+          // Check standard filters
+          if (!showArchived && s.archived_at) {
+            // Keep as bridge node if has visible children (e.g. a running descendant)
+            return filteredChildren.length > 0 ? { ...s, children: filteredChildren } : null;
+          }
+          if (s.role_template_key === 'worker' && !showWorker) {
+            return filteredChildren.length > 0 ? { ...s, children: filteredChildren } : null;
           }
           if (includeSearch && hasSearch) {
             if (!s.title.toLowerCase().includes(q) && !roleLabel(s.role_template_key).includes(q)) {
-              return false;
+              return filteredChildren.length > 0 ? { ...s, children: filteredChildren } : null;
             }
           }
-          return true;
+
+          return { ...s, children: filteredChildren };
         })
-        .map((s) => ({ ...s, children: filterSessions(s.children, includeSearch) }));
+        .filter((s): s is SessionTreeNodeDTO => s !== null);
 
     return projects
       .map((p) => {
