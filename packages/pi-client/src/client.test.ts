@@ -1,4 +1,7 @@
 import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
 import { createPiClient } from './client';
 
@@ -108,6 +111,50 @@ describe('pi client gateway', () => {
       'hello from persisted history',
       'assistant persisted reply',
     ]);
+  });
+
+  test('getHistory preserves user image content blocks from persisted pi session history', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pi-client-history-'));
+    const sessionFile = join(dir, 'session.jsonl');
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({ type: 'session', version: 2, id: 'pi_test_history', timestamp: '2026-06-26T04:05:00.000Z', cwd: process.cwd() })}\n${JSON.stringify({
+        type: 'message',
+        id: 'msg_user_1',
+        parentId: null,
+        timestamp: '2026-06-26T04:05:00.000Z',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'please inspect this' },
+            { type: 'image', data: 'ZmFrZQ==', mimeType: 'image/png' },
+          ],
+          timestamp: Date.now(),
+        },
+      })}\n`,
+    );
+
+    const client = createPiClient();
+    const page = await client.getHistory('persisted_history', {
+      piSessionId: 'pi_test_history',
+      sessionFile,
+    }, null, 20);
+    expect(page.messages).toHaveLength(1);
+    expect(page.messages[0]).toMatchObject({
+      role: 'user',
+      text: 'please inspect this',
+      contentBlocks: [
+        { type: 'text', text: 'please inspect this' },
+        {
+          type: 'image',
+          mediaType: 'image/png',
+          mimeType: 'image/png',
+          dataBase64: 'ZmFrZQ==',
+          filename: null,
+          uri: null,
+        },
+      ],
+    });
   });
 
   test('sendMessage persists conversation to pi session history after runtime is closed', async () => {

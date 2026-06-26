@@ -2,12 +2,32 @@ import { createSeedDb } from '@piplus/db/init';
 import { describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
-import { sessions } from '@piplus/db/schema';
+import { messages, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
 
+const imageCapableModelPromise = createPiClient().listAvailableModels().then((models) => models.at(-1) ?? models[0]);
+
 function makeDbPath() {
   return `/tmp/piplus-api-session-${crypto.randomUUID()}.sqlite`;
+}
+
+async function createImageCapableSession(app: ReturnType<typeof createApp>, name: string) {
+  const target = await imageCapableModelPromise;
+  expect(target).toBeTruthy();
+
+  const projectRes = await app.request('/api/v1/projects', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+    body: JSON.stringify({
+      name,
+      mode: 'existing',
+      path: '/tmp',
+      model: { provider: target.provider, id: target.id },
+    }),
+  });
+  expect(projectRes.status).toBe(201);
+  return projectRes.json();
 }
 
 describe('session routes', () => {
@@ -34,18 +54,21 @@ describe('session routes', () => {
     Bun.env.DATABASE_URL = `file:${path}`;
     const app = createApp();
 
-    const projectRes = await app.request('/api/v1/projects', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'LLM History Project', mode: 'existing', path: '/tmp' }),
-    });
-    const projectBody = await projectRes.json();
+    const projectBody = await createImageCapableSession(app, 'LLM History Project');
     const sessionId = projectBody.sessionId as string;
 
     const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ content: 'hello from api test' }),
+      body: JSON.stringify({
+        content: 'hello from api test',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('fake-image').toString('base64'),
+          filename: 'test.png',
+        }],
+      }),
     });
     expect(sendRes.status).toBe(202);
 
@@ -55,6 +78,109 @@ describe('session routes', () => {
     expect(pageRes.status).toBe(200);
     const page = await pageRes.json();
     expect(Array.isArray(page.messages)).toBe(true);
+    for (const message of page.messages) {
+      expect(message).toHaveProperty('content_text');
+      expect(message).toHaveProperty('content_blocks');
+    }
+
+    const db = createDb(`file:${path}`);
+    const rows = await db.select().from(messages).where(eq(messages.sessionId, sessionId));
+    const userMessage = rows.find((row) => row.role === 'user' && row.contentText === 'hello from api test');
+    expect(userMessage?.contentBlocksJson).toContain('hello from api test');
+    expect(userMessage?.contentBlocksJson).toContain('image/png');
+    expect(userMessage?.contentBlocksJson).toContain('test.png');
+  });
+
+  test('chat messages accept image-only content and persist structured blocks', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectBody = await createImageCapableSession(app, 'Image Only Project');
+    const sessionId = projectBody.sessionId as string;
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: '',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('image-only').toString('base64'),
+          filename: 'only.png',
+        }],
+      }),
+    });
+    expect(sendRes.status).toBe(202);
+
+    const db = createDb(`file:${path}`);
+    const rows = await db.select().from(messages).where(eq(messages.sessionId, sessionId));
+    const userMessage = rows.find((row) => row.role === 'user');
+    expect(userMessage?.contentText).toBe('');
+    expect(userMessage?.contentBlocksJson).toContain('image');
+  });
+
+  test('chat messages reject more than four image attachments', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Attachment Limit Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    const attachments = Array.from({ length: 5 }, (_, index) => ({
+      type: 'image',
+      mime_type: 'image/png',
+      data_base64: Buffer.from(`img-${index}`).toString('base64'),
+      filename: `img-${index}.png`,
+    }));
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ content: 'too many', attachments }),
+    });
+    expect(sendRes.status).toBe(400);
+    expect(await sendRes.json()).toMatchObject({ error: { code: 'TOO_MANY_ATTACHMENTS' } });
+  });
+
+  test('chat messages reject images for models without image support', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Text Only Model Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+    expect(sendRes.status).toBe(400);
+    expect(await sendRes.json()).toMatchObject({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } });
   });
 
   test('create top-level session inherits project planner model', async () => {

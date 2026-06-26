@@ -1,14 +1,13 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import type { ChatMessageDTO } from '@piplus/shared';
+import type { ChangeEvent, ClipboardEvent } from 'react';
+import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO } from '@piplus/shared';
+import type { SessionMessageImageAttachment } from '../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import {
-  Send,
-  Square,
   Copy,
   Check,
-  Sparkles,
   ArrowUp,
   ScrollText,
   LoaderCircle,
@@ -19,8 +18,11 @@ import {
   Terminal,
   Archive,
   GitMerge,
+  ImagePlus,
+  X,
 } from 'lucide-react';
 import ContextUsageRing from './ContextUsageRing';
+import Modal from './Modal';
 import { useSessionContextUsage } from '../lib/hooks';
 
 interface ModelOption {
@@ -35,7 +37,7 @@ interface TabChatProps {
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
-  onSend: (content: string) => void;
+  onSend: (content: string, attachments: SessionMessageImageAttachment[]) => Promise<void>;
   onStop: () => void;
   sending: boolean;
   runtimeStatus: string;
@@ -47,6 +49,7 @@ interface TabChatProps {
   sendShortcutMode?: 'enter' | 'mod_enter';
   models?: ModelOption[];
   currentModelValue?: string;
+  currentModelSupportsImages?: boolean | null;
   onModelSelect?: (provider: string, id: string) => void;
   onArchiveSession?: () => void;
   archivePending?: boolean;
@@ -112,6 +115,7 @@ export default function TabChat({
   sendShortcutMode,
   models,
   currentModelValue,
+  currentModelSupportsImages,
   onModelSelect,
   onArchiveSession,
   archivePending,
@@ -123,6 +127,10 @@ export default function TabChat({
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
+  const [attachments, setAttachments] = useState<SessionMessageImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<ChatImageContentBlockDTO | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -135,15 +143,90 @@ export default function TabChat({
     messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
+  const canSendImages = currentModelSupportsImages !== false;
+  const allowedImageMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+  const imageBlockToDataUrl = (block: ChatImageContentBlockDTO) => {
+    if (!block.data_base64 || !block.mime_type) return block.uri;
+    return `data:${block.mime_type};base64,${block.data_base64}`;
+  };
+
+  const fileToAttachment = (file: File): Promise<SessionMessageImageAttachment> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`读取图片失败：${file.name}`));
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      if (!base64) {
+        reject(new Error(`读取图片失败：${file.name}`));
+        return;
+      }
+      resolve({
+        type: 'image',
+        mime_type: file.type,
+        data_base64: base64,
+        filename: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const addImageFiles = async (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (!files.length) return;
+    if (!canSendImages) {
+      setAttachmentError('当前模型不支持图片输入，请先切换到支持图片的模型。');
+      return;
+    }
+    const imageFiles = files.filter((file) => allowedImageMimeTypes.has(file.type));
+    if (imageFiles.length !== files.length) {
+      setAttachmentError('仅支持 PNG、JPEG、WebP、GIF 图片。');
+      return;
+    }
+    if (attachments.length + imageFiles.length > 4) {
+      setAttachmentError('最多只能添加 4 张图片。');
+      return;
+    }
+    try {
+      const nextAttachments = await Promise.all(imageFiles.map(fileToAttachment));
+      setAttachments((prev) => [...prev, ...nextAttachments]);
+      setAttachmentError(null);
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : '读取图片失败');
+    }
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index));
+    setAttachmentError(null);
+  };
+
+  const imageBlocks = (msg: ChatMessageDTO): ChatImageContentBlockDTO[] =>
+    (msg.content_blocks ?? []).filter((block): block is ChatImageContentBlockDTO => block.type === 'image');
+
+  const textBlocks = (msg: ChatMessageDTO): ChatMessageContentBlockDTO[] =>
+    (msg.content_blocks ?? []).filter((block) => block.type === 'text');
+
   const allMessages = [...messages];
   // Append pending user messages that haven't been confirmed.
-  // The optimistic message id differs from the persisted backend id,
-  // so dedupe by latest user message content instead of id only.
+  // Reconcile by comparing both text and image block identity to avoid
+  // dropping image-only or same-text messages sent close together.
+  const imageSignature = (blocks?: ChatMessageContentBlockDTO[]) => JSON.stringify(
+    (blocks ?? [])
+      .filter((block): block is ChatImageContentBlockDTO => block.type === 'image')
+      .map((block) => ({
+        filename: block.filename,
+        mime_type: block.mime_type,
+        data_base64: block.data_base64,
+      })),
+  );
   for (const pm of pendingUserMessages) {
+    const pendingImageSignature = imageSignature(pm.content_blocks);
     const hasConfirmedMatch = allMessages.some((m) =>
-      m.role === 'user' &&
-      m.content_text === pm.content_text &&
-      Math.abs(new Date(m.created_at).getTime() - new Date(pm.created_at).getTime()) < 60_000,
+      m.role === 'user'
+      && m.content_text === pm.content_text
+      && imageSignature(m.content_blocks) === pendingImageSignature
+      && Math.abs(new Date(m.created_at).getTime() - new Date(pm.created_at).getTime()) < 60_000,
     );
     const hasPendingMatch = allMessages.some((m) => m.id === pm.id);
     if (!hasConfirmedMatch && !hasPendingMatch) {
@@ -279,11 +362,18 @@ export default function TabChat({
     }
   }, [displayMessages, streamingContent, selectedSessionId]);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const content = draft.trim();
-    if (!content || sending) return;
-    setDraft('');
-    onSend(content);
+    if ((!content && attachments.length === 0) || sending) return;
+    const nextAttachments = attachments;
+    try {
+      await onSend(content, nextAttachments);
+      setDraft('');
+      setAttachments([]);
+      setAttachmentError(null);
+    } catch {
+      setAttachmentError('发送失败，请重试。');
+    }
   };
 
   const handleCopyCode = async (text: string, id: string) => {
@@ -307,6 +397,12 @@ export default function TabChat({
       setCopiedId(null);
     }
   };
+
+  useEffect(() => {
+    setAttachments([]);
+    setAttachmentError(null);
+    setPreviewImage(null);
+  }, [selectedSessionId]);
 
   const contextUsageQuery = useSessionContextUsage(selectedSessionId ?? null);
   const contextPercent = contextUsageQuery.data?.percent ?? null;
@@ -465,8 +561,31 @@ export default function TabChat({
             <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start w-full min-w-0`}>
               <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0 ${isUser ? 'max-w-[85%]' : 'max-w-full flex-1'}`}>
                 {isUser ? (
-                  <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed">
-                    {msg.content_text}
+                  <div className="space-y-2 max-w-full">
+                    {imageBlocks(msg).length > 0 && (
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {imageBlocks(msg).map((block, index) => {
+                          const src = imageBlockToDataUrl(block);
+                          if (!src) return null;
+                          return (
+                            <button
+                              key={`${msg.id}-image-${index}`}
+                              type="button"
+                              onClick={() => setPreviewImage(block)}
+                              className="overflow-hidden rounded-2xl border border-blue-400/30 bg-blue-500/10 hover:opacity-90 transition cursor-pointer"
+                              title={block.filename ?? '预览图片'}
+                            >
+                              <img src={src} alt={block.filename ?? `attachment-${index + 1}`} className="h-20 w-20 object-cover" />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {(msg.content_text || textBlocks(msg).length > 0) && (
+                      <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed whitespace-pre-wrap break-words">
+                        {msg.content_text}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
@@ -743,13 +862,13 @@ export default function TabChat({
       {false && allMessages.length > 0 && !isRunning && (
         <div className="px-6 py-2 flex flex-wrap gap-2 select-none shrink-0 bg-white/40 dark:bg-slate-900/60 border-t border-slate-100 dark:border-slate-800/60">
           <button
-            onClick={() => onSend('生成当前会话的 Git Diff')}
+            onClick={() => onSend('生成当前会话的 Git Diff', [])}
             className="text-[11px] bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 text-slate-600 dark:text-slate-300 shadow-3xs cursor-pointer transition-colors"
           >
             📊 生成 Git Diff
           </button>
           <button
-            onClick={() => onSend('分析当前会话状态并总结')}
+            onClick={() => onSend('分析当前会话状态并总结', [])}
             className="text-[11px] bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 text-slate-600 dark:text-slate-300 shadow-3xs cursor-pointer transition-colors"
           >
             🧩 分析会话
@@ -815,10 +934,50 @@ export default function TabChat({
       <div className="shrink-0 px-4 py-2 md:px-5 bg-slate-50 dark:bg-slate-900">
         <div className="mx-auto max-w-[900px]">
           <div className="flex flex-col gap-2">
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/60 p-2">
+                {attachments.map((attachment, index) => (
+                  <div key={`${attachment.filename ?? 'attachment'}-${index}`} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewImage({
+                        type: 'image',
+                        mime_type: attachment.mime_type,
+                        media_type: attachment.mime_type,
+                        filename: attachment.filename ?? null,
+                        uri: null,
+                        data_base64: attachment.data_base64,
+                      })}
+                      className="block overflow-hidden rounded-lg border border-slate-300 dark:border-slate-600"
+                    >
+                      <img
+                        src={`data:${attachment.mime_type};base64,${attachment.data_base64}`}
+                        alt={attachment.filename ?? `attachment-${index + 1}`}
+                        className="h-16 w-16 object-cover"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(index)}
+                      className="absolute -right-1.5 -top-1.5 rounded-full bg-slate-900/80 p-1 text-white hover:bg-slate-900 cursor-pointer"
+                      title="移除图片"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <textarea
               className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition"
               disabled={isRunning || sending}
               onChange={(e) => setDraft(e.target.value)}
+              onPaste={async (e: ClipboardEvent<HTMLTextAreaElement>) => {
+                const files = Array.from(e.clipboardData.files ?? []);
+                if (!files.some((file) => allowedImageMimeTypes.has(file.type))) return;
+                e.preventDefault();
+                await addImageFiles(files.filter((file) => allowedImageMimeTypes.has(file.type)));
+              }}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter') return;
 
@@ -826,7 +985,7 @@ export default function TabChat({
                   // Ctrl/Cmd+Enter 发送，Enter 换行
                   if (e.metaKey || e.ctrlKey) {
                     e.preventDefault();
-                    handleSubmit();
+                    void handleSubmit();
                     return;
                   }
                   // 回车（无修饰键）→ 换行
@@ -834,7 +993,7 @@ export default function TabChat({
                   // Enter 发送，Ctrl/Cmd+Enter 换行（默认）
                   if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
                     e.preventDefault();
-                    handleSubmit();
+                    void handleSubmit();
                     return;
                   }
                   // Shift+Enter / Ctrl+Enter → 换行
@@ -853,7 +1012,7 @@ export default function TabChat({
               placeholder="向当前会话发送消息…"
               value={draft}
             />
-            <div className="flex items-center gap-2.5 px-1">
+            <div className="flex items-center gap-2.5 px-1 flex-wrap">
               {/* WS connection indicator */}
               <div className="flex items-center gap-1.5">
                 <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500' : 'bg-red-400'}`} />
@@ -861,9 +1020,40 @@ export default function TabChat({
                   {wsConnected ? 'WS' : 'WS 离线'}
                 </span>
               </div>
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  multiple
+                  className="hidden"
+                  onChange={async (e: ChangeEvent<HTMLInputElement>) => {
+                    const files = e.target.files;
+                    if (files) await addImageFiles(files);
+                    e.target.value = '';
+                  }}
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isRunning || !canSendImages || attachments.length >= 4}
+                    className="flex items-center space-x-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
+                    title={isRunning ? '对话进行中，暂时不能添加图片' : canSendImages ? '添加图片' : '当前模型不支持图片输入'}
+                  >
+                    <ImagePlus className="w-3.5 h-3.5" />
+                    <span>图片</span>
+                  </button>
+                  {(attachmentError || currentModelSupportsImages === false) && (
+                    <span className="text-[10px] text-red-500 dark:text-red-400 font-medium whitespace-nowrap">
+                      {attachmentError ?? '当前模型不支持图片输入'}
+                    </span>
+                  )}
+                </div>
+              </>
               {!isRunning && (
                 <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">
-                  {sendShortcutMode === 'mod_enter' ? 'Ctrl/Cmd+Enter 发送' : 'Enter 发送 · Ctrl/Cmd+Enter 换行'}
+                  {sendShortcutMode === 'mod_enter' ? 'Ctrl/Cmd+Enter 发送' : 'Enter 发送 · Ctrl/Cmd+Enter 换行'} · 支持粘贴图片，最多 4 张
                 </span>
               )}
               {isRunning && (
@@ -877,8 +1067,8 @@ export default function TabChat({
               )}
               <button
                 className="flex items-center space-x-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
-                disabled={isRunning || sending || draft.trim().length === 0}
-                onClick={handleSubmit}
+                disabled={isRunning || sending || (draft.trim().length === 0 && attachments.length === 0)}
+                onClick={() => { void handleSubmit(); }}
               >
                 <span>{sending ? '发送中…' : '发送'}</span>
                 <ArrowUp className="w-3.5 h-3.5" />
@@ -887,6 +1077,23 @@ export default function TabChat({
           </div>
         </div>
       </div>
+
+      <Modal
+        isOpen={Boolean(previewImage)}
+        onClose={() => setPreviewImage(null)}
+        title={previewImage?.filename ?? '图片预览'}
+        maxWidthClassName="max-w-4xl"
+      >
+        {previewImage && imageBlockToDataUrl(previewImage) && (
+          <div className="flex items-center justify-center">
+            <img
+              src={imageBlockToDataUrl(previewImage)!}
+              alt={previewImage.filename ?? 'preview'}
+              className="max-h-[70vh] w-auto rounded-xl border border-slate-200 dark:border-slate-700"
+            />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

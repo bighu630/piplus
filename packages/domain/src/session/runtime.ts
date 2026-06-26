@@ -1,6 +1,6 @@
 import { projects, sessionEvents, sessions } from '@piplus/db/schema';
 import { and, eq } from 'drizzle-orm';
-import type { PiClient, PiSessionStreamEvent } from '@piplus/pi-client';
+import type { PiClient, PiImageInput, PiSessionStreamEvent } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
@@ -12,6 +12,7 @@ export type StartSessionRunInput = {
   sessionId: string;
   userId: string;
   content: string;
+  images?: PiImageInput[];
   requestId?: string;
   startedAt?: Date;
   safetyTimeoutMs?: number;
@@ -184,7 +185,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
     void doCleanup(new Error('session_run_timeout'));
   }, safetyTimeoutMs);
 
-  const sendPromise = input.piClient.sendMessage(input.sessionId, input.content);
+  const sendPromise = input.piClient.sendMessage(input.sessionId, input.content, input.images?.length ? { images: input.images } : undefined);
   void sendPromise.then(() => doCleanup()).catch((error) => doCleanup(error));
 
   return {

@@ -4,6 +4,7 @@ import type {
   SessionContextUsageDTO,
   TreeResponse,
   ChatMessageDTO,
+  ChatImageContentBlockDTO,
   SessionFileTreeResponseDTO,
   SessionFileContentResponseDTO,
 } from '@piplus/shared';
@@ -12,6 +13,7 @@ export type ModelInfo = {
   provider: string;
   id: string;
   label: string;
+  input?: string[];
 };
 
 export type ProviderFormModel = {
@@ -137,10 +139,24 @@ export function getSessionMessages(sessionId: string, options?: { cursor?: strin
   return request<SessionMessagesPage>(`/api/v1/sessions/${sessionId}/chat/messages${query ? `?${query}` : ''}`);
 }
 
-export function sendSessionMessage(sessionId: string, content: string) {
+export type SessionMessageImageAttachment = {
+  type: 'image';
+  mime_type: string;
+  data_base64: string;
+  filename?: string | null;
+};
+
+export type SendSessionMessagePayload = {
+  content: string;
+  attachments?: SessionMessageImageAttachment[];
+};
+
+export type OptimisticImageContentBlock = ChatImageContentBlockDTO;
+
+export function sendSessionMessage(sessionId: string, payload: SendSessionMessagePayload) {
   return request<{ accepted: boolean; session_id: string; run_id: string; message_id: string }>(
     `/api/v1/sessions/${sessionId}/chat/messages`,
-    { method: 'POST', body: JSON.stringify({ content }) },
+    { method: 'POST', body: JSON.stringify(payload) },
   );
 }
 

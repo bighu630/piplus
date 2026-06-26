@@ -27,11 +27,35 @@ export type PiCreateSessionResult = {
   model?: { provider: string; id: string; label: string };
 };
 
+export type PiImageInput = {
+  dataBase64: string;
+  mediaType?: string;
+  mimeType?: string;
+  filename?: string;
+};
+
+export type PiTextContentBlock = {
+  type: 'text';
+  text: string;
+};
+
+export type PiImageContentBlock = {
+  type: 'image';
+  mimeType: string | null;
+  mediaType: string | null;
+  filename: string | null;
+  uri: string | null;
+  dataBase64: string | null;
+};
+
+export type PiContentBlock = PiTextContentBlock | PiImageContentBlock;
+
 export type PiHistoryMessage = {
   id: string;
   role: PiMessageRole;
   text: string;
   createdAt: string | null;
+  contentBlocks?: PiContentBlock[];
   messageKind?: 'normal' | 'tool_call' | 'tool';
   toolName?: string;
   toolArgs?: Record<string, unknown>;
@@ -82,7 +106,7 @@ export type PiClient = {
   restoreRuntime(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<void>;
   subscribeSession(sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>): Promise<() => void>;
   getHistory(sessionId: string, locator: PiSessionLocator, cursor?: string | null, limit?: number): Promise<PiHistoryPage>;
-  sendMessage(sessionId: string, content: string): Promise<PiRunAccepted>;
+  sendMessage(sessionId: string, content: string, options?: { images?: PiImageInput[] }): Promise<PiRunAccepted>;
   stopSession(sessionId: string): Promise<PiStopSessionResult>;
   closeRuntime(sessionId: string): Promise<void>;
   listAvailableModels(): Promise<PiModelInfo[]>;

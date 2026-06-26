@@ -84,12 +84,29 @@ export type SessionInfoDTO = {
   }>;
 };
 
+export type ChatTextContentBlockDTO = {
+  type: 'text';
+  text: string;
+};
+
+export type ChatImageContentBlockDTO = {
+  type: 'image';
+  mime_type: string | null;
+  media_type: string | null;
+  filename: string | null;
+  uri: string | null;
+  data_base64: string | null;
+};
+
+export type ChatMessageContentBlockDTO = ChatTextContentBlockDTO | ChatImageContentBlockDTO;
+
 export type ChatMessageDTO = {
   id: string;
   role: keyof typeof MessageRole | 'tool';
   message_kind: keyof typeof MessageKind | 'tool_call' | 'tool';
   source_session_id: string | null;
   content_text: string;
+  content_blocks?: ChatMessageContentBlockDTO[];
   created_at: string;
   tool_name?: string | null;
   tool_args_json?: string | null;

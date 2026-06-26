@@ -33,6 +33,7 @@ import {
   setProjectRoleModels,
   type ModelInfo,
   type ProviderFormPayload,
+  type SendSessionMessagePayload,
 } from './api';
 
 export function useAuthSession() {
@@ -192,7 +193,7 @@ export function useCreateSessionMutation() {
 
 export function useSendMessageMutation(sessionId: string | null) {
   return useMutation({
-    mutationFn: (content: string) => sendSessionMessage(sessionId!, content),
+    mutationFn: (payload: SendSessionMessagePayload) => sendSessionMessage(sessionId!, payload),
   });
 }
 

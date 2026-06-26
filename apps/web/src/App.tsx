@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ServerMessage } from '@piplus/shared';
-import type { ProviderFormPayload } from './lib/api';
+import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ChatImageContentBlockDTO, ServerMessage } from '@piplus/shared';
+import type { ProviderFormPayload, SessionMessageImageAttachment } from './lib/api';
 import hljsLight from 'highlight.js/styles/github.css?url';
 import hljsDark from 'highlight.js/styles/github-dark.css?url';
 import Sidebar from './components/Sidebar';
@@ -182,6 +182,7 @@ export default function App() {
   const [streamNote, setStreamNote] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
+  const [currentModelSupportsImages, setCurrentModelSupportsImages] = useState<boolean | null>(null);
   const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
   const [wsConnected, setWsConnected] = useState(false);
 
@@ -460,20 +461,38 @@ export default function App() {
     } catch {}
   }, [selectedProjectId, createSessionMut, treeQuery]);
 
-  const handleSend = useCallback(async (content: string) => {
+  const handleSend = useCallback(async (content: string, attachments: SessionMessageImageAttachment[] = []) => {
     if (!selectedSessionId) return;
     setRuntimeErrors([]);
+    const optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const imageBlocks: ChatImageContentBlockDTO[] = attachments.map((attachment) => ({
+      type: 'image',
+      mime_type: attachment.mime_type,
+      media_type: attachment.mime_type,
+      filename: attachment.filename ?? null,
+      uri: null,
+      data_base64: attachment.data_base64,
+    }));
     const optimisticMessage: ChatMessageDTO = {
-      id: `optimistic_${Date.now()}`,
+      id: optimisticId,
       role: 'user',
       message_kind: 'normal',
       source_session_id: null,
       content_text: content,
+      content_blocks: [
+        ...(content ? [{ type: 'text' as const, text: content }] : []),
+        ...imageBlocks,
+      ],
       created_at: new Date().toISOString(),
     };
     setPendingUserMessages((prev) => [...prev, optimisticMessage]);
-    await sendMessageMut.mutateAsync(content);
-    queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+    try {
+      await sendMessageMut.mutateAsync({ content, attachments });
+      queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+    } catch (error) {
+      setPendingUserMessages((prev) => prev.filter((message) => message.id !== optimisticId));
+      throw error;
+    }
   }, [selectedSessionId, sendMessageMut, queryClient]);
 
   const handleStop = useCallback(async () => {
@@ -501,6 +520,22 @@ export default function App() {
       handleSelectSession(pid, rootId);
     }
   }, [selectedSessionId, tree, archiveSessionMut, treeQuery, handleSelectSession]);
+
+  useEffect(() => {
+    if (!sessionInfo?.session.current_model || !modelsQuery.data) {
+      setCurrentModelSupportsImages(null);
+      return;
+    }
+    const matchedModel = modelsQuery.data.find((model) => (
+      model.provider === sessionInfo.session.current_model?.provider
+      && model.id === sessionInfo.session.current_model?.id
+    ));
+    if (!matchedModel) {
+      setCurrentModelSupportsImages(null);
+      return;
+    }
+    setCurrentModelSupportsImages(matchedModel.input?.includes('image') ?? null);
+  }, [modelsQuery.data, sessionInfo?.session.current_model]);
 
   const handleModelSelect = useCallback(async (provider: string, id: string) => {
     if (!selectedSessionId) return;
@@ -886,6 +921,7 @@ export default function App() {
                   sendShortcutMode={sendShortcutMode}
                   models={modelsQuery.data ?? []}
                   currentModelValue={sessionInfo?.session.current_model ? `${sessionInfo.session.current_model.provider}/${sessionInfo.session.current_model.id}` : ''}
+                  currentModelSupportsImages={currentModelSupportsImages}
                   onModelSelect={handleModelSelect}
                   onArchiveSession={handleArchiveSession}
                   archivePending={archiveSessionMut.isPending}

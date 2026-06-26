@@ -16,6 +16,7 @@ import type {
   PiClient,
   PiCreateSessionResult,
   PiHistoryPage,
+  PiImageInput,
   PiMessage,
   PiRunAccepted,
   PiSessionStreamEvent,
@@ -68,7 +69,7 @@ function mapAgentSessionEvent(
   }
 
   if (event.type === 'auto_retry_end' && event.success === false) {
-    return { type: 'error', sessionId, runId: `auto_retry_${crypto.randomUUID().slice(0, 10)}`, error: event.finalError };
+    return { type: 'error', sessionId, runId: `auto_retry_${crypto.randomUUID().slice(0, 10)}`, error: event.finalError ?? 'auto_retry_failed' };
   }
 
   return null;
@@ -77,6 +78,14 @@ function mapAgentSessionEvent(
 function sessionFileHasModelChange(sessionManager: SessionManager, provider: string, modelId: string) {
   const entries = sessionManager.getEntries() as SessionEntry[];
   return entries.some((entry) => entry.type === 'model_change' && entry.provider === provider && entry.modelId === modelId);
+}
+
+function normalizeImages(images: PiImageInput[] | undefined) {
+  return images?.map((image) => ({
+    type: 'image' as const,
+    data: image.dataBase64,
+    mimeType: image.mimeType ?? image.mediaType ?? 'image/png',
+  }));
 }
 
 export function createPiClient(): PiClient {
@@ -217,7 +226,7 @@ export function createPiClient(): PiClient {
     async getHistory(_sessionId, locator, cursor, limit = 50): Promise<PiHistoryPage> {
       return readHistory(locator, cursor, limit);
     },
-    async sendMessage(sessionId, content): Promise<PiRunAccepted> {
+    async sendMessage(sessionId, content, options): Promise<PiRunAccepted> {
       const session = getOrCreateSession(sessionId);
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
@@ -229,10 +238,19 @@ export function createPiClient(): PiClient {
           session.promptSent = true;
         }
         // 有实际内容时才发送用户消息；空内容（如 spawn_session 场景）略过
-        if (content) {
-          console.log('[pi-client] sendMessage → agentSession.prompt', { sessionId, content: content.slice(0, 80) });
+        if (content || options?.images?.length) {
+          console.log('[pi-client] sendMessage → agentSession.prompt', {
+            sessionId,
+            content: content.slice(0, 80),
+            imageCount: options?.images?.length ?? 0,
+          });
           try {
-            await session.agentSession.prompt(content);
+            const images = normalizeImages(options?.images);
+            if (images?.length) {
+              await session.agentSession.prompt(content, { images });
+            } else {
+              await session.agentSession.prompt(content);
+            }
           } catch (err) {
             const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
             for (const listener of session.listeners) {
