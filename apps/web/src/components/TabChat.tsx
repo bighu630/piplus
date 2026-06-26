@@ -453,9 +453,14 @@ export default function TabChat({
             const isThisToolRunning = isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages);
 
             let argsStr = '';
+            let parsedArgs: Record<string, unknown> | null = null;
             if (msg.tool_args_json) {
               try {
-                argsStr = JSON.stringify(JSON.parse(msg.tool_args_json), null, 2);
+                const parsed: unknown = JSON.parse(msg.tool_args_json);
+                argsStr = JSON.stringify(parsed, null, 2);
+                if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  parsedArgs = parsed as Record<string, unknown>;
+                }
               } catch {
                 argsStr = msg.tool_args_json;
               }
@@ -486,9 +491,28 @@ export default function TabChat({
                     </div>
                     {isExpanded && argsStr && (
                       <div className="border-t border-amber-200 dark:border-amber-800 px-3 py-2">
-                        <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-                          {argsStr}
-                        </pre>
+                        {(toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs ? (
+                          <table className="w-full text-[11px] font-mono leading-relaxed">
+                            <tbody>
+                              {Object.entries(parsedArgs).map(([key, value]) => (
+                                <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
+                                  <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
+                                    {key}
+                                  </td>
+                                  <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
+                                    {typeof value === 'object' && value !== null
+                                      ? JSON.stringify(value)
+                                      : String(value)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                            {argsStr}
+                          </pre>
+                        )}
                       </div>
                     )}
                   </div>

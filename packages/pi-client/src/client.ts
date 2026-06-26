@@ -305,10 +305,10 @@ export function createPiClient(): PiClient {
     async stopSession(sessionId) {
       const session = getOrCreateSession(sessionId);
       session.stopped = true;
-      // 真正中止 PI SDK agent 的当前运行
-      try {
-        await session.agentSession?.abort();
-      } catch { /* abort may throw if already idle, safe to ignore */ }
+      // Fire abort in background — AgentSession.abort() waits for agent to become idle,
+      // which can block indefinitely during LLM generation. The caller (API route) needs
+      // to return 202 immediately and must not wait for the agent to wind down.
+      session.agentSession?.abort().catch(() => {});
       return { status: 'stopped' as const };
     },
     async closeRuntime(sessionId) {

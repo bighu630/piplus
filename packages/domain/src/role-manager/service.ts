@@ -32,6 +32,7 @@ export type SpawnSessionInput = {
   objective: string;
   scope?: string;
   task?: string;
+  parentSuppliedPrompt?: string;
   constraints: string[];
 };
 
@@ -338,6 +339,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         objective: input.objective,
         scope: input.scope,
         task: input.task,
+        parentSuppliedPrompt: input.parentSuppliedPrompt,
         constraints: input.constraints,
       });
       const cwd = project?.projectPath ?? process.cwd();
@@ -375,7 +377,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         createdBy: input.createdBy,
         roleBasePromptSnapshot: template.basePrompt,
         userSuppliedPrompt: '',
-        parentSuppliedPrompt: '',
+        parentSuppliedPrompt: input.parentSuppliedPrompt ?? '',
         compiledPrompt,
         currentModelProvider: currentModel?.provider ?? piSession.model?.provider ?? null,
         currentModelId: currentModel?.id ?? piSession.model?.id ?? null,

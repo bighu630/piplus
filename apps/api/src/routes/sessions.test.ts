@@ -311,4 +311,119 @@ describe('session routes', () => {
     });
     expect(res.status).toBe(401);
   });
+
+  // ─── Stop session / error resilience ──────────────────────────────────────
+
+  test('POST /api/v1/sessions/:id/stop returns 202 for fresh session (no runtime)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'StopTest Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // Stop a session that was just created and has NO runtime restored.
+    // The handler must return 202 immediately — no hanging even when agentSession is absent.
+    const stopRes = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(stopRes.status).toBe(202);
+    const body = await stopRes.json();
+    expect(body).toMatchObject({ session_id: sessionId, status: 'stopping' });
+  });
+
+  test('POST /api/v1/sessions/:id/stop returns 202 after sending a message (runtime active)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'StopTest Active Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // Send a message to activate the runtime
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ content: 'test message for stop' }),
+    });
+    expect(sendRes.status).toBe(202);
+
+    // Stop while runtime may still be active — must return 202 promptly
+    const stopRes = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(stopRes.status).toBe(202);
+    const body = await stopRes.json();
+    expect(body).toMatchObject({ session_id: sessionId, status: 'stopping' });
+  });
+
+  test('POST /api/v1/sessions/:id/stop can be called multiple times (idempotent)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'StopTest Idempotent Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // Stop twice — second call must also return 202
+    const r1 = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(r1.status).toBe(202);
+
+    const r2 = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(r2.status).toBe(202);
+  });
+
+  test('POST /api/v1/sessions/:id/stop requires authentication', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const res = await app.request('/api/v1/sessions/session_nonexistent/stop', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  test('POST /api/v1/sessions/:id/stop returns 404 for nonexistent session', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const res = await app.request('/api/v1/sessions/session_doesnotexist/stop', {
+      method: 'POST',
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body).toMatchObject({ error: { code: 'NOT_FOUND' } });
+  });
 });

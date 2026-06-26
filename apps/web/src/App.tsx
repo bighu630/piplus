@@ -510,8 +510,13 @@ export default function App() {
 
   const handleStop = useCallback(async () => {
     if (!selectedSessionId) return;
-    await stopSessionMut.mutateAsync(selectedSessionId);
     setStreamNote('stopping');
+    try {
+      await stopSessionMut.mutateAsync(selectedSessionId);
+    } catch {
+      setStreamNote('');
+      throw new Error('stop_session_failed');
+    }
   }, [selectedSessionId, stopSessionMut]);
 
   const handleCompactSession = useCallback(async () => {

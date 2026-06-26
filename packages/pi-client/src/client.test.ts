@@ -277,4 +277,51 @@ describe('pi client gateway', () => {
     await client.closeRuntime(created.sessionId);
   });
 
+  // ─── Stop session / error resilience ──────────────────────────────────────
+
+  test('stopSession returns stopped status for unknown session (never created)', async () => {
+    const client = createPiClient();
+    // Calling stopSession on a session-id that was never created must not throw
+    // and must return { status: 'stopped' }.
+    const result = await client.stopSession('never_created_session');
+    expect(result).toMatchObject({ status: 'stopped' });
+  });
+
+  test('stopSession returns stopped status for session without runtime (restoreRuntime never called)', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Stop No Runtime Test' });
+    // Created but never restored — agentSession is undefined.
+    // stopSession must not throw and must return { status: 'stopped' }.
+    const result = await client.stopSession(created.sessionId);
+    expect(result).toMatchObject({ status: 'stopped' });
+  });
+
+  test('stopSession returns promptly for session with active runtime', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Stop Runtime Test' });
+    await client.restoreRuntime(created.sessionId, created.locator);
+
+    // Confirm the session has an agentSession (runtime is alive)
+    // stopSession must NOT await abort() — it must return promptly.
+    const start = performance.now();
+    const result = await client.stopSession(created.sessionId);
+    const elapsed = performance.now() - start;
+
+    expect(result).toMatchObject({ status: 'stopped' });
+    // If stopSession incorrectly awaits abort(), the runtime's prompt cycle could
+    // block. Since we just restored (no streaming), the call should complete in
+    // under 2 seconds.
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  test('stopSession can be called twice (idempotent)', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Stop Idempotent Test' });
+
+    const r1 = await client.stopSession(created.sessionId);
+    expect(r1).toMatchObject({ status: 'stopped' });
+
+    const r2 = await client.stopSession(created.sessionId);
+    expect(r2).toMatchObject({ status: 'stopped' });
+  });
 });

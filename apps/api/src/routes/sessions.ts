@@ -560,7 +560,11 @@ export function registerSessionRoutes(app: Hono) {
     const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
-    await piClient.stopSession(sessionId);
+    try {
+      await piClient.stopSession(sessionId);
+    } catch (err) {
+      log.warn('session stop triggered with error (continue to respond 202)', { sessionId, error: String(err) });
+    }
     log.info('session stopping', { sessionId });
     await createAuditService(db).record(userId, "session.stopped", "session", sessionId);
 
