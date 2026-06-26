@@ -365,6 +365,11 @@ export default function TabChat({
 
             return (
               <div key={msg.id} className="flex justify-start items-start w-full">
+                {isThisToolRunning && (
+                  <div className="mr-2 pt-2 shrink-0">
+                    <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
+                  </div>
+                )}
                 <div className="flex flex-col items-start max-w-full flex-1">
                   <div
                     className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden cursor-pointer select-none transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
@@ -393,11 +398,6 @@ export default function TabChat({
                     {new Date(msg.created_at).toLocaleTimeString()}
                   </span>
                 </div>
-                {isThisToolRunning && (
-                  <div className="ml-2 pt-2 shrink-0">
-                    <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
-                  </div>
-                )}
               </div>
             );
           }
