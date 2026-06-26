@@ -139,6 +139,11 @@ export default function Sidebar({
     const q = sidebarSearch?.toLowerCase() ?? '';
     const hasSearch = q.length > 0;
 
+    // Check if any session in the tree is running (recursive)
+    function anyRunning(sessions: SessionTreeNodeDTO[]): boolean {
+      return sessions.some((s) => s.runtime_status === 'running' || anyRunning(s.children));
+    }
+
     const filterSessions = (sessions: SessionTreeNodeDTO[], includeSearch: boolean): SessionTreeNodeDTO[] =>
       sessions
         .map((s) => {
@@ -151,15 +156,21 @@ export default function Sidebar({
 
           // Check standard filters
           if (!showArchived && s.archived_at) {
-            // Keep as bridge node if has visible children (e.g. a running descendant)
-            return filteredChildren.length > 0 ? { ...s, children: filteredChildren } : null;
+            // Keep as bridge node only if has running descendant
+            return filteredChildren.length > 0 && anyRunning(filteredChildren)
+              ? { ...s, children: filteredChildren }
+              : null;
           }
           if (s.role_template_key === 'worker' && !showWorker) {
-            return filteredChildren.length > 0 ? { ...s, children: filteredChildren } : null;
+            return filteredChildren.length > 0 && anyRunning(filteredChildren)
+              ? { ...s, children: filteredChildren }
+              : null;
           }
           if (includeSearch && hasSearch) {
             if (!s.title.toLowerCase().includes(q) && !roleLabel(s.role_template_key).includes(q)) {
-              return filteredChildren.length > 0 ? { ...s, children: filteredChildren } : null;
+              return filteredChildren.length > 0 && anyRunning(filteredChildren)
+                ? { ...s, children: filteredChildren }
+                : null;
             }
           }
 
