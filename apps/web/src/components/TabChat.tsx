@@ -57,6 +57,7 @@ interface TabChatProps {
   onCompactSession?: () => void;
   compactPending?: boolean;
   runtimeErrors?: Array<{runId: string; error: string}>;
+  isMobile?: boolean;
 }
 
 function extractCodeText(node: unknown): string {
@@ -123,6 +124,7 @@ export default function TabChat({
   onCompactSession,
   compactPending,
   runtimeErrors,
+  isMobile,
 }: TabChatProps) {
   const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -1094,7 +1096,11 @@ export default function TabChat({
               </>
               {!isRunning && (
                 <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">
-                  {sendShortcutMode === 'mod_enter' ? 'Ctrl/Cmd+Enter 发送' : 'Enter 发送 · Ctrl/Cmd+Enter 换行'} · 支持粘贴图片，最多 4 张
+                  {isMobile
+                    ? '支持粘贴图片，最多 4 张'
+                    : sendShortcutMode === 'mod_enter'
+                      ? 'Ctrl/Cmd+Enter 发送 · 支持粘贴图片，最多 4 张'
+                      : 'Enter 发送 · Ctrl/Cmd+Enter 换行 · 支持粘贴图片，最多 4 张'}
                 </span>
               )}
               {isRunning && (

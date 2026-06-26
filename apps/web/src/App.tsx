@@ -1051,6 +1051,7 @@ export default function App() {
                   showArchiveButton={!isPlannerRoot}
                   onCompactSession={handleCompactSession}
                   compactPending={compactSessionMut.isPending}
+                  isMobile={isMobile}
                 />
               )}
               {activeTab === 'info' && <TabSessionInfo sessionInfo={sessionInfo ?? null} isLoading={sessionInfoQuery.isLoading} />}

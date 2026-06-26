@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import hljs from 'highlight.js';
-import { Check, ChevronRight, Copy, FileCode2, FileText, Folder, FolderOpen, RefreshCw } from 'lucide-react';
+import { Check, ChevronRight, Copy, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw } from 'lucide-react';
 
 interface TabFilesProps {
   treeResponse: SessionFileTreeResponseDTO | null;
@@ -298,6 +298,7 @@ export default function TabFiles({
 }: TabFilesProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [refreshSpinning, setRefreshSpinning] = useState(false);
+  const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
 
   const firstFilePath = useMemo(() => {
     const visit = (nodes: SessionFileTreeNodeDTO[]): string | null => {
@@ -325,59 +326,87 @@ export default function TabFiles({
 
   return (
     <div className="flex-1 flex h-full overflow-hidden bg-slate-50/60 dark:bg-slate-900/10">
-      <aside className="w-[320px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col">
-        <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
-              <FileCode2 className="w-4 h-4 text-blue-500" />
-              <span>Files</span>
+      {!isTreePanelCollapsed && (
+        <aside className="w-[320px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col">
+          <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
+                <FileCode2 className="w-4 h-4 text-blue-500" />
+                <span>Files</span>
+              </div>
+              <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
+                {treeResponse?.root_path ?? '加载中…'}
+              </div>
             </div>
-            <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
-              {treeResponse?.root_path ?? '加载中…'}
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setRefreshSpinning(true);
+                  setTimeout(() => setRefreshSpinning(false), 600);
+                  onRefresh();
+                }}
+                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                title="刷新文件树"
+                aria-label="刷新文件树"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${treeLoading || refreshSpinning ? 'animate-spin' : ''}`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsTreePanelCollapsed(true)}
+                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                title="收起文件树"
+                aria-label="收起文件树"
+              >
+                <PanelLeft className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setRefreshSpinning(true);
-              setTimeout(() => setRefreshSpinning(false), 600);
-              onRefresh();
-            }}
-            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${treeLoading || refreshSpinning ? 'animate-spin' : ''}`} />
-          </button>
-        </div>
 
-        <div className="flex-1 overflow-y-auto p-2">
-          {treeLoading ? (
-            <div className="h-full flex items-center justify-center text-xs text-slate-400">文件树加载中…</div>
-          ) : treeError ? (
-            <div className="h-full flex items-center justify-center text-xs text-red-500 px-4 text-center">{treeError}</div>
-          ) : !treeResponse || treeResponse.tree.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-xs text-slate-400">当前项目暂无可预览文件</div>
-          ) : (
-            <div className="space-y-0.5">
-              {treeResponse.tree.map((node) => (
-                <FileTreeNode
-                  key={node.path}
-                  node={node}
-                  depth={0}
-                  expanded={expanded}
-                  onToggle={toggleExpanded}
-                  selectedPath={selectedPath}
-                  onSelectPath={onSelectPath}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      </aside>
+          <div className="flex-1 overflow-y-auto p-2">
+            {treeLoading ? (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400">文件树加载中…</div>
+            ) : treeError ? (
+              <div className="h-full flex items-center justify-center text-xs text-red-500 px-4 text-center">{treeError}</div>
+            ) : !treeResponse || treeResponse.tree.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400">当前项目暂无可预览文件</div>
+            ) : (
+              <div className="space-y-0.5">
+                {treeResponse.tree.map((node) => (
+                  <FileTreeNode
+                    key={node.path}
+                    node={node}
+                    depth={0}
+                    expanded={expanded}
+                    onToggle={toggleExpanded}
+                    selectedPath={selectedPath}
+                    onSelectPath={onSelectPath}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </aside>
+      )}
 
       <section className="flex-1 min-w-0 flex flex-col overflow-hidden">
         <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between gap-3">
-          <div className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">
-            {selectedPath ?? '请选择文件'}
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {isTreePanelCollapsed && (
+              <button
+                type="button"
+                onClick={() => setIsTreePanelCollapsed(false)}
+                className="shrink-0 p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                title="展开文件树"
+                aria-label="展开文件树"
+              >
+                <PanelLeft className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <div className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">
+              {selectedPath ?? '请选择文件'}
+            </div>
           </div>
           <div className="text-[11px] text-slate-400 shrink-0">
             {isMarkdownFile(selectedPath) ? 'Markdown 预览' : '代码预览'}
