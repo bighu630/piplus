@@ -69,7 +69,7 @@ function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessage
   if (msgIndex === -1) return false;
   for (let i = msgIndex + 1; i < allMsgs.length; i++) {
     const m = allMsgs[i];
-    if ((m.message_kind === 'tool' || m.role === 'tool') && m.tool_name === toolName) {
+    if ((m.message_kind === 'tool' || m.role === 'tool') && m.tool_name && m.tool_name === toolName) {
       return false;
     }
   }
@@ -221,13 +221,13 @@ export default function TabChat({
 
   // Track runtime run start index to avoid showing spinners on interrupted tool calls
   const prevRuntimeStatusRef = useRef(runtimeStatus);
-  const currentRunStartIdxRef = useRef(0);
+  const currentRunStartIdxRef = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     const prev = prevRuntimeStatusRef.current;
     prevRuntimeStatusRef.current = runtimeStatus;
 
-    if (runtimeStatus === 'running' && prev !== 'running') {
+    if (runtimeStatus === 'running' && (prev !== 'running' || currentRunStartIdxRef.current === null)) {
       // New run started — only tool_calls from this point forward can show spinners
       currentRunStartIdxRef.current = messages.length;
     }
@@ -351,7 +351,7 @@ export default function TabChat({
             };
 
             const msgIndex = messages.findIndex((m) => m.id === msg.id);
-            const isInCurrentRun = msgIndex >= currentRunStartIdxRef.current;
+            const isInCurrentRun = currentRunStartIdxRef.current !== null && msgIndex >= currentRunStartIdxRef.current;
             const isThisToolRunning = isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages);
 
             let argsStr = '';

@@ -212,10 +212,6 @@ export default function App() {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const fileTreeQuery = useSessionFileTree(activeTab === 'files' ? selectedSessionId : null);
   const fileContentQuery = useSessionFileContent(activeTab === 'files' ? selectedSessionId : null, activeTab === 'files' ? selectedFilePath : null);
-  const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null);
-  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [];
-  const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
-  const loadingMoreMessages = messagesQuery.isFetchingNextPage;
   const modelsQuery = useModels();
   const setModelMut = useSetSessionModelMutation();
   const testProviderMut = useTestModelProviderMutation();
@@ -231,6 +227,10 @@ export default function App() {
   const deleteProjectMut = useDeleteProjectMutation();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
   const runtimeStatus = sessionInfo?.session.runtime_status ?? currentSessionNode?.runtime_status ?? 'idle';
+  const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null, 20, runtimeStatus === 'running' ? 1500 : false);
+  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [];
+  const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
+  const loadingMoreMessages = messagesQuery.isFetchingNextPage;
 
   useEffect(() => {
     setPendingUserMessages([]);
@@ -307,6 +307,10 @@ export default function App() {
           if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
             treeQuery.refetch();
             const status = message.payload?.runtime_status;
+            if (status === 'running') {
+              // Refetch messages immediately so tool_call entries appear promptly
+              queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+            }
             if (status === 'idle') {
               setStreamingContent('');
               setStreamNote('');
