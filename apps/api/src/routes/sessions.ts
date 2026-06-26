@@ -329,8 +329,8 @@ export function registerSessionRoutes(app: Hono) {
           socketHub.sendToSession(sessionId, frame);
         }
       },
-      onRuntimeStatusChange: async ({ projectId, runtimeStatus }) => {
-        socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus }, { project_id: projectId, session_id: sessionId }));
+      onRuntimeStatusChange: async ({ projectId, runtimeStatus, error }) => {
+        socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus, error }, { project_id: projectId, session_id: sessionId }));
       },
       onToolSessionCreated: async ({ sessionId: childSessionId, projectId }) => {
         socketHub.broadcast(createEvent('session.created', { session_id: childSessionId }, { project_id: projectId, session_id: childSessionId }));
