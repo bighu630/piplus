@@ -582,6 +582,8 @@ export default function App() {
 
   const handleSendPlannerRolePrompt = useCallback(async () => {
     if (!selectedSessionId) return;
+    const confirmed = confirm('仅在你觉得 planner 变得不会分配工作时使用，确定重新发送提示词吗？\n\n频繁发送可能会浪费一点点 context。');
+    if (!confirmed) return;
     const result = await plannerRolePromptMut.mutateAsync(selectedSessionId);
     if (!result.prompt) return;
     await handleSend(result.prompt, []);

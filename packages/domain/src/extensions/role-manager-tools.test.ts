@@ -349,6 +349,144 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     expect(updatedChild?.lastRuntimeError).toBeNull();
   });
 
+  test('spawn_session wait=true reminds idle child and reuses requestId', async () => {
+    const dbPath = makeDbPath();
+    createSeedDb(dbPath);
+    const db = createDb(`file:${dbPath}`);
+    const originalNow = Date.now;
+    let nowMs = originalNow();
+    const state = {
+      sent: [] as Array<{ sessionId: string; content: string; requestId: string | null }>,
+    };
+    let firstRequestId: string | null = null;
+    let parentSessionId = 'session_parent_tools_reminder';
+
+    const piClient = {
+      async createSession(input: { title?: string; prompt: string; cwd?: string; model?: { provider: string; id: string } }) {
+        const sessionId = `pi_${crypto.randomUUID().slice(0, 8)}`;
+        return {
+          sessionId,
+          locator: {
+            piSessionId: sessionId,
+            sessionFile: `/tmp/${sessionId}.jsonl`,
+          },
+          model: input.model ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` } : undefined,
+        };
+      },
+      async restoreRuntime() { return; },
+      async subscribeSession() { return () => {}; },
+      async getHistory() { return { messages: [], nextCursor: null }; },
+      async stopSession() { return { status: 'stopped' as const }; },
+      async closeRuntime() { return; },
+      async listAvailableModels() { return []; },
+      async getCurrentModel() { return null; },
+      async bindToolRuntime() { return; },
+      async setSessionModel(_sessionId: string, _locator: unknown, modelRef: { provider: string; id: string }) {
+        return { provider: modelRef.provider, id: modelRef.id, label: `${modelRef.provider}/${modelRef.id}` };
+      },
+      async sendMessage(sessionId: string, content: string) {
+        const reqCtx = getRequestContext(sessionId);
+        state.sent.push({ sessionId, content, requestId: reqCtx?.requestId ?? null });
+        if (!firstRequestId) {
+          firstRequestId = reqCtx?.requestId ?? null;
+          setTimeout(async () => {
+            await db.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date(nowMs) }).where(eq(sessions.id, sessionId));
+            nowMs += 61_000;
+          }, 0);
+        } else if (reqCtx?.requestId) {
+          await db.insert(messages).values({
+            id: `msg_${crypto.randomUUID().slice(0, 8)}`,
+            sessionId: parentSessionId,
+            piMessageId: null,
+            messageKind: 'writeback',
+            sourceSessionId: sessionId,
+            role: 'assistant',
+            contentText: 'task done after reminder',
+            contentBlocksJson: null,
+            contentVersion: 1,
+            requestId: reqCtx.requestId,
+            createdAt: new Date(nowMs),
+          } as any);
+        }
+        return { sessionId, runId: 'run' };
+      },
+    } as any;
+
+    Date.now = () => nowMs;
+    const now = new Date(nowMs);
+    await db.insert(projects).values({
+      id: 'project_role_tools_reminder',
+      name: 'Role Tools Reminder Project',
+      createdBy: 'user_seed',
+      status: 'active',
+      projectPath: '',
+      sourceType: 'existing',
+      sourceUrl: '',
+      archivedAt: null,
+      archivedBy: null,
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    await db.insert(sessions).values({
+      id: parentSessionId,
+      projectId: 'project_role_tools_reminder',
+      parentSessionId: null,
+      rootSessionId: parentSessionId,
+      depth: 0,
+      roleTemplateId: 'rt_planner',
+      piSessionId: 'pi_parent',
+      piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_parent', sessionFile: '/tmp/pi-parent.jsonl' }),
+      requestedByMessageId: null,
+      title: 'Parent',
+      titleSource: 'default',
+      status: 'active',
+      runtimeStatus: 'idle',
+      currentModelProvider: 'anthropic',
+      currentModelId: 'claude-sonnet-4-20250514',
+      lastActivityAt: now,
+      lastRunAt: null,
+      lastStopAt: null,
+      lastRuntimeError: null,
+      createdBy: 'user_seed',
+      archivedAt: null,
+      archivedBy: null,
+      createdAt: now,
+      updatedAt: now,
+      roleBasePromptSnapshot: 'base',
+      userSuppliedPrompt: '',
+      parentSuppliedPrompt: '',
+      compiledPrompt: 'compiled',
+    } as any);
+
+    try {
+      const result = await invokeRoleManagerTool('spawn_session', {
+        role: 'worker',
+        objective: 'wait for reminder',
+        wait: true,
+      }, {
+        db,
+        piClient,
+        sessionId: parentSessionId,
+        userId: 'user_seed',
+      });
+
+      expect(result).toMatchObject({
+        status: 'completed',
+        summary: 'task done after reminder',
+      });
+      expect(state.sent).toHaveLength(2);
+      expect(state.sent[0]?.content).toBe('');
+      expect(state.sent[1]?.content).toContain('writeback_to_parent');
+      expect(state.sent[1]?.content).toContain('requestId');
+      expect(state.sent[0]?.requestId).toBeTruthy();
+      expect(state.sent[1]?.requestId).toBe(state.sent[0]?.requestId);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   test('spawn_session wait=true stops waiting when parent session enters stopping', async () => {
     const dbPath = makeDbPath();
     createSeedDb(dbPath);

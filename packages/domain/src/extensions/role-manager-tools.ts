@@ -8,6 +8,8 @@ import { createRoleManagerService } from '../role-manager/service';
 import { startSessionRun } from '../session/runtime';
 import { setRequestContext, getRequestContext } from '../session/request-context';
 
+const WRITEBACK_REMINDER_INTERVAL_MS = 15 * 1000;
+
 function labelForRole(key: string) {
   const map: Record<string, string> = {
     planner: '规划者', worker: '执行者', reviewer: '审查者', feature_lead: '需求负责人', bugfix_lead: 'Bug负责人', blank: '空白',
@@ -248,6 +250,7 @@ async function waitForChildWriteback(
   const timeoutMs = 10 * 60 * 1000;
   const pollIntervalMs = 2000;
   const deadline = Date.now() + timeoutMs;
+  let lastReminderAt = Date.now();
 
   while (Date.now() < deadline) {
     const [parent] = await ctx.db
@@ -313,6 +316,23 @@ async function waitForChildWriteback(
         summary: writeback.summary,
         blocks,
       };
+    }
+
+    const [child] = await ctx.db
+      .select({ runtimeStatus: sessions.runtimeStatus })
+      .from(sessions)
+      .where(eq(sessions.id, childSessionId))
+      .limit(1);
+
+    const now = Date.now();
+    if (child?.runtimeStatus === 'idle' && now - lastReminderAt >= WRITEBACK_REMINDER_INTERVAL_MS) {
+      lastReminderAt = now;
+      const reminder = 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.';
+      console.log('[role-manager-tools] waitForChildWriteback reminder', {
+        childSessionId,
+        requestId,
+      });
+      await startChildSessionRun(ctx, childSessionId, reminder, requestId, ctx.onSessionCreated);
     }
 
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
