@@ -241,8 +241,9 @@ export default function Sidebar({
               : null;
           }
           if (includeSearch && hasSearch) {
-            if (!fuzzyMatch(q, s.title) && !fuzzyMatch(q, roleLabel(s.role_template_key))) {
-              return filteredChildren.length > 0 && anyRunning(filteredChildren)
+            if (!fuzzyMatch(q, s.title) && !fuzzyMatch(q, s.role_template_key) && !fuzzyMatch(q, roleLabel(s.role_template_key))) {
+              // Bridge node: keep visible if any child matched the search
+              return filteredChildren.length > 0
                 ? { ...s, children: filteredChildren }
                 : null;
             }
@@ -508,26 +509,26 @@ export default function Sidebar({
         ) : filteredProjects.length === 0 ? (
           <div className="text-xs text-slate-400 text-center py-4">暂无项目</div>
         ) : (
-          filteredProjects.map((project) => {
-            const isCollapsed = collapsedProjects[project.id];
+          filteredProjects.map((fp) => {
+            const isCollapsed = collapsedProjects[fp.id];
             return (
-              <div key={project.id} className="space-y-0.5">
+              <div key={fp.id} className="space-y-0.5">
                 <div
                   className={`group flex items-center justify-between p-1.5 rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300 cursor-pointer ${
                     effectiveCollapsed ? 'justify-center' : ''
                   }`}
-                  onClick={() => !effectiveCollapsed && toggleProject(project.id)}
+                  onClick={() => !effectiveCollapsed && toggleProject(fp.id)}
                 >
                   <div className="flex items-center space-x-1.5 flex-1 min-w-0">
                     {!effectiveCollapsed ? (
                       <>
                         <FolderOpen className="w-4 h-4 shrink-0 text-blue-400/80 dark:text-blue-500/80" />
                         <span className="text-xs font-semibold truncate text-slate-700 dark:text-slate-200 leading-tight">
-                          {project.name}
+                          {fp.name}
                         </span>
                       </>
                     ) : (
-                      <div title={project.name}>
+                      <div title={fp.name}>
                         <Folder className="w-4 h-4 text-slate-400" />
                       </div>
                     )}
@@ -538,7 +539,7 @@ export default function Sidebar({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          onSelectProject(project.id);
+                          onSelectProject(fp.id);
                           onCreateSession();
                         }}
                         className="p-0.5 hover:bg-blue-50 hover:text-blue-600 rounded text-slate-400 cursor-pointer transition-colors"
@@ -557,8 +558,8 @@ export default function Sidebar({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (confirm(`确定归档项目 "${project.name}"？`)) {
-                                onArchiveProject(project.id);
+                              if (confirm(`确定归档项目 "${fp.name}"？`)) {
+                                onArchiveProject(fp.id);
                               }
                             }}
                             className="p-0.5 hover:bg-amber-100 hover:text-amber-600 rounded text-slate-400 cursor-pointer transition-colors"
@@ -571,7 +572,7 @@ export default function Sidebar({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              onOpenProjectSettings(project.id);
+                              onOpenProjectSettings(fp.id);
                             }}
                             className="p-0.5 hover:bg-slate-100 hover:text-slate-600 rounded text-slate-400 cursor-pointer transition-colors"
                             title="项目设置"
@@ -583,8 +584,8 @@ export default function Sidebar({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (confirm(`确定删除项目 "${project.name}" 及其所有会话？`)) {
-                                onDeleteProject(project.id);
+                              if (confirm(`确定删除项目 "${fp.name}" 及其所有会话？`)) {
+                                onDeleteProject(fp.id);
                               }
                             }}
                             className="p-0.5 hover:bg-red-50 hover:text-red-600 rounded text-slate-400 cursor-pointer transition-colors"
@@ -600,10 +601,10 @@ export default function Sidebar({
 
 
 
-                {/* Sessions */}
+                {/* Sessions — fp.sessions comes from filteredProjects, already filtered */}
                 {!isCollapsed && (
                   <div className={effectiveCollapsed ? 'space-y-1' : 'space-y-0.5'}>
-                    {project.sessions.map((session) => renderSessionNode(session, project.id, 1))}
+                    {fp.sessions.map((session) => renderSessionNode(session, fp.id, 1))}
                   </div>
                 )}
               </div>

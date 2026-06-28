@@ -139,6 +139,10 @@ export function getSessionMessages(sessionId: string, options?: { cursor?: strin
   return request<SessionMessagesPage>(`/api/v1/sessions/${sessionId}/chat/messages${query ? `?${query}` : ''}`);
 }
 
+export function getPlannerRolePrompt(sessionId: string) {
+  return request<{ session_id: string; prompt: string; prompt_length: number }>(`/api/v1/sessions/${sessionId}/planner-role-prompt`);
+}
+
 export type SessionMessageImageAttachment = {
   type: 'image';
   mime_type: string;

@@ -311,6 +311,50 @@ export function registerSessionRoutes(app: Hono) {
 
   /**
    * @swagger
+   * /api/v1/sessions/{sessionId}/planner-role-prompt:
+   *   get:
+   *     summary: 获取顶层 planner 的角色系统提示词
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 仅顶层 planner 且 idle 可用，返回当前会话保存的 compiled planner prompt，供前端作为普通用户消息再次发送。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       400:
+   *         description: 非顶层 planner 或会话繁忙。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/planner-role-prompt', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [template] = await db.select({ key: roleTemplates.key }).from(roleTemplates).where(eq(roleTemplates.id, session.roleTemplateId)).limit(1);
+    if (!template || template.key !== 'planner' || session.depth !== 0) {
+      return c.json({ error: { code: 'NOT_PLANNER_ROOT', message: 'Only top-level planner sessions are supported' } }, 400);
+    }
+
+    if (session.runtimeStatus !== 'idle') {
+      return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+    }
+
+    return c.json({
+      session_id: sessionId,
+      prompt: session.compiledPrompt,
+      prompt_length: session.compiledPrompt.length,
+    });
+  });
+
+  /**
+   * @swagger
    * /api/v1/sessions/{sessionId}/chat/messages:
    *   get:
    *     summary: 获取会话消息历史

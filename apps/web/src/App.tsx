@@ -26,6 +26,7 @@ import {
   useStopSessionMutation,
   useArchiveSessionMutation,
   useCompactSessionMutation,
+  usePlannerRolePromptMutation,
   useLoginMutation,
   useLogoutMutation,
   useModelsStatus,
@@ -286,6 +287,7 @@ export default function App() {
   const stopSessionMut = useStopSessionMutation();
   const archiveSessionMut = useArchiveSessionMutation();
   const compactSessionMut = useCompactSessionMutation();
+  const plannerRolePromptMut = usePlannerRolePromptMutation();
   const archiveProjectMut = useArchiveProjectMutation();
   const deleteProjectMut = useDeleteProjectMutation();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
@@ -577,6 +579,13 @@ export default function App() {
       handleSelectSession(pid, rootId);
     }
   }, [selectedSessionId, tree, archiveSessionMut, treeQuery, handleSelectSession]);
+
+  const handleSendPlannerRolePrompt = useCallback(async () => {
+    if (!selectedSessionId) return;
+    const result = await plannerRolePromptMut.mutateAsync(selectedSessionId);
+    if (!result.prompt) return;
+    await handleSend(result.prompt, []);
+  }, [selectedSessionId, plannerRolePromptMut, handleSend]);
 
   useEffect(() => {
     if (!sessionInfo?.session.current_model || !modelsQuery.data) {
@@ -1051,6 +1060,9 @@ export default function App() {
                   showArchiveButton={!isPlannerRoot}
                   onCompactSession={handleCompactSession}
                   compactPending={compactSessionMut.isPending}
+                  onSendPlannerRolePrompt={handleSendPlannerRolePrompt}
+                  plannerRolePromptPending={plannerRolePromptMut.isPending}
+                  showPlannerRolePromptButton={isPlannerRoot && runtimeStatus === 'idle'}
                   isMobile={isMobile}
                 />
               )}

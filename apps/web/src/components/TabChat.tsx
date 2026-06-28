@@ -56,6 +56,9 @@ interface TabChatProps {
   showArchiveButton?: boolean;
   onCompactSession?: () => void;
   compactPending?: boolean;
+  onSendPlannerRolePrompt?: () => void;
+  plannerRolePromptPending?: boolean;
+  showPlannerRolePromptButton?: boolean;
   runtimeErrors?: Array<{runId: string; error: string}>;
   isMobile?: boolean;
 }
@@ -123,6 +126,9 @@ export default function TabChat({
   showArchiveButton,
   onCompactSession,
   compactPending,
+  onSendPlannerRolePrompt,
+  plannerRolePromptPending,
+  showPlannerRolePromptButton,
   runtimeErrors,
   isMobile,
 }: TabChatProps) {
@@ -951,6 +957,16 @@ export default function TabChat({
             >
               <Archive className="w-3 h-3" />
               <span>{archivePending ? '...' : 'Archive'}</span>
+            </button>
+          )}
+          {showPlannerRolePromptButton && onSendPlannerRolePrompt && (
+            <button
+              onClick={onSendPlannerRolePrompt}
+              className="flex items-center space-x-1 px-2.5 py-1 border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-xl text-[11px] font-semibold text-amber-700 dark:text-amber-400 transition cursor-pointer disabled:opacity-50"
+              disabled={plannerRolePromptPending || sending}
+            >
+              <Wrench className="w-3 h-3" />
+              <span>{plannerRolePromptPending ? '...' : '重新发送提示词'}</span>
             </button>
           )}
           <ContextUsageRing sessionId={selectedSessionId ?? null} />

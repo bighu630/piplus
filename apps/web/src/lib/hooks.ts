@@ -5,6 +5,7 @@ import {
   getSessionContextUsage,
   compactSession,
   getSessionMessages,
+  getPlannerRolePrompt,
   checkAuth,
   login,
   getModelsStatus,
@@ -194,6 +195,12 @@ export function useCreateSessionMutation() {
 export function useSendMessageMutation(sessionId: string | null) {
   return useMutation({
     mutationFn: (payload: SendSessionMessagePayload) => sendSessionMessage(sessionId!, payload),
+  });
+}
+
+export function usePlannerRolePromptMutation() {
+  return useMutation({
+    mutationFn: (sessionId: string) => getPlannerRolePrompt(sessionId),
   });
 }
 
