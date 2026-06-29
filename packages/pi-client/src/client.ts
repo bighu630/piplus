@@ -231,14 +231,36 @@ export function createPiClient(): PiClient {
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
       if (session.agentSession) {
-        // 首次发消息时先注入角色 prompt（bindToolRuntime 会重建 agent session，需要重新注入）
         if (session.prompt && !session.promptSent) {
-          console.log('[pi-client] sendMessage → injecting role prompt', { sessionId, promptLen: session.prompt.length, preview: session.prompt.slice(0, 120) });
-          await session.agentSession.prompt(session.prompt);
-          session.promptSent = true;
-        }
-        // 有实际内容时才发送用户消息；空内容（如 spawn_session 场景）略过
-        if (content || options?.images?.length) {
+          if (content || options?.images?.length) {
+            // 首次对话且 content 非空：合并角色提示词和用户消息为 1 轮
+            const merged = `${session.prompt}\n\n请尊重用户的语言习惯，现在用户说：\n\n${content}`;
+            console.log('[pi-client] sendMessage → merged prompt + user message', { sessionId, promptLen: session.prompt.length, contentLen: content.length, imageCount: options?.images?.length ?? 0 });
+            try {
+              const images = normalizeImages(options?.images);
+              if (images?.length) {
+                await session.agentSession.prompt(merged, { images });
+              } else {
+                await session.agentSession.prompt(merged);
+              }
+            } catch (err) {
+              const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
+              for (const listener of session.listeners) {
+                await listener(errorEvent);
+              }
+              throw err;
+            }
+            session.promptSent = true;
+            console.log('[pi-client] sendMessage ← merged prompt done', { sessionId });
+          } else {
+            // spawn_session 场景：content 为空，仅注入角色 prompt（1 轮）
+            console.log('[pi-client] sendMessage → injecting role prompt (no user message)', { sessionId, promptLen: session.prompt.length });
+            await session.agentSession.prompt(session.prompt);
+            session.promptSent = true;
+            console.log('[pi-client] sendMessage ← role prompt done', { sessionId });
+          }
+        } else if (content || options?.images?.length) {
+          // 后续消息：promptSent 已为 true，仅发送用户消息
           console.log('[pi-client] sendMessage → agentSession.prompt', {
             sessionId,
             content: content.slice(0, 80),
