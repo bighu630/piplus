@@ -631,8 +631,92 @@ export default function TabChat({
                       </div>
                     )}
                     {(msg.content_text || textBlocks(msg).length > 0) && (
-                      <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed whitespace-pre-wrap break-words">
-                        {msg.content_text}
+                      <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed break-words overflow-hidden">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          rehypePlugins={[[rehypeHighlight, { detect: false }]]}
+                          components={{
+                            pre({ children }) {
+                              return <pre className="overflow-x-auto">{children}</pre>;
+                            },
+                            code({ className, children, ...codeProps }: any) {
+                              const match = /language-(\w+)/.exec(className || '');
+                              const isInline = !className;
+                              if (!isInline) {
+                                const language = match ? match[1] : 'code';
+                                return (
+                                  <div className="my-2 border border-blue-400/40 rounded-xl overflow-hidden bg-blue-700/60 text-white max-w-full">
+                                    <div className="bg-blue-800/60 px-3 py-1 flex items-center border-b border-blue-400/30">
+                                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-blue-200">{language}</span>
+                                    </div>
+                                    <pre className="p-3 overflow-x-auto text-[11.5px] leading-relaxed text-white/90">
+                                      <code className={className}>{children}</code>
+                                    </pre>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <code className="bg-blue-500/60 border border-blue-400/40 text-white px-1.5 py-0.5 rounded font-mono text-[11px]" {...codeProps}>
+                                  {children}
+                                </code>
+                              );
+                            },
+                            p({ children, ...pProps }) {
+                              return <p className="my-1.5 leading-relaxed" {...pProps}>{children}</p>;
+                            },
+                            ul({ children, ...ulProps }) {
+                              return <ul className="list-disc pl-5 my-1.5 space-y-0.5" {...ulProps}>{children}</ul>;
+                            },
+                            ol({ children, ...olProps }) {
+                              return <ol className="list-decimal pl-5 my-1.5 space-y-0.5" {...olProps}>{children}</ol>;
+                            },
+                            blockquote({ children, ...bqProps }) {
+                              return <blockquote className="border-l-3 border-blue-400/60 pl-3 py-1 my-2 opacity-90" {...bqProps}>{children}</blockquote>;
+                            },
+                            a({ children, href, ...aProps }: any) {
+                              return <a href={href} className="underline underline-offset-2 hover:opacity-80" target="_blank" rel="noopener noreferrer" {...aProps}>{children}</a>;
+                            },
+                            table({ children, ...tableProps }) {
+                              return (
+                                <div className="overflow-x-auto my-2 rounded-lg border border-blue-400/40">
+                                  <table className="min-w-full text-xs border-collapse" {...tableProps}>{children}</table>
+                                </div>
+                              );
+                            },
+                            thead({ children, ...theadProps }) {
+                              return <thead className="bg-blue-700/60" {...theadProps}>{children}</thead>;
+                            },
+                            tbody({ children, ...tbodyProps }) {
+                              return <tbody className="divide-y divide-blue-400/20" {...tbodyProps}>{children}</tbody>;
+                            },
+                            tr({ children, ...trProps }) {
+                              return <tr className="even:bg-blue-500/20" {...trProps}>{children}</tr>;
+                            },
+                            th({ children, ...thProps }) {
+                              return <th className="px-2.5 py-1.5 text-left font-semibold text-white/90 border-b border-blue-400/40 text-[11px]" {...thProps}>{children}</th>;
+                            },
+                            td({ children, ...tdProps }) {
+                              return <td className="px-2.5 py-1.5 text-white/80 border-b border-blue-400/20 text-[11px]" {...tdProps}>{children}</td>;
+                            },
+                            h1({ children, ...hProps }) {
+                              return <h1 className="text-base font-bold my-2" {...hProps}>{children}</h1>;
+                            },
+                            h2({ children, ...hProps }) {
+                              return <h2 className="text-sm font-bold my-1.5" {...hProps}>{children}</h2>;
+                            },
+                            h3({ children, ...hProps }) {
+                              return <h3 className="text-sm font-semibold my-1.5" {...hProps}>{children}</h3>;
+                            },
+                            hr() {
+                              return <hr className="border-blue-400/40 my-2" />;
+                            },
+                            img({ src, alt, ...imgProps }: any) {
+                              return <img src={src} alt={alt} className="max-w-full rounded-lg my-1.5" {...imgProps} />;
+                            },
+                          }}
+                        >
+                          {msg.content_text}
+                        </ReactMarkdown>
                       </div>
                     )}
                   </div>
