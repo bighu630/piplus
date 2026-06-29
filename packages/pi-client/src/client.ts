@@ -122,6 +122,25 @@ export function createPiClient(): PiClient {
         piSessionId: session.sessionId,
         sessionFile: session.sessionFile ?? '',
       };
+      // 确保 session 文件立即落盘。SessionManager._persist 在没有 assistant 消息时
+      // 不会刷新到磁盘，导致后续 appendModelChange 仅存于内存。提前创建文件让
+      // SessionManager.open 读取后设置 flushed=true，appendModelChange 即可立即持久化。
+      if (locator.sessionFile && !existsSync(locator.sessionFile)) {
+        const sessionDir = dirname(locator.sessionFile);
+        if (!existsSync(sessionDir)) {
+          const { mkdirSync } = await import('node:fs');
+          mkdirSync(sessionDir, { recursive: true });
+        }
+        const { writeFileSync } = await import('node:fs');
+        writeFileSync(locator.sessionFile, JSON.stringify({
+          type: 'session',
+          version: 3,
+          id: session.sessionId,
+          timestamp: new Date().toISOString(),
+          cwd,
+        }) + '\n');
+        console.log('[pi-client] createSession → seeded session file', { sessionFile: locator.sessionFile });
+      }
       if (input.model && locator.sessionFile) {
         const sessionManager = SessionManager.open(locator.sessionFile);
         if (!sessionFileHasModelChange(sessionManager, model.provider, model.id)) {
@@ -344,7 +363,10 @@ export function createPiClient(): PiClient {
     async closeRuntime(sessionId) {
       const session = runtimeRegistry.get(sessionId);
       session?.agentSession?.dispose();
-      runtimeRegistry.delete(sessionId);
+      // 保留 registry 条目以维持 locator，供后续 bindToolRuntime 等调用使用
+      if (session) {
+        session.agentSession = undefined;
+      }
     },
     async listAvailableModels() {
       const models = await modelRegistry.getAvailable();
@@ -389,12 +411,11 @@ export function createPiClient(): PiClient {
 
       await session.agentSession.setModel(target);
 
-      // 兜底：确保模型切换一定持久化到 session 文件。
-      // 按文档 AgentSession.setModel() 会 appendModelChange，但当前集成路径下测试显示
-      // 某些情况下 session 文件没有写入 model_change，因此这里做一次镜像校验与补写。
-      const sessionManager = SessionManager.open(locator.sessionFile);
-      if (!sessionFileHasModelChange(sessionManager, target.provider, target.id)) {
-        sessionManager.appendModelChange(target.provider, target.id);
+      // 兜底：使用 agent 自身的 sessionManager 做镜像校验与补写，
+      // 避免 SessionManager.open 创建新实例导致 model_change 无法立即落盘。
+      const agsm = session.agentSession.sessionManager;
+      if (!sessionFileHasModelChange(agsm, target.provider, target.id)) {
+        agsm.appendModelChange(target.provider, target.id);
       }
 
       session.model = {
