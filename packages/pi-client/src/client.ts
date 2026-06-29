@@ -255,7 +255,15 @@ export function createPiClient(): PiClient {
           } else {
             // spawn_session 场景：content 为空，仅注入角色 prompt（1 轮）
             console.log('[pi-client] sendMessage → injecting role prompt (no user message)', { sessionId, promptLen: session.prompt.length });
-            await session.agentSession.prompt(session.prompt);
+            try {
+              await session.agentSession.prompt(session.prompt);
+            } catch (err) {
+              const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
+              for (const listener of session.listeners) {
+                await listener(errorEvent);
+              }
+              throw err;
+            }
             session.promptSent = true;
             console.log('[pi-client] sendMessage ← role prompt done', { sessionId });
           }
