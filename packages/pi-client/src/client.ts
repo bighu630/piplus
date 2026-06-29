@@ -8,7 +8,7 @@ import {
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { readHistory } from './history';
 import { RuntimeRegistry } from './runtime-registry';
@@ -128,10 +128,8 @@ export function createPiClient(): PiClient {
       if (locator.sessionFile && !existsSync(locator.sessionFile)) {
         const sessionDir = dirname(locator.sessionFile);
         if (!existsSync(sessionDir)) {
-          const { mkdirSync } = await import('node:fs');
           mkdirSync(sessionDir, { recursive: true });
         }
-        const { writeFileSync } = await import('node:fs');
         writeFileSync(locator.sessionFile, JSON.stringify({
           type: 'session',
           version: 3,
@@ -178,18 +176,30 @@ export function createPiClient(): PiClient {
           modelRegistry,
         };
 
-        if (!sessionContext.model) {
+        if (sessionContext.model) {
+          const available = await modelRegistry.getAvailable();
+          const restored = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+          if (restored) {
+            options.model = restored;
+            console.log('[pi-client] restoreRuntime restored session model', {
+              sessionId,
+              provider: restored.provider,
+              id: restored.id,
+            });
+          } else {
+            options.model = await ensureModel();
+            console.log('[pi-client] restoreRuntime session model not in registry, fallback default', {
+              sessionId,
+              provider: options.model?.provider ?? null,
+              id: options.model?.id ?? null,
+            });
+          }
+        } else {
           options.model = await ensureModel();
-          console.log('[pi-client] restoreRuntime fallback default model', {
+          console.log('[pi-client] restoreRuntime no session model, fallback default', {
             sessionId,
             provider: options.model?.provider ?? null,
             id: options.model?.id ?? null,
-          });
-        } else {
-          console.log('[pi-client] restoreRuntime sessionContext model', {
-            sessionId,
-            provider: sessionContext.model.provider,
-            id: sessionContext.model.modelId,
           });
         }
 
@@ -485,35 +495,51 @@ export function createPiClient(): PiClient {
         modelRegistry,
       };
 
-      if (!sessionContext.model) {
-        if (session.model) {
-          const available = await modelRegistry.getAvailable();
-          const cached = available.find(
-            (candidate: any) => candidate.provider === session.model!.provider && candidate.id === session.model!.id,
-          );
-          if (cached) {
-            options.model = cached;
-            console.log('[pi-client] bindToolRuntime using cached registry model', {
-              sessionId,
-              provider: cached.provider,
-              id: cached.id,
-            });
-          } else {
-            options.model = await ensureModel();
-            console.log('[pi-client] bindToolRuntime cached model not found in registry, fallback default', {
-              sessionId,
-              provider: options.model?.provider ?? null,
-              id: options.model?.id ?? null,
-            });
-          }
+      if (sessionContext.model) {
+        const available = await modelRegistry.getAvailable();
+        const restored = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+        if (restored) {
+          options.model = restored;
+          console.log('[pi-client] bindToolRuntime restored session model', {
+            sessionId,
+            provider: restored.provider,
+            id: restored.id,
+          });
         } else {
           options.model = await ensureModel();
-          console.log('[pi-client] bindToolRuntime no cached model, fallback default', {
+          console.log('[pi-client] bindToolRuntime session model not in registry, fallback default', {
             sessionId,
             provider: options.model?.provider ?? null,
             id: options.model?.id ?? null,
           });
         }
+      } else if (session.model) {
+        const available = await modelRegistry.getAvailable();
+        const cached = available.find(
+          (candidate: any) => candidate.provider === session.model!.provider && candidate.id === session.model!.id,
+        );
+        if (cached) {
+          options.model = cached;
+          console.log('[pi-client] bindToolRuntime using cached registry model', {
+            sessionId,
+            provider: cached.provider,
+            id: cached.id,
+          });
+        } else {
+          options.model = await ensureModel();
+          console.log('[pi-client] bindToolRuntime cached model not found in registry, fallback default', {
+            sessionId,
+            provider: options.model?.provider ?? null,
+            id: options.model?.id ?? null,
+          });
+        }
+      } else {
+        options.model = await ensureModel();
+        console.log('[pi-client] bindToolRuntime no cached model, fallback default', {
+          sessionId,
+          provider: options.model?.provider ?? null,
+          id: options.model?.id ?? null,
+        });
       }
 
       const { session: agentSession } = await createAgentSession(options);
