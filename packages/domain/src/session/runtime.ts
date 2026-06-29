@@ -185,11 +185,11 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
   const resetTimeout = () => {
     if (!timeoutHandle || cleanupDone) return;
-    // Only reset if less than 1 minute remains on the countdown.
-    // During active streaming this avoids thousands of unnecessary
+    // Only reset if less than 5 minutes remain on the countdown.
+    // During active streaming this avoids excessive
     // clearTimeout/setTimeout calls while still extending near-expiry.
     const remaining = safetyTimeoutMs - (Date.now() - (timeoutStartedAt ?? Date.now()));
-    if (remaining > 60_000) return;
+    if (remaining > 5 * 60_000) return;
     clearTimeout(timeoutHandle);
     timeoutStartedAt = Date.now();
     timeoutHandle = setTimeout(() => {
