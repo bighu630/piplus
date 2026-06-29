@@ -140,16 +140,27 @@ export async function startSessionRun(input: StartSessionRunInput) {
     id: boundRuntimeModel?.id ?? null,
   });
 
-  const unsubscribe = input.onStreamEvent
-    ? await input.piClient.subscribeSession(input.sessionId, input.onStreamEvent)
-    : () => {};
-
   let cleanupDone = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let timeoutStartedAt: number | null = null;
+
   const doCleanup = async (error: unknown = null) => {
     if (cleanupDone) return;
     cleanupDone = true;
-    if (timeoutHandle) clearTimeout(timeoutHandle);
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+      timeoutStartedAt = null;
+    }
+
+    // Abort the running agent if cleanup was triggered by error or timeout.
+    // The agent may still be generating; abort fires in background to avoid blocking.
+    // When the prompt promise later settles, cleanupDone guards against re-entry.
+    if (error) {
+      input.piClient.stopSession(input.sessionId).catch((abortErr) => {
+        console.error('[session-runtime] abort during cleanup failed', { sessionId: input.sessionId, abortErr });
+      });
+    }
 
     const runtimeError = error ? formatRuntimeError(error) : null;
     if (runtimeError) {
@@ -165,7 +176,27 @@ export async function startSessionRun(input: StartSessionRunInput) {
     });
 
     unsubscribe();
+
+    // Dispose agent resources to prevent memory leaks.
+    input.piClient.closeRuntime(input.sessionId).catch((disposeErr) => {
+      console.error('[session-runtime] closeRuntime during cleanup failed', { sessionId: input.sessionId, disposeErr });
+    });
   };
+
+  const resetTimeout = () => {
+    if (!timeoutHandle || cleanupDone) return;
+    // Only reset if less than 1 minute remains on the countdown.
+    // During active streaming this avoids thousands of unnecessary
+    // clearTimeout/setTimeout calls while still extending near-expiry.
+    const remaining = safetyTimeoutMs - (Date.now() - (timeoutStartedAt ?? Date.now()));
+    if (remaining > 60_000) return;
+    clearTimeout(timeoutHandle);
+    timeoutStartedAt = Date.now();
+    timeoutHandle = setTimeout(() => {
+      void doCleanup(new Error('session_run_timeout'));
+    }, safetyTimeoutMs);
+  };
+
   await markSessionRunning(input.db, input.sessionId, startedAt);
 
   // Bind request context for cross-session wait coordination
@@ -181,9 +212,25 @@ export async function startSessionRun(input: StartSessionRunInput) {
     error: null,
   });
 
+  // Start the safety timeout before setting up the stream subscription,
+  // so that any early events can reset the timer immediately.
+  timeoutStartedAt = Date.now();
   timeoutHandle = setTimeout(() => {
     void doCleanup(new Error('session_run_timeout'));
   }, safetyTimeoutMs);
+
+  // Activity-based timeout: reset on every stream event so the safety
+  // timeout only fires when the agent is truly stuck (no events at all).
+  const wrappedListener = input.onStreamEvent
+    ? (event: PiSessionStreamEvent) => {
+        resetTimeout();
+        try { void input.onStreamEvent!(event); } catch { /* isolate async handler */ }
+      }
+    : undefined;
+
+  const unsubscribe = wrappedListener
+    ? await input.piClient.subscribeSession(input.sessionId, wrappedListener)
+    : () => {};
 
   const sendPromise = input.piClient.sendMessage(input.sessionId, input.content, input.images?.length ? { images: input.images } : undefined);
   void sendPromise.then(() => doCleanup()).catch((error) => doCleanup(error));
