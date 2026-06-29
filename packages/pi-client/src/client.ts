@@ -8,7 +8,7 @@ import {
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { readHistory } from './history';
 import { RuntimeRegistry } from './runtime-registry';
@@ -122,6 +122,23 @@ export function createPiClient(): PiClient {
         piSessionId: session.sessionId,
         sessionFile: session.sessionFile ?? '',
       };
+      // 确保 session 文件立即落盘。SessionManager._persist 在没有 assistant 消息时
+      // 不会刷新到磁盘，导致后续 appendModelChange 仅存于内存。提前创建文件让
+      // SessionManager.open 读取后设置 flushed=true，appendModelChange 即可立即持久化。
+      if (locator.sessionFile && !existsSync(locator.sessionFile)) {
+        const sessionDir = dirname(locator.sessionFile);
+        if (!existsSync(sessionDir)) {
+          mkdirSync(sessionDir, { recursive: true });
+        }
+        writeFileSync(locator.sessionFile, JSON.stringify({
+          type: 'session',
+          version: 3,
+          id: session.sessionId,
+          timestamp: new Date().toISOString(),
+          cwd,
+        }) + '\n');
+        console.log('[pi-client] createSession → seeded session file', { sessionFile: locator.sessionFile });
+      }
       if (input.model && locator.sessionFile) {
         const sessionManager = SessionManager.open(locator.sessionFile);
         if (!sessionFileHasModelChange(sessionManager, model.provider, model.id)) {
@@ -159,18 +176,30 @@ export function createPiClient(): PiClient {
           modelRegistry,
         };
 
-        if (!sessionContext.model) {
+        if (sessionContext.model) {
+          const available = await modelRegistry.getAvailable();
+          const restored = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+          if (restored) {
+            options.model = restored;
+            console.log('[pi-client] restoreRuntime restored session model', {
+              sessionId,
+              provider: restored.provider,
+              id: restored.id,
+            });
+          } else {
+            options.model = await ensureModel();
+            console.log('[pi-client] restoreRuntime session model not in registry, fallback default', {
+              sessionId,
+              provider: options.model?.provider ?? null,
+              id: options.model?.id ?? null,
+            });
+          }
+        } else {
           options.model = await ensureModel();
-          console.log('[pi-client] restoreRuntime fallback default model', {
+          console.log('[pi-client] restoreRuntime no session model, fallback default', {
             sessionId,
             provider: options.model?.provider ?? null,
             id: options.model?.id ?? null,
-          });
-        } else {
-          console.log('[pi-client] restoreRuntime sessionContext model', {
-            sessionId,
-            provider: sessionContext.model.provider,
-            id: sessionContext.model.modelId,
           });
         }
 
@@ -344,7 +373,10 @@ export function createPiClient(): PiClient {
     async closeRuntime(sessionId) {
       const session = runtimeRegistry.get(sessionId);
       session?.agentSession?.dispose();
-      runtimeRegistry.delete(sessionId);
+      // 保留 registry 条目以维持 locator，供后续 bindToolRuntime 等调用使用
+      if (session) {
+        session.agentSession = undefined;
+      }
     },
     async listAvailableModels() {
       const models = await modelRegistry.getAvailable();
@@ -389,12 +421,11 @@ export function createPiClient(): PiClient {
 
       await session.agentSession.setModel(target);
 
-      // 兜底：确保模型切换一定持久化到 session 文件。
-      // 按文档 AgentSession.setModel() 会 appendModelChange，但当前集成路径下测试显示
-      // 某些情况下 session 文件没有写入 model_change，因此这里做一次镜像校验与补写。
-      const sessionManager = SessionManager.open(locator.sessionFile);
-      if (!sessionFileHasModelChange(sessionManager, target.provider, target.id)) {
-        sessionManager.appendModelChange(target.provider, target.id);
+      // 兜底：使用 agent 自身的 sessionManager 做镜像校验与补写，
+      // 避免 SessionManager.open 创建新实例导致 model_change 无法立即落盘。
+      const agsm = session.agentSession.sessionManager;
+      if (!sessionFileHasModelChange(agsm, target.provider, target.id)) {
+        agsm.appendModelChange(target.provider, target.id);
       }
 
       session.model = {
@@ -464,35 +495,51 @@ export function createPiClient(): PiClient {
         modelRegistry,
       };
 
-      if (!sessionContext.model) {
-        if (session.model) {
-          const available = await modelRegistry.getAvailable();
-          const cached = available.find(
-            (candidate: any) => candidate.provider === session.model!.provider && candidate.id === session.model!.id,
-          );
-          if (cached) {
-            options.model = cached;
-            console.log('[pi-client] bindToolRuntime using cached registry model', {
-              sessionId,
-              provider: cached.provider,
-              id: cached.id,
-            });
-          } else {
-            options.model = await ensureModel();
-            console.log('[pi-client] bindToolRuntime cached model not found in registry, fallback default', {
-              sessionId,
-              provider: options.model?.provider ?? null,
-              id: options.model?.id ?? null,
-            });
-          }
+      if (sessionContext.model) {
+        const available = await modelRegistry.getAvailable();
+        const restored = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+        if (restored) {
+          options.model = restored;
+          console.log('[pi-client] bindToolRuntime restored session model', {
+            sessionId,
+            provider: restored.provider,
+            id: restored.id,
+          });
         } else {
           options.model = await ensureModel();
-          console.log('[pi-client] bindToolRuntime no cached model, fallback default', {
+          console.log('[pi-client] bindToolRuntime session model not in registry, fallback default', {
             sessionId,
             provider: options.model?.provider ?? null,
             id: options.model?.id ?? null,
           });
         }
+      } else if (session.model) {
+        const available = await modelRegistry.getAvailable();
+        const cached = available.find(
+          (candidate: any) => candidate.provider === session.model!.provider && candidate.id === session.model!.id,
+        );
+        if (cached) {
+          options.model = cached;
+          console.log('[pi-client] bindToolRuntime using cached registry model', {
+            sessionId,
+            provider: cached.provider,
+            id: cached.id,
+          });
+        } else {
+          options.model = await ensureModel();
+          console.log('[pi-client] bindToolRuntime cached model not found in registry, fallback default', {
+            sessionId,
+            provider: options.model?.provider ?? null,
+            id: options.model?.id ?? null,
+          });
+        }
+      } else {
+        options.model = await ensureModel();
+        console.log('[pi-client] bindToolRuntime no cached model, fallback default', {
+          sessionId,
+          provider: options.model?.provider ?? null,
+          id: options.model?.id ?? null,
+        });
       }
 
       const { session: agentSession } = await createAgentSession(options);
