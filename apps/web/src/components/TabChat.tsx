@@ -450,7 +450,8 @@ export default function TabChat({
       setIsNearBottom(near);
 
       // 用户主动滚出底部区域后，停止自动跟随
-      if (distFromBottom > 20) {
+      // threshold 放大到 1/6 视口，避免 scroll 抖动导致小概率跟随失败
+      if (distFromBottom > container.clientHeight / 6) {
         userScrolledAwayRef.current = true;
       } else {
         userScrolledAwayRef.current = false;
