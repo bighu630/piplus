@@ -153,6 +153,10 @@ export async function startSessionRun(input: StartSessionRunInput) {
       timeoutStartedAt = null;
     }
 
+    // Internal safety timeout: agent produced zero events for too long.
+    // This is not a real agent loop error — don't surface it to the user.
+    const isSafetyTimeout = error instanceof Error && error.message === 'session_run_timeout';
+
     // Abort the running agent if cleanup was triggered by error or timeout.
     // The agent may still be generating; abort fires in background to avoid blocking.
     // When the prompt promise later settles, cleanupDone guards against re-entry.
@@ -162,7 +166,8 @@ export async function startSessionRun(input: StartSessionRunInput) {
       });
     }
 
-    const runtimeError = error ? formatRuntimeError(error) : null;
+    // Only surface real agent errors (not internal safety timeouts) to the user.
+    const runtimeError = (error && !isSafetyTimeout) ? formatRuntimeError(error) : null;
     if (runtimeError) {
       await persistRuntimeError(input.db, input.sessionId, runtimeError);
     }
