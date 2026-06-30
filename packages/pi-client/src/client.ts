@@ -654,5 +654,17 @@ export function createPiClient(): PiClient {
         models,
       } as any);
     },
+
+    async setProviderApiKey(provider, apiKey) {
+      authStorage.set(provider, { type: 'api_key', key: apiKey });
+    },
+
+    async removeProviderApiKey(provider) {
+      authStorage.remove(provider);
+    },
+
+    async getProviderAuthStatus(provider) {
+      return authStorage.getAuthStatus(provider);
+    },
   };
 }

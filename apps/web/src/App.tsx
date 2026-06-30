@@ -51,7 +51,6 @@ import {
 } from './lib/hooks';
 import {
   Settings,
-  ChevronDown,
   PlusCircle,
   Database,
   Trash2,
@@ -1160,13 +1159,19 @@ export default function App() {
           )}
           <div>
             <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">负责人模型</label>
-            <div className="relative">
-              <select value={createProjectModelKey} onChange={(e) => setCreateProjectModelKey(e.target.value)} className="w-full appearance-none px-3 py-2 pr-8 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition">
-                <option value="">使用默认模型</option>
-                {(modelsQuery.data ?? []).map((m) => <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>{m.provider} / {m.label}</option>)}
-              </select>
-              <ChevronDown className="w-3.5 h-3.5 absolute right-2.5 top-2.5 pointer-events-none text-slate-500" />
-            </div>
+            <Select
+              value={createProjectModelKey}
+              onChange={setCreateProjectModelKey}
+              options={[
+                { value: '', label: '使用默认模型' },
+                ...(modelsQuery.data ?? []).map((m) => ({
+                  value: `${m.provider}/${m.id}`,
+                  label: `${m.provider} / ${m.label}`,
+                })),
+              ]}
+              searchable
+              className="w-full"
+            />
           </div>
           <details className="group">
             <summary className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300 select-none">
@@ -1175,19 +1180,21 @@ export default function App() {
             <div className="mt-2 space-y-3 pl-2 border-l-2 border-slate-200 dark:border-slate-800">
               {CONFIGURABLE_ROLE_KEYS.map((role) => (
                 <div key={role.key} className="flex items-center gap-3">
-                  <span className="text-xs text-slate-600 dark:text-slate-400 w-20">{role.label}</span>
-                  <div className="relative flex-1">
-                    <select
+                  <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{role.label}</span>
+                  <div className="flex-1">
+                    <Select
                       value={roleDefaultModels[role.key] ? `${roleDefaultModels[role.key]!.provider}/${roleDefaultModels[role.key]!.id}` : ''}
-                      onChange={(e) => handleCreateProjectRoleModelChange(role.key, e.target.value)}
-                      className="w-full appearance-none px-3 py-2 pr-8 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
-                    >
-                      <option value="">继承（使用默认模型）</option>
-                      {(modelsQuery.data ?? []).map((m) => (
-                        <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>{m.provider} / {m.label}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-2.5 pointer-events-none text-slate-500" />
+                      onChange={(v) => handleCreateProjectRoleModelChange(role.key, v)}
+                      options={[
+                        { value: '', label: '继承（使用默认模型）' },
+                        ...(modelsQuery.data ?? []).map((m) => ({
+                          value: `${m.provider}/${m.id}`,
+                          label: `${m.provider} / ${m.label}`,
+                        })),
+                      ]}
+                      searchable
+                      className="w-full"
+                    />
                   </div>
                 </div>
               ))}
@@ -1236,19 +1243,21 @@ export default function App() {
           <div className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">角色默认模型</div>
           {CONFIGURABLE_ROLE_KEYS.map((role) => (
             <div key={role.key} className="flex items-center gap-3">
-              <span className="text-xs text-slate-600 dark:text-slate-400 w-20">{role.label}</span>
-              <div className="relative flex-1">
-                <select
+              <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{role.label}</span>
+              <div className="flex-1">
+                <Select
                   value={editRoleModels[role.key] ?? ''}
-                  onChange={(e) => handleRoleModelChange(role.key, e.target.value)}
-                  className="w-full appearance-none px-3 py-2 pr-8 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
-                >
-                  <option value="">继承（使用父级模型）</option>
-                  {(modelsQuery.data ?? []).map((m) => (
-                    <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>{m.provider} / {m.label}</option>
-                  ))}
-                </select>
-                <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-2.5 pointer-events-none text-slate-500" />
+                  onChange={(v) => handleRoleModelChange(role.key, v)}
+                  options={[
+                    { value: '', label: '继承（使用父级模型）' },
+                    ...(modelsQuery.data ?? []).map((m) => ({
+                      value: `${m.provider}/${m.id}`,
+                      label: `${m.provider} / ${m.label}`,
+                    })),
+                  ]}
+                  searchable
+                  className="w-full"
+                />
               </div>
             </div>
           ))}
@@ -1304,6 +1313,7 @@ export default function App() {
                       label: `${p.label}${p.hasAuth ? ' (已配置)' : ''}`,
                     }))}
                     placeholder="选择平台"
+                    searchable
                     className="w-full"
                   />
                 </div>

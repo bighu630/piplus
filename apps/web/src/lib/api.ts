@@ -289,3 +289,14 @@ export function setProjectRoleModels(projectId: string, models: Record<string, {
     body: JSON.stringify(models),
   });
 }
+
+export function getNativeModelProviders() {
+  return request<{ providers: Array<{ provider: string; label: string; env: string; hasAuth: boolean }> }>('/api/v1/models/native-providers');
+}
+
+export function setNativeProviderApiKey(provider: string, apiKey: string) {
+  return request<{ ok: boolean; provider: string }>('/api/v1/models/native-providers/auth', {
+    method: 'POST',
+    body: JSON.stringify({ provider, apiKey }),
+  });
+}

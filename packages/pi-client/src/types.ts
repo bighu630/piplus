@@ -154,6 +154,21 @@ export type PiClient = {
       compat?: Record<string, unknown>;
     }>;
   }): Promise<void>;
+
+  /**
+   * Set an API key for a given provider in auth storage.
+   */
+  setProviderApiKey?(provider: string, apiKey: string): Promise<void>;
+
+  /**
+   * Remove the stored API key for a given provider.
+   */
+  removeProviderApiKey?(provider: string): Promise<void>;
+
+  /**
+   * Get the authentication status for a given provider.
+   */
+  getProviderAuthStatus?(provider: string): Promise<{ configured: boolean; source?: string; label?: string }>;
 };
 
 export type PiToolCallContext = {

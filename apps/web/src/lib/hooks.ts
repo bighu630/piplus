@@ -32,6 +32,8 @@ import {
   createModelProvider,
   getProjectRoleModels,
   setProjectRoleModels,
+  getNativeModelProviders,
+  setNativeProviderApiKey,
   type ModelInfo,
   type ProviderFormPayload,
   type SendSessionMessagePayload,
@@ -349,6 +351,29 @@ export function useSetProjectRoleModelsMutation() {
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['project', 'role-models', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['tree'] });
+    },
+  });
+}
+
+export function useNativeModelProviders() {
+  return useQuery({
+    queryKey: ['models', 'native-providers'],
+    queryFn: getNativeModelProviders,
+    staleTime: 30_000,
+  });
+}
+
+export function useSetNativeProviderApiKeyMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ provider, apiKey }: { provider: string; apiKey: string }) =>
+      setNativeProviderApiKey(provider, apiKey),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['models', 'status'] }),
+        queryClient.invalidateQueries({ queryKey: ['models', 'native-providers'] }),
+      ]);
     },
   });
 }

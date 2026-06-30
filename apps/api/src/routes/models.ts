@@ -350,4 +350,55 @@ export function registerModelRoutes(app: Hono) {
     const providerModels = refreshed.filter((model) => model.provider === validated.providerKey);
     return c.json({ ok: true, providerKey: validated.providerKey, models: providerModels });
   });
+
+  // Native provider auth endpoints
+
+  const NATIVE_PROVIDERS = [
+    { provider: 'openrouter', label: 'OpenRouter', env: 'OPENROUTER_API_KEY' },
+    { provider: 'opencode', label: 'OpenCode Zen', env: 'OPENCODE_API_KEY' },
+    { provider: 'opencode-go', label: 'OpenCode Go', env: 'OPENCODE_API_KEY' },
+    { provider: 'anthropic', label: 'Anthropic', env: 'ANTHROPIC_API_KEY' },
+    { provider: 'openai', label: 'OpenAI', env: 'OPENAI_API_KEY' },
+    { provider: 'deepseek', label: 'DeepSeek', env: 'DEEPSEEK_API_KEY' },
+    { provider: 'google', label: 'Google Gemini', env: 'GOOGLE_GENERATIVE_AI_API_KEY' },
+    { provider: 'mistral', label: 'Mistral', env: 'MISTRAL_API_KEY' },
+    { provider: 'groq', label: 'Groq', env: 'GROQ_API_KEY' },
+    { provider: 'xai', label: 'xAI', env: 'XAI_API_KEY' },
+  ];
+
+  app.get('/api/v1/models/native-providers', async (c) => {
+    await initPromise;
+    const providers = await Promise.all(
+      NATIVE_PROVIDERS.map(async (p) => ({
+        ...p,
+        hasAuth: (await piClient.getProviderAuthStatus?.(p.provider))?.configured ?? false,
+      }))
+    );
+    return c.json({ providers });
+  });
+
+  app.post('/api/v1/models/native-providers/auth', async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { provider?: string; apiKey?: string };
+    const provider = String(body.provider ?? '').trim();
+    const apiKey = String(body.apiKey ?? '').trim();
+
+    if (!provider) {
+      return c.json({ error: { code: 'INVALID_PROVIDER', message: 'provider is required' } }, 400);
+    }
+    if (!apiKey) {
+      return c.json({ error: { code: 'INVALID_API_KEY', message: 'apiKey is required' } }, 400);
+    }
+
+    const known = NATIVE_PROVIDERS.find((p) => p.provider === provider);
+    if (!known) {
+      return c.json({ error: { code: 'UNKNOWN_PROVIDER', message: `Unknown provider: ${provider}` } }, 400);
+    }
+
+    try {
+      await piClient.setProviderApiKey?.(provider, apiKey);
+      return c.json({ ok: true, provider });
+    } catch (error) {
+      return c.json({ error: { code: 'AUTH_STORAGE_ERROR', message: error instanceof Error ? error.message : 'Failed to store API key' } }, 500);
+    }
+  });
 }

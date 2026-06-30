@@ -1,4 +1,4 @@
-import { projects, sessionEvents, sessions } from '@piplus/db/schema';
+import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { and, eq } from 'drizzle-orm';
 import type { PiClient, PiImageInput, PiSessionStreamEvent } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
@@ -122,7 +122,20 @@ export async function startSessionRun(input: StartSessionRunInput) {
     id: runtimeModel?.id ?? null,
   });
 
-  const toolDefs = await buildAllToolDefs(input.db);
+  // Load the role template key to determine which tools to expose
+  const [roleTmpl] = await input.db
+    .select({ key: roleTemplates.key })
+    .from(roleTemplates)
+    .where(eq(roleTemplates.id, session.roleTemplateId))
+    .limit(1);
+  const roleKey = roleTmpl?.key ?? null;
+
+  let toolDefs = await buildAllToolDefs(input.db);
+  // Planner is a root node — it coordinates children via spawn_session and send_message_to_session,
+  // but does not call writeback_to_parent itself (it reports directly to the user).
+  if (roleKey === 'planner') {
+    toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent');
+  }
   await input.piClient.bindToolRuntime(input.sessionId, toolDefs, async (toolName, args) => {
     return invokePlatformTool(toolName, args, {
       db: input.db,
