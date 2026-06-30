@@ -148,8 +148,8 @@ export default function TabChat({
   const prevScrollHeightRef = useRef<number | null>(null);
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
   const sessionJustSwitchedRef = useRef(false);
-  const userScrolledAwayRef = useRef(false);
   const [isNearBottom, setIsNearBottom] = useState(true);
+  const isNearBottomRef = useRef(true);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -157,8 +157,8 @@ export default function TabChat({
 
   const handleScrollToBottom = () => {
     scrollToBottom('smooth');
-    userScrolledAwayRef.current = false;
     setIsNearBottom(true);
+    isNearBottomRef.current = true;
   };
 
   const canSendImages = currentModelSupportsImages !== false;
@@ -343,15 +343,16 @@ export default function TabChat({
 
   // useLayoutEffect：在浏览器重绘前同步吸附底部，避免抽搐
   useLayoutEffect(() => {
-    if (!streamingContent || userScrolledAwayRef.current) return;
+    if (!streamingContent || !isNearBottomRef.current) return;
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const isNearBottom =
+    const nearBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight < container.clientHeight / 3;
-    if (isNearBottom) {
+    if (nearBottom) {
       container.scrollTop = container.scrollHeight - container.clientHeight;
       setIsNearBottom(true);
+      isNearBottomRef.current = true;
     }
   }, [streamingContent]);
 
@@ -364,14 +365,14 @@ export default function TabChat({
       const isPlaceholder = displayMessages.length === 1 && displayMessages[0].id === 'empty_placeholder';
       if (!isPlaceholder) {
         sessionJustSwitchedRef.current = false;
-        userScrolledAwayRef.current = false;
         setIsNearBottom(true);
+        isNearBottomRef.current = true;
         requestAnimationFrame(() => requestAnimationFrame(() => scrollToBottom('auto')));
         return;
       }
     }
 
-    if (streamingContent || lastChangeTypeRef.current === 'prepend' || userScrolledAwayRef.current) {
+    if (streamingContent || lastChangeTypeRef.current === 'prepend' || !isNearBottom) {
       return;
     }
 
@@ -439,23 +440,15 @@ export default function TabChat({
     setPreviewImage(null);
   }, [selectedSessionId]);
 
-  // Track whether the user is near the bottom of the message list
+  // 滚动监听：同步更新按钮状态和跟随标记（两者共用同一 clientHeight/3 阈值）
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
     const checkNearBottom = () => {
-      const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-      const near = distFromBottom < container.clientHeight / 3;
+      const near = container.scrollHeight - container.scrollTop - container.clientHeight < container.clientHeight / 3;
       setIsNearBottom(near);
-
-      // 用户主动滚出底部区域后，停止自动跟随
-      // threshold 放大到 1/6 视口，避免 scroll 抖动导致小概率跟随失败
-      if (distFromBottom > container.clientHeight / 6) {
-        userScrolledAwayRef.current = true;
-      } else {
-        userScrolledAwayRef.current = false;
-      }
+      isNearBottomRef.current = near;
     };
 
     checkNearBottom();
@@ -1078,6 +1071,7 @@ export default function TabChat({
                 }))}
                 searchable
                 dropdownMaxHeight="max-h-72"
+                dropdownMinWidth="260px"
                 className="w-full"
               />
             </div>
