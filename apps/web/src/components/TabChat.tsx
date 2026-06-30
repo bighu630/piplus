@@ -148,9 +148,17 @@ export default function TabChat({
   const prevScrollHeightRef = useRef<number | null>(null);
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
   const sessionJustSwitchedRef = useRef(false);
+  const userScrolledAwayRef = useRef(false);
+  const [isNearBottom, setIsNearBottom] = useState(true);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
+  };
+
+  const handleScrollToBottom = () => {
+    scrollToBottom('smooth');
+    userScrolledAwayRef.current = false;
+    setIsNearBottom(true);
   };
 
   const canSendImages = currentModelSupportsImages !== false;
@@ -335,14 +343,15 @@ export default function TabChat({
 
   // useLayoutEffect：在浏览器重绘前同步吸附底部，避免抽搐
   useLayoutEffect(() => {
-    if (!streamingContent) return;
+    if (!streamingContent || userScrolledAwayRef.current) return;
     const container = scrollContainerRef.current;
     if (!container) return;
 
     const isNearBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+      container.scrollHeight - container.scrollTop - container.clientHeight < container.clientHeight / 3;
     if (isNearBottom) {
       container.scrollTop = container.scrollHeight - container.clientHeight;
+      setIsNearBottom(true);
     }
   }, [streamingContent]);
 
@@ -355,20 +364,23 @@ export default function TabChat({
       const isPlaceholder = displayMessages.length === 1 && displayMessages[0].id === 'empty_placeholder';
       if (!isPlaceholder) {
         sessionJustSwitchedRef.current = false;
+        userScrolledAwayRef.current = false;
+        setIsNearBottom(true);
         requestAnimationFrame(() => requestAnimationFrame(() => scrollToBottom('auto')));
         return;
       }
     }
 
-    if (streamingContent || lastChangeTypeRef.current === 'prepend') {
+    if (streamingContent || lastChangeTypeRef.current === 'prepend' || userScrolledAwayRef.current) {
       return;
     }
 
-    const isNearBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < 150;
+    const userAtBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < container.clientHeight / 3;
 
-    if (lastChangeTypeRef.current === 'append' || isNearBottom) {
+    if (userAtBottom) {
       scrollToBottom('smooth');
+      setIsNearBottom(true);
     }
   }, [displayMessages, streamingContent, selectedSessionId]);
 
@@ -426,6 +438,29 @@ export default function TabChat({
     setAttachmentError(null);
     setPreviewImage(null);
   }, [selectedSessionId]);
+
+  // Track whether the user is near the bottom of the message list
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const checkNearBottom = () => {
+      const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      const near = distFromBottom < container.clientHeight / 3;
+      setIsNearBottom(near);
+
+      // 用户主动滚出底部区域后，停止自动跟随
+      if (distFromBottom > 20) {
+        userScrolledAwayRef.current = true;
+      } else {
+        userScrolledAwayRef.current = false;
+      }
+    };
+
+    checkNearBottom();
+    container.addEventListener('scroll', checkNearBottom, { passive: true });
+    return () => container.removeEventListener('scroll', checkNearBottom);
+  }, []);
 
   const contextUsageQuery = useSessionContextUsage(selectedSessionId ?? null);
   const contextPercent = contextUsageQuery.data?.percent ?? null;
@@ -991,6 +1026,19 @@ export default function TabChat({
         })()}
 
         <div ref={messagesEndRef} />
+        
+        {/* Scroll to bottom button */}
+        {!isNearBottom && (
+          <div className="sticky bottom-6 z-10 flex justify-end pointer-events-none">
+            <button
+              onClick={handleScrollToBottom}
+              className="pointer-events-auto w-11 h-11 rounded-full bg-white dark:bg-slate-700 shadow-lg border border-slate-200 dark:border-slate-600 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-600 transition cursor-pointer"
+              aria-label="滚动到底部"
+            >
+              <ChevronDown className="w-5 h-5 text-slate-600 dark:text-slate-300" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Suggestions */}

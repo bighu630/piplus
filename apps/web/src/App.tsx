@@ -382,7 +382,6 @@ export default function App() {
               else if (message.phase === 'delta') setStreamingContent((prev) => prev + delta);
             }
             if (message.phase === 'complete') {
-              setStreamingContent('');
               setStreamNote('');
               setPendingUserMessages([]);
               Promise.all([
@@ -390,7 +389,9 @@ export default function App() {
                 queryClient.invalidateQueries({ queryKey: ['tree'] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', selectedSessionId] }),
-              ]);
+              ]).then(() => {
+                setStreamingContent('');
+              });
             }
             if (message.phase === 'error') {
               const errorText = message.payload?.error ?? 'Unknown agent loop error';
@@ -408,7 +409,6 @@ export default function App() {
               queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
             }
             if (status === 'idle') {
-              setStreamingContent('');
               setStreamNote('');
               setPendingUserMessages([]);
               const idleError = message.payload?.error;
@@ -419,7 +419,9 @@ export default function App() {
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['tree'] }),
-              ]);
+              ]).then(() => {
+                setStreamingContent('');
+              });
             }
           }
           if (message.kind === 'event' && (message.type === 'tree.changed' || message.type === 'project.created' || message.type === 'session.created' || message.type === 'session.archived')) {
