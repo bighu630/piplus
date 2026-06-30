@@ -4,6 +4,7 @@ import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageD
 import type { SessionMessageImageAttachment } from '../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
 import {
   Copy,
@@ -23,6 +24,7 @@ import {
 } from 'lucide-react';
 import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
+import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
 
 interface ModelOption {
@@ -633,7 +635,7 @@ export default function TabChat({
                     {(msg.content_text || textBlocks(msg).length > 0) && (
                       <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed break-words overflow-hidden">
                         <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
+                          remarkPlugins={[remarkGfm, remarkBreaks]}
                           rehypePlugins={[[rehypeHighlight, { detect: false }]]}
                           components={{
                             pre({ children }) {
@@ -1014,23 +1016,21 @@ export default function TabChat({
       <div className="shrink-0 px-4 md:px-5 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
         <div className="mx-auto max-w-[900px] flex items-center gap-3 py-2">
           {models && models.length > 0 && onModelSelect && (
-            <div className="relative">
-              <select
+            <div className="relative" style={{ minWidth: 120 }}>
+              <Select
                 value={currentModelValue ?? ''}
-                onChange={(e) => {
-                  const [provider, id] = e.target.value.split('/');
+                onChange={(v) => {
+                  const [provider, id] = v.split('/');
                   if (provider && id) onModelSelect(provider, id);
                 }}
-                disabled={runtimeStatus === 'running'}
-                className="appearance-none bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl px-2.5 py-1 pr-7 text-[11px] font-semibold text-slate-600 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer disabled:opacity-50"
-              >
-                {models.map((m) => (
-                  <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-                    {m.provider} / {m.label}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-3 h-3 absolute right-2 top-1.5 pointer-events-none text-slate-400" />
+                options={models.map((m) => ({
+                  value: `${m.provider}/${m.id}`,
+                  label: `${m.provider} / ${m.label}`,
+                }))}
+                searchable
+                dropdownMaxHeight="max-h-72"
+                className="w-full"
+              />
             </div>
           )}
           {showArchiveButton && onArchiveSession && (
