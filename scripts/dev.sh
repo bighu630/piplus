@@ -9,6 +9,9 @@ if [ -f .env ]; then
   set +a
 fi
 
+PIPLUS_LOG_DIR="${PIPLUS_LOG_DIR:-/tmp/piplus-logs}"
+mkdir -p "$PIPLUS_LOG_DIR"
+
 API_PORT="${API_PORT:-3001}"
 WEB_PORT="${WEB_PORT:-3002}"
 
@@ -45,19 +48,20 @@ if [ -z "${APP_PASSWORD:-}" ]; then
 fi
 
 echo ""
+echo "[piplus] logs → ${PIPLUS_LOG_DIR}"
 
 # ── clean stale cache ─────────────────────────────────────
 rm -rf apps/web/.next
 
 # ── launch ─────────────────────────────────────────────────
 echo "[piplus] starting API on port ${API_PORT} ..."
-bun run apps/api/src/index.ts &
+bun run apps/api/src/index.ts > >(sed 's/^/[api] /' | tee -a "$PIPLUS_LOG_DIR/api.log") 2>&1 &
 API_PID=$!
 
 sleep 1
 
 echo "[piplus] starting Web on port ${WEB_PORT} ..."
-cd apps/web && npx vite --host 0.0.0.0 --port "${WEB_PORT}" &
+cd apps/web && npx vite --host 0.0.0.0 --port "${WEB_PORT}" > >(sed 's/^/[web] /' | tee -a "$PIPLUS_LOG_DIR/web.log") 2>&1 &
 WEB_PID=$!
 
 trap 'echo; echo "[piplus] shutting down..."; kill '"$API_PID"' '"$WEB_PID"' 2>/dev/null; exit' INT TERM
