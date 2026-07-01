@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import hljs from 'highlight.js';
 import { Check, ChevronRight, Copy, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw } from 'lucide-react';
+import MermaidBlock from './MermaidBlock';
 
 interface TabFilesProps {
   treeResponse: SessionFileTreeResponseDTO | null;
@@ -186,6 +187,9 @@ function RichMarkdown({ content }: { content: string }) {
               const language = match ? match[1] : 'code';
               const codeText = extractCodeText(children);
               const blockId = `blk-${language}-${codeText.slice(0, 60)}`;
+              if (language.toLowerCase() === 'mermaid') {
+                return <MermaidBlock chart={codeText} />;
+              }
               return (
                 <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 relative font-mono text-xs shadow-3xs max-w-full">
                   <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
