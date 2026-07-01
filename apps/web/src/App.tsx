@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ChatImageContentBlockDTO, ServerMessage } from '@piplus/shared';
+import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ChatImageContentBlockDTO, ChatStreamMessage, EventMessage, ServerMessage } from '@piplus/shared';
 import type { ProviderFormPayload, SessionMessageImageAttachment } from './lib/api';
 import hljsLight from 'highlight.js/styles/github.css?url';
 import hljsDark from 'highlight.js/styles/github-dark.css?url';
+import {
+  getNotificationPermission,
+  requestNotificationPermission,
+  sendSystemNotification,
+} from './lib/notification';
 import Sidebar from './components/Sidebar';
 import TabChat from './components/TabChat';
 import TabSessionInfo from './components/TabSessionInfo';
@@ -137,6 +142,13 @@ const ROLE_CONFIG_KEYS = [
 
 const CONFIGURABLE_ROLE_KEYS = ROLE_CONFIG_KEYS.filter((r) => r.key !== 'planner');
 
+const NOTIFIABLE_ROLE_KEYS = new Set(['planner', 'feature_lead', 'bugfix_lead']);
+const NOTIFICATION_ROLE_LABELS: Record<string, string> = {
+  planner: 'Planner',
+  feature_lead: 'Feature Lead',
+  bugfix_lead: 'Bugfix Lead',
+};
+
 function useIsMobile(breakpoint = 768): boolean {
   const getIsMobile = useCallback(() => {
     if (typeof window === 'undefined') return false;
@@ -244,6 +256,11 @@ export default function App() {
       return 'enter';
     }
   });
+  const [systemNotificationsEnabled, setSystemNotificationsEnabled] = useState(() => {
+    try { return localStorage.getItem('pi-system-notifications') === 'true'; } catch { return false; }
+  });
+  const [notificationPermissionStatus, setNotificationPermissionStatus] = useState<string | null>(null);
+  const notifiedRef = useRef<Set<string>>(new Set());
   const isMobile = useIsMobile();
   const [showMobileSidebar, setShowMobileSidebar] = useState(() => !(typeof window !== 'undefined' && getSessionIdFromPath(window.location.pathname)));
   const isSidebarVisible = !isMobile || showMobileSidebar;
@@ -264,6 +281,28 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem('pi-send-shortcut-mode', sendShortcutMode); } catch {}
   }, [sendShortcutMode]);
+
+  useEffect(() => {
+    try { localStorage.setItem('pi-system-notifications', String(systemNotificationsEnabled)); } catch {}
+  }, [systemNotificationsEnabled]);
+
+  // Reconcile persisted toggle state with actual browser permission on mount.
+  // If notifications were previously enabled but permission is no longer granted,
+  // turn the toggle off and show an inline status message.
+  useEffect(() => {
+    const permission = getNotificationPermission();
+    if (systemNotificationsEnabled && permission !== 'granted') {
+      setSystemNotificationsEnabled(false);
+      if (permission === 'unsupported') {
+        setNotificationPermissionStatus('unsupported');
+      } else {
+        // 'denied' or 'default' — either way, notifications won't fire
+        setNotificationPermissionStatus(permission);
+      }
+    }
+    // Intentionally run only on mount: systemNotificationsEnabled is the initial value
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (Number.isFinite(sidebarWidth)) {
@@ -363,7 +402,64 @@ export default function App() {
   activeTabRef.current = activeTab;
   const selectedProjectIdRef = useRef(selectedProjectId);
   selectedProjectIdRef.current = selectedProjectId;
+  const systemNotificationsEnabledRef = useRef(systemNotificationsEnabled);
+  systemNotificationsEnabledRef.current = systemNotificationsEnabled;
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
+
+  // ── System notification helpers ──────────────────────────────────
+  // These are defined as local functions so they can be called from the
+  // WebSocket onMessage closure. notifiedRef is a Ref — its .current is
+  // always up-to-date regardless of when the closure was created.
+
+  function notifyChatStreamError(message: ChatStreamMessage) {
+    if (!('scope' in message) || !message.scope?.session_id) return;
+    const sessionId = message.scope.session_id;
+    const errorText = message.payload?.error ?? 'Unknown agent loop error';
+    const treeData = queryClient.getQueryData<{ projects: ProjectDTO[] }>(['tree']);
+    if (!treeData) return;
+    const node = findSessionNode(treeData.projects, sessionId);
+    if (!node || !NOTIFIABLE_ROLE_KEYS.has(node.role_template_key)) return;
+    const errorKey = `error:${sessionId}:${errorText}`;
+    if (notifiedRef.current.has(errorKey)) return;
+    notifiedRef.current.add(errorKey);
+    const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
+    sendSystemNotification(`PiPlus：${label} 出错`, {
+      body: `会话「${node.title}」发生错误：${errorText}`,
+    });
+  }
+
+  function notifyRuntimeStatusChanged(message: EventMessage) {
+    if (!('scope' in message) || !message.scope?.session_id) return;
+    const sessionId = message.scope.session_id;
+    const status = message.payload?.runtime_status as string | undefined;
+    if (status !== 'idle') return;
+    const idleError = message.payload?.error;
+    const hasError = idleError && typeof idleError === 'string' && idleError.length > 0;
+    const treeData = queryClient.getQueryData<{ projects: ProjectDTO[] }>(['tree']);
+    if (!treeData) return;
+    const node = findSessionNode(treeData.projects, sessionId);
+    if (!node || !NOTIFIABLE_ROLE_KEYS.has(node.role_template_key)) return;
+    if (hasError) {
+      const errorText = idleError as string;
+      const errorKey = `error:${sessionId}:${errorText}`;
+      if (notifiedRef.current.has(errorKey)) return;
+      notifiedRef.current.add(errorKey);
+      const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
+      sendSystemNotification(`PiPlus：${label} 出错`, {
+        body: `会话「${node.title}」发生错误：${errorText}`,
+      });
+    } else {
+      // Idle without error → completion notification
+      const doneKey = `done:${sessionId}`;
+      if (notifiedRef.current.has(doneKey)) return;
+      notifiedRef.current.add(doneKey);
+      const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
+      sendSystemNotification(`PiPlus：${label} 已完成`, {
+        body: `会话「${node.title}」已完成。`,
+      });
+    }
+  }
+  // ── End notification helpers ─────────────────────────────────────
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -397,6 +493,10 @@ export default function App() {
               const errorText = message.payload?.error ?? 'Unknown agent loop error';
               setRuntimeErrors([{ runId: message.payload?.stream_id ?? 'unknown', error: errorText }]);
               setStreamingContent('');
+              // System notification: chat_stream error
+              if (systemNotificationsEnabledRef.current) {
+                notifyChatStreamError(message);
+              }
             }
           }
           if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
@@ -407,6 +507,11 @@ export default function App() {
             if (status === 'running') {
               // Refetch messages immediately so tool_call entries appear promptly
               queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+              // Clear completion notification tracking so a new run can trigger a new notification
+              const msgSessionId = message.scope?.session_id;
+              if (msgSessionId) {
+                notifiedRef.current.delete(`done:${msgSessionId}`);
+              }
             }
             if (status === 'idle') {
               setStreamNote('');
@@ -414,6 +519,10 @@ export default function App() {
               const idleError = message.payload?.error;
               if (idleError && typeof idleError === 'string' && idleError) {
                 setRuntimeErrors([{ runId: 'runtime-status', error: idleError }]);
+              }
+              // System notification: session completed or errored
+              if (systemNotificationsEnabledRef.current) {
+                notifyRuntimeStatusChanged(message);
               }
               Promise.all([
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
@@ -901,6 +1010,28 @@ export default function App() {
     });
   }, []);
 
+  const handleToggleSystemNotifications = useCallback(async (enabled: boolean) => {
+    if (enabled) {
+      const permission = await requestNotificationPermission();
+      if (permission === 'granted') {
+        setSystemNotificationsEnabled(true);
+        setNotificationPermissionStatus(null);
+      } else if (permission === 'denied') {
+        setNotificationPermissionStatus('denied');
+        setSystemNotificationsEnabled(false);
+      } else if (permission === 'default') {
+        setNotificationPermissionStatus('default');
+        setSystemNotificationsEnabled(false);
+      } else {
+        setNotificationPermissionStatus('unsupported');
+        setSystemNotificationsEnabled(false);
+      }
+    } else {
+      setSystemNotificationsEnabled(false);
+      setNotificationPermissionStatus(null);
+    }
+  }, []);
+
   if (!isLoggedIn) {
     return (
       <LoginScreen
@@ -1232,6 +1363,32 @@ export default function App() {
               <button onClick={() => setTheme('light')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'light' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>浅色</button>
               <button onClick={() => setTheme('dark')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'dark' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>深色</button>
             </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">系统通知</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">开启后，Planner、Feature Lead、Bugfix Lead 完成或出错时发送通知。</div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="sr-only peer"
+                  checked={systemNotificationsEnabled}
+                  onChange={(e) => handleToggleSystemNotifications(e.target.checked)}
+                />
+                <div className="w-9 h-5 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+            {notificationPermissionStatus === 'denied' && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">系统通知被浏览器权限拒绝，请在浏览器设置中允许通知后重试。</p>
+            )}
+            {notificationPermissionStatus === 'default' && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">通知权限未授予，请在弹窗中选择「允许」以启用系统通知。</p>
+            )}
+            {notificationPermissionStatus === 'unsupported' && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">当前环境不支持系统通知（需要 HTTPS 或 localhost）。</p>
+            )}
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">

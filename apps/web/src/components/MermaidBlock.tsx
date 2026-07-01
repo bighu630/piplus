@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 interface MermaidBlockProps {
   chart: string;
@@ -6,21 +6,21 @@ interface MermaidBlockProps {
 
 const MAX_CHART_LENGTH = 50 * 1024;
 
+const THEMES = ['default', 'dark', 'neutral', 'forest'] as const;
+type MermaidTheme = (typeof THEMES)[number];
+
 export default function MermaidBlock({ chart }: MermaidBlockProps) {
-  const [isDark, setIsDark] = useState(() =>
-    document.documentElement.classList.contains('dark')
-  );
+  const [themeIndex, setThemeIndex] = useState(() => {
+    const isDark = document.documentElement.classList.contains('dark');
+    return isDark ? 1 : 0;
+  });
   const [error, setError] = useState<string | null>(null);
   const [svg, setSvg] = useState<string | null>(null);
 
-  // Observe dark class changes
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      const dark = document.documentElement.classList.contains('dark');
-      setIsDark(dark);
-    });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => observer.disconnect();
+  const userTheme: MermaidTheme = THEMES[themeIndex];
+
+  const cycleTheme = useCallback(() => {
+    setThemeIndex((prev) => (prev + 1) % THEMES.length);
   }, []);
 
   // Render mermaid
@@ -42,7 +42,7 @@ export default function MermaidBlock({ chart }: MermaidBlockProps) {
         mermaid.default.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
-          theme: isDark ? 'dark' : 'default',
+          theme: userTheme,
         });
 
         const id = `mermaid-${Math.random().toString(36).slice(2, 10)}`;
@@ -60,7 +60,7 @@ export default function MermaidBlock({ chart }: MermaidBlockProps) {
 
     render();
     return () => { cancelled = true; };
-  }, [chart, isDark]);
+  }, [chart, userTheme]);
 
   // Fallback on error
   if (error) {
@@ -78,8 +78,17 @@ export default function MermaidBlock({ chart }: MermaidBlockProps) {
 
   return (
     <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900">
-      <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none text-[10px] font-mono font-bold uppercase tracking-wider">
-        mermaid
+      <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
+        <span className="text-[10px] font-mono font-bold uppercase tracking-wider">mermaid</span>
+        <button
+          type="button"
+          onClick={cycleTheme}
+          className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-700 cursor-pointer transition-colors"
+          title="切换 Mermaid 主题"
+        >
+          <span>主题:</span>
+          <span className="font-semibold text-slate-600 dark:text-slate-300">{userTheme}</span>
+        </button>
       </div>
       <div
         className="p-4 overflow-x-auto bg-white dark:bg-slate-950 flex justify-center [&_svg]:max-w-none"
