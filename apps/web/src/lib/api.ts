@@ -7,6 +7,7 @@ import type {
   ChatImageContentBlockDTO,
   SessionFileTreeResponseDTO,
   SessionFileContentResponseDTO,
+  SessionFileSaveResponseDTO,
 } from '@piplus/shared';
 
 export type ModelInfo = {
@@ -190,6 +191,13 @@ export function getSessionFileTree(sessionId: string) {
 export function getSessionFileContent(sessionId: string, path: string) {
   const params = new URLSearchParams({ path });
   return request<SessionFileContentResponseDTO>(`/api/v1/sessions/${sessionId}/files/content?${params.toString()}`);
+}
+
+export function saveSessionFileContent(sessionId: string, path: string, content: string) {
+  return request<SessionFileSaveResponseDTO>(`/api/v1/sessions/${sessionId}/files/content`, {
+    method: 'PUT',
+    body: JSON.stringify({ path, content }),
+  });
 }
 
 export type GitActionResult = {

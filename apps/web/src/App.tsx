@@ -46,6 +46,7 @@ import {
   useNativeModelProviders,
   useSetNativeProviderApiKeyMutation,
   useUpdateSessionTitleMutation,
+  useSaveSessionFileContentMutation,
   useProjectRoleModels,
   useSetProjectRoleModelsMutation,
 } from './lib/hooks';
@@ -639,6 +640,13 @@ export default function App() {
   const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
   const gitCheckoutMut = useGitCheckoutMutation();
   const updateTitleMut = useUpdateSessionTitleMutation();
+  const saveFileContentMut = useSaveSessionFileContentMutation(activeTab === 'files' ? selectedSessionId : null);
+  const savingFile = saveFileContentMut.isPending;
+  
+  const handleSaveFileContent = useCallback(async (path: string, content: string) => {
+    if (!selectedSessionId) return;
+    await saveFileContentMut.mutateAsync({ path, content });
+  }, [selectedSessionId, saveFileContentMut]);
 
   const resetProviderForm = useCallback(() => {
     setProviderKey('');
@@ -1119,6 +1127,8 @@ export default function App() {
                   selectedPath={selectedFilePath}
                   onSelectPath={setSelectedFilePath}
                   onRefresh={() => { void fileTreeQuery.refetch(); }}
+                  onSaveContent={handleSaveFileContent}
+                  saving={savingFile}
                 />
               )}
             </>

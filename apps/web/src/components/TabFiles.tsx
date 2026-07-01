@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import hljs from 'highlight.js';
-import { Check, ChevronRight, Copy, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw } from 'lucide-react';
+import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw, Save, X } from 'lucide-react';
 import MermaidBlock from './MermaidBlock';
 
 interface TabFilesProps {
@@ -17,6 +17,8 @@ interface TabFilesProps {
   onRefresh: () => void;
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
+  onSaveContent?: (path: string, content: string) => Promise<void>;
+  saving?: boolean;
 }
 
 function isMarkdownFile(filePath: string | null): boolean {
@@ -299,10 +301,22 @@ export default function TabFiles({
   onRefresh,
   selectedPath,
   onSelectPath,
+  onSaveContent,
+  saving,
 }: TabFilesProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [refreshSpinning, setRefreshSpinning] = useState(false);
   const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [draftContent, setDraftContent] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
+  
+  // Reset editing when selected file changes
+  useEffect(() => {
+    setEditingPath(null);
+    setDraftContent('');
+    setEditError(null);
+  }, [selectedPath]);
 
   const firstFilePath = useMemo(() => {
     const visit = (nodes: SessionFileTreeNodeDTO[]): string | null => {
@@ -412,6 +426,57 @@ export default function TabFiles({
               {selectedPath ?? '请选择文件'}
             </div>
           </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {editingPath !== null ? (
+              <>
+                <span className="text-xs text-slate-400">编辑模式</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!selectedPath) return;
+                    setEditError(null);
+                    try {
+                      await onSaveContent?.(editingPath!, draftContent);
+                      setEditingPath(null);
+                      setDraftContent('');
+                    } catch (err) {
+                      setEditError(err instanceof Error ? err.message : '保存失败');
+                    }
+                  }}
+                  disabled={saving}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 cursor-pointer transition"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  保存
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingPath(null);
+                    setDraftContent('');
+                    setEditError(null);
+                  }}
+                  disabled={saving}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-50 cursor-pointer transition"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  取消
+                </button>
+              </>
+            ) : selectedPath && contentResponse && !contentLoading && !contentError && !contentResponse.truncated ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setDraftContent(contentResponse.content);
+                  setEditingPath(selectedPath);
+                }}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer transition"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                编辑
+              </button>
+            ) : null}
+          </div>
           <div className="text-[11px] text-slate-400 shrink-0">
             {isMarkdownFile(selectedPath) ? 'Markdown 预览' : '代码预览'}
           </div>
@@ -433,12 +498,26 @@ export default function TabFiles({
                 {contentResponse.truncated ? <span>已截断（最多 1MB）</span> : null}
               </div>
               <div className="h-[calc(100%-41px)] overflow-auto">
-                {isMarkdownFile(selectedPath) ? (
-                  <RichMarkdown content={contentResponse.content} />
+                {editingPath !== null ? (
+                  <textarea
+                    value={draftContent}
+                    onChange={(e) => setDraftContent(e.target.value)}
+                    className="w-full h-full p-4 text-xs leading-6 font-mono resize-none focus:outline-none bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 border-0"
+                    spellCheck={false}
+                  />
                 ) : (
-                  <CodePreview filePath={selectedPath} content={contentResponse.content} />
+                  isMarkdownFile(selectedPath) ? (
+                    <RichMarkdown content={contentResponse.content} />
+                  ) : (
+                    <CodePreview filePath={selectedPath} content={contentResponse.content} />
+                  )
                 )}
               </div>
+              {editError && (
+                <div className="px-4 py-2 border-t border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 text-xs text-red-600 dark:text-red-400">
+                  保存失败: {editError}
+                </div>
+              )}
             </div>
           )}
         </div>

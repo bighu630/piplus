@@ -132,6 +132,12 @@ export type SessionFileContentResponseDTO = {
   truncated: boolean;
 };
 
+export type SessionFileSaveResponseDTO = {
+  session_id: string;
+  path: string;
+  size: number;
+};
+
 export type SessionContextUsageDTO = {
   session_id: string;
   tokens: number | null;

@@ -22,6 +22,7 @@ import {
   getSessionGitDiff,
   getSessionFileTree,
   getSessionFileContent,
+  saveSessionFileContent,
   gitPull,
   gitPush,
   gitCommit,
@@ -170,6 +171,20 @@ export function useSessionFileContent(sessionId: string | null, path: string | n
     queryFn: () => getSessionFileContent(sessionId!, path!),
     enabled: Boolean(sessionId && path),
     staleTime: 10_000,
+  });
+}
+
+export function useSaveSessionFileContentMutation(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, content }: { path: string; content: string }) =>
+      saveSessionFileContent(sessionId!, path, content),
+    onSuccess: (_data, variables) => {
+      // Invalidate the specific file content query
+      queryClient.invalidateQueries({ queryKey: ['session', 'files', 'content', sessionId, variables.path] });
+      // Also invalidate the file tree (size may have changed)
+      queryClient.invalidateQueries({ queryKey: ['session', 'files', 'tree', sessionId] });
+    },
   });
 }
 
