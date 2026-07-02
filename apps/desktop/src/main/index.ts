@@ -3,7 +3,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { startApiProcess, stopApiProcess } from './api-process.js';
 import { waitForHealth } from './health.js';
 import { ensureAppPaths } from './paths.js';
-import { getFreePort } from './port.js';
+import { getFreePort, getPreferredPort } from './port.js';
 import { createMainWindow } from './window.js';
 import { getWebProdDir } from './resolve-paths.js';
 
@@ -12,7 +12,14 @@ let quitting = false;
 
 async function bootstrap() {
   const paths = await ensureAppPaths();
-  const port = await getFreePort('127.0.0.1');
+
+  // In packaged mode use a preferred (stable) port so localStorage
+  // origin is consistent across restarts; fall back to random if taken.
+  // In dev mode continue using random port to avoid conflicts with
+  // other local instances.
+  const { port } = app.isPackaged
+    ? await getPreferredPort('127.0.0.1')
+    : { port: await getFreePort('127.0.0.1') };
 
   apiProcess = startApiProcess({
     port,
