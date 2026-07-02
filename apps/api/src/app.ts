@@ -8,6 +8,7 @@ import { requireAuth } from './middleware/auth';
 import { registerProjectRoutes } from './routes/projects';
 import { registerSessionRoutes, registerSessionMutationRoutes } from './routes/sessions';
 import { registerModelRoutes } from './routes/models';
+import { registerPackagesRoutes } from './routes/packages';
 import { registerTreeRoutes } from './routes/tree';
 
 function normalizeOrigin(raw: string | undefined): string | undefined {
@@ -48,7 +49,9 @@ export function createApp() {
   registerProjectRoutes(app);
   registerSessionRoutes(app);
   registerSessionMutationRoutes(app);
+  app.use('/api/v1/packages/*', requireAuth);
   registerModelRoutes(app);
+  registerPackagesRoutes(app);
 
   // Serve web static files with runtime config injection (Docker/production mode)
   if (process.env.PIPLUS_SERVE_WEB === '1') {

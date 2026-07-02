@@ -38,6 +38,11 @@ import {
   type ModelInfo,
   type ProviderFormPayload,
   type SendSessionMessagePayload,
+  getPackages,
+  installPackage,
+  removePackage,
+  updatePackages,
+  getPackageUpdates,
 } from './api';
 
 export function useAuthSession() {
@@ -390,5 +395,64 @@ export function useSetNativeProviderApiKeyMutation() {
         queryClient.invalidateQueries({ queryKey: ['models', 'native-providers'] }),
       ]);
     },
+  });
+}
+
+// ── Package Management Hooks ─────────────────────────────────────────
+
+export function usePackages() {
+  return useQuery({
+    queryKey: ['packages'],
+    queryFn: async () => {
+      const res = await getPackages();
+      return res.packages;
+    },
+    staleTime: 10_000,
+  });
+}
+
+export function useInstallPackageMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ source, local, projectId }: { source: string; local?: boolean; projectId?: string }) =>
+      installPackage(source, local, projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['packages'] });
+      queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+    },
+  });
+}
+
+export function useRemovePackageMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ source, local, projectId }: { source: string; local?: boolean; projectId?: string }) =>
+      removePackage(source, local, projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['packages'] });
+      queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+    },
+  });
+}
+
+export function useUpdatePackagesMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (source?: string) => updatePackages(source),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['packages'] });
+      queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+    },
+  });
+}
+
+export function usePackageUpdates() {
+  return useQuery({
+    queryKey: ['packages', 'updates'],
+    queryFn: async () => {
+      const res = await getPackageUpdates();
+      return res.updates;
+    },
+    staleTime: 60_000,
   });
 }

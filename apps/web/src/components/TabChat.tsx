@@ -26,6 +26,7 @@ import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
+import { loadSessionDraft, saveSessionDraft } from '../lib/session-drafts';
 
 interface ModelOption {
   provider: string;
@@ -148,6 +149,8 @@ export default function TabChat({
   const prevScrollHeightRef = useRef<number | null>(null);
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
   const sessionJustSwitchedRef = useRef(false);
+  const prevSessionIdRef = useRef<string | null>(null);
+  const draftRef = useRef(draft);
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
 
@@ -434,11 +437,53 @@ export default function TabChat({
     }
   };
 
+  // Keep draftRef in sync for cleanup (unmount) and session-switch effects
   useEffect(() => {
+    draftRef.current = draft;
+  });
+
+  // On session switch: save old draft, load new one, clear attachments
+  useEffect(() => {
+    // Save current draft to old session before switching
+    if (prevSessionIdRef.current && prevSessionIdRef.current !== selectedSessionId) {
+      saveSessionDraft(prevSessionIdRef.current, draftRef.current);
+    }
+
+    // Load saved draft for the new session
+    if (selectedSessionId) {
+      const savedDraft = loadSessionDraft(selectedSessionId);
+      setDraft(savedDraft);
+      // Sync ref immediately (before re-render) so the cleanup effect
+      // on StrictMode unmount doesn't overwrite with the stale '' value.
+      draftRef.current = savedDraft;
+    }
+
+    prevSessionIdRef.current = selectedSessionId;
+
+    // Clear attachments and errors on session switch (existing behavior)
     setAttachments([]);
     setAttachmentError(null);
     setPreviewImage(null);
   }, [selectedSessionId]);
+
+  // Debounce-save draft to localStorage when it changes
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    const timer = setTimeout(() => {
+      saveSessionDraft(selectedSessionId, draft);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [draft, selectedSessionId]);
+
+  // Save draft on unmount (e.g. tab switch) — captures latest via refs
+  useEffect(() => {
+    return () => {
+      const sid = prevSessionIdRef.current;
+      if (sid) {
+        saveSessionDraft(sid, draftRef.current);
+      }
+    };
+  }, []);
 
   // 滚动监听：同步更新按钮状态和跟随标记（两者共用同一 clientHeight/3 阈值）
   useEffect(() => {
