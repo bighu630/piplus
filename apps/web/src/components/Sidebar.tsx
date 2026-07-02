@@ -355,6 +355,7 @@ export default function Sidebar({
                 className={`text-[9px] font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity cursor-pointer ${isPinned ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}
                 title={isPinned ? '左键取消置顶，右键归档' : '左键置顶，右键归档'}
                 onClick={(e) => {
+                  if (e.button !== 0) return; // only left click
                   e.stopPropagation();
                   if (onToggleSessionPinned) {
                     onToggleSessionPinned(session.id, !isPinned);
