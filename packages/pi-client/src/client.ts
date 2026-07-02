@@ -372,11 +372,18 @@ export function createPiClient(): PiClient {
     },
     async closeRuntime(sessionId) {
       const session = runtimeRegistry.get(sessionId);
-      session?.agentSession?.dispose();
-      // 保留 registry 条目以维持 locator，供后续 bindToolRuntime 等调用使用
-      if (session) {
-        session.agentSession = undefined;
-      }
+      if (!session) return; // idempotent, already cleaned
+      session.agentSession?.dispose();
+      session.agentSession = undefined;
+      session.listeners.clear();
+      session.toolHandler = undefined;
+      session.toolDefs = [];
+      session.messages = [];
+      session.prompt = '';
+      session.promptSent = false;
+      // Preserve the registry entry (locator, cwd, model) so that
+      // bindToolRuntime() and restoreRuntime() can still find the
+      // session file and model metadata on subsequent calls.
     },
     async listAvailableModels() {
       const models = await modelRegistry.getAvailable();

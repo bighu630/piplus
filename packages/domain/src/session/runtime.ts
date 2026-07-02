@@ -6,6 +6,29 @@ import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
 import { setRequestContext, clearRequestContext } from './request-context';
 
+const NON_WORKER_IDLE_RUNTIME_TTL_MS = 30 * 60 * 1000;
+
+const idleRuntimeCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function clearIdleRuntimeCleanup(sessionId: string): void {
+  const timer = idleRuntimeCleanupTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    idleRuntimeCleanupTimers.delete(sessionId);
+  }
+}
+
+export function scheduleIdleRuntimeCleanup(piClient: PiClient, sessionId: string, ttlMs = NON_WORKER_IDLE_RUNTIME_TTL_MS): void {
+  clearIdleRuntimeCleanup(sessionId);
+  const timer = setTimeout(() => {
+    piClient.closeRuntime(sessionId).catch((err) => {
+      console.error('[session-runtime] idle runtime cleanup failed', { sessionId, err });
+    });
+    idleRuntimeCleanupTimers.delete(sessionId);
+  }, ttlMs);
+  idleRuntimeCleanupTimers.set(sessionId, timer);
+}
+
 export type StartSessionRunInput = {
   db: RoleManagerDb;
   piClient: PiClient;
@@ -73,6 +96,9 @@ export async function markSessionIdle(db: RoleManagerDb, sessionId: string, time
 export async function startSessionRun(input: StartSessionRunInput) {
   const startedAt = input.startedAt ?? new Date();
   const safetyTimeoutMs = input.safetyTimeoutMs ?? 10 * 60 * 1000;
+
+  // Cancel any pending idle cleanup timer for this session
+  clearIdleRuntimeCleanup(input.sessionId);
 
   const [session] = await input.db.select().from(sessions)
     .where(eq(sessions.id, input.sessionId))
@@ -195,10 +221,16 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
     unsubscribe();
 
-    // Dispose agent resources to prevent memory leaks.
-    input.piClient.closeRuntime(input.sessionId).catch((disposeErr) => {
-      console.error('[session-runtime] closeRuntime during cleanup failed', { sessionId: input.sessionId, disposeErr });
-    });
+    if (roleKey === 'worker') {
+      // Worker: reclaim runtime immediately after completion
+      clearIdleRuntimeCleanup(input.sessionId);
+      input.piClient.closeRuntime(input.sessionId).catch((disposeErr) => {
+        console.error('[session-runtime] closeRuntime during cleanup failed', { sessionId: input.sessionId, disposeErr });
+      });
+    } else {
+      // Non-worker: schedule runtime reclamation after idle period
+      scheduleIdleRuntimeCleanup(input.piClient, input.sessionId);
+    }
   };
 
   const resetTimeout = () => {
