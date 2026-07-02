@@ -365,9 +365,12 @@ export default function Sidebar({
                   e.stopPropagation();
                   if (onArchiveSession) {
                     const name = session.title || roleLabel(session.role_template_key);
-                    if (confirm(`确定归档会话 "${name}"？`)) {
-                      onArchiveSession(session.id);
-                    }
+                    // setTimeout avoids Chrome suppressing confirm() when devtools is closed
+                    setTimeout(() => {
+                      if (confirm(`确定归档会话 "${name}"？`)) {
+                        onArchiveSession(session.id);
+                      }
+                    }, 0);
                   }
                 }}
               >
