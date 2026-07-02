@@ -54,6 +54,14 @@ function ensureSessionPinnedAtColumn(sqlite: Database) {
   }
 }
 
+function ensureProjectPinnedAtColumn(sqlite: Database) {
+  const columns = sqlite.prepare("SELECT name FROM pragma_table_info('projects')").all() as Array<{ name: string }>;
+  const hasColumn = columns.some((col) => col.name === 'pinned_at');
+  if (!hasColumn) {
+    sqlite.exec('ALTER TABLE projects ADD COLUMN pinned_at INTEGER');
+  }
+}
+
 function ensureMessageRequestIdColumn(sqlite: Database) {
   const columns = sqlite.prepare("SELECT name FROM pragma_table_info('messages')").all() as Array<{ name: string }>;
   if (!columns.some((col) => col.name === 'request_id')) {
@@ -218,6 +226,7 @@ export function createSeedDb(path: string) {
   ensureRoleDefaultModelsColumn(sqlite);
   ensureMessageRequestIdColumn(sqlite);
   ensureSessionPinnedAtColumn(sqlite);
+  ensureProjectPinnedAtColumn(sqlite);
   ensureProjectTodosTable(sqlite);
   ensureBuiltinRows(sqlite);
   ensureBuiltinTemplatesUpdated(sqlite);

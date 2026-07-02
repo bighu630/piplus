@@ -8,6 +8,7 @@ export type ProjectDTO = {
   source_type: string;
   source_url: string;
   archived_at: string | null;
+  pinned_at: string | null;
   last_activity_at: string;
   created_at: string;
   sessions: SessionTreeNodeDTO[];

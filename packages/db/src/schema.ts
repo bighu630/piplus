@@ -20,6 +20,7 @@ export const projects = sqliteTable('projects', {
   sourceUrl: text('source_url').notNull().default(''),
   archivedAt: nullableTimestamp('archived_at'),
   archivedBy: text('archived_by'),
+  pinnedAt: nullableTimestamp('pinned_at'),
   lastActivityAt: integer('last_activity_at', { mode: 'timestamp_ms' }).notNull(),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),

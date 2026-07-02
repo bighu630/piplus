@@ -9,7 +9,9 @@ export type AuditAction =
   | 'message.sent'
   | 'title.changed'
   | 'session.pinned'
-  | 'session.unpinned';
+  | 'session.unpinned'
+  | 'project.pinned'
+  | 'project.unpinned';
 
 function id() {
   return `audit_${crypto.randomUUID().slice(0, 12)}`;

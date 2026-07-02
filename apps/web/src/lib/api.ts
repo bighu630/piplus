@@ -287,6 +287,13 @@ export function createProjectSession(projectId: string) {
   });
 }
 
+export function setProjectPinned(projectId: string, pinned: boolean) {
+  return request<{ project_id: string; pinned_at: string | null }>(`/api/v1/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pinned }),
+  });
+}
+
 export function archiveProject(projectId: string) {
   return request<{ project_id: string; status: string }>(`/api/v1/projects/${projectId}/archive`, { method: 'POST' });
 }

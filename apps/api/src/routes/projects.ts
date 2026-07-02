@@ -171,6 +171,64 @@ export function registerProjectRoutes(app: Hono) {
    *       404:
    *         description: 项目不存在。
    */
+  /**
+   * @swagger
+   * /api/v1/projects/{projectId}:
+   *   patch:
+   *     summary: 更新项目属性（置顶等）
+   *     tags: [Projects]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 支持更新项目 pinned 状态。
+   *     responses:
+   *       200:
+   *         description: 更新成功。
+   *       404:
+   *         description: 项目不存在或无访问权限。
+   */
+  app.patch('/api/v1/projects/:projectId', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+    const body = await c.req.json().catch(() => ({}));
+    const pinned: boolean | undefined = (body as { pinned?: boolean }).pinned;
+
+    const [project] = await db.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.createdBy, userId))).limit(1);
+    if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+
+    const now = new Date();
+    const updates: Record<string, any> = { updatedAt: now };
+    if (pinned === true) {
+      updates.pinnedAt = new Date();
+    } else if (pinned === false) {
+      updates.pinnedAt = null;
+    }
+
+    if (Object.keys(updates).length <= 1) {
+      // only updatedAt — nothing changed
+      return c.json({ project_id: projectId, pinned_at: project.pinnedAt ? new Date(project.pinnedAt).toISOString() : null });
+    }
+
+    await db.update(projects).set(updates).where(eq(projects.id, projectId));
+
+    if (pinned !== undefined) {
+      const wasPinned = project.pinnedAt !== null;
+      if (pinned && !wasPinned) {
+        await createAuditService(db).record(userId, "project.pinned", "project", projectId);
+      } else if (!pinned && wasPinned) {
+        await createAuditService(db).record(userId, "project.unpinned", "project", projectId);
+      }
+    }
+
+    socketHub.broadcast(createEvent('tree.changed', { project_id: projectId }, { project_id: projectId }));
+
+    const updatedPinnedAt = pinned === true ? new Date() : pinned === false ? null : project.pinnedAt;
+    return c.json({
+      project_id: projectId,
+      pinned_at: updatedPinnedAt ? new Date(updatedPinnedAt).toISOString() : null,
+    });
+  });
+
   app.get('/api/v1/projects/:projectId/role-models', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const projectId = c.req.param('projectId');

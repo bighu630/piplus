@@ -13,6 +13,7 @@ import {
   setSessionModel,
   archiveProject,
   deleteProject,
+  setProjectPinned,
   createProject,
   createProjectSession,
   sendSessionMessage,
@@ -261,6 +262,16 @@ export function useArchiveProjectMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (projectId: string) => archiveProject(projectId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['tree'] });
+    },
+  });
+}
+
+export function useSetProjectPinnedMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, pinned }: { projectId: string; pinned: boolean }) => setProjectPinned(projectId, pinned),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },

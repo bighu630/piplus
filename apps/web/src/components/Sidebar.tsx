@@ -20,6 +20,7 @@ import {
   Bug,
   Eye,
   User,
+  ArrowUp,
 } from 'lucide-react';
 import { fuzzyMatch } from '../lib/fuzzy';
 
@@ -36,6 +37,7 @@ interface SidebarProps {
   onCreateSession: () => void;
   onArchiveProject?: (projectId: string) => void;
   onToggleSessionPinned?: (sessionId: string, pinned: boolean) => void;
+  onToggleProjectPinned?: (projectId: string, pinned: boolean) => void;
   onArchiveSession?: (sessionId: string) => void;
   onDeleteProject?: (projectId: string) => void;
   onLogout: () => void;
@@ -110,6 +112,7 @@ export default function Sidebar({
   onCreateProject,
   onCreateSession,
   onToggleSessionPinned,
+  onToggleProjectPinned,
   onArchiveProject,
   onArchiveSession,
   onDeleteProject,
@@ -579,6 +582,19 @@ export default function Sidebar({
                           <Plus className="w-3.5 h-3.5" />
                         )}
                       </button>
+                      {onToggleProjectPinned && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleProjectPinned(fp.id, !Boolean(fp.pinned_at));
+                          }}
+                          className={`p-0.5 rounded cursor-pointer transition-colors ${fp.pinned_at ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50' : 'text-slate-400 hover:text-amber-500 hover:bg-amber-50'}`}
+                          title={fp.pinned_at ? '取消置顶' : '置顶项目'}
+                          type="button"
+                        >
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <div className="flex items-center space-x-1">
                         {onArchiveProject && (
                           <button

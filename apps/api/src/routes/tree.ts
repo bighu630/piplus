@@ -114,6 +114,7 @@ export function registerTreeRoutes(app: Hono) {
           name: project.name,
           status: project.status,
           archived_at: project.archivedAt ? new Date(project.archivedAt).toISOString() : null,
+          pinned_at: project.pinnedAt ? new Date(project.pinnedAt).toISOString() : null,
           last_activity_at: new Date(project.lastActivityAt).toISOString(),
           created_at: new Date(project.createdAt).toISOString(),
           role_default_models: (() => { try { return JSON.parse(project.roleDefaultModels ?? '{}'); } catch { return {}; } })(),
@@ -121,6 +122,14 @@ export function registerTreeRoutes(app: Hono) {
         };
       }),
     );
+
+    // Sort projects: pinned first (newer pinned first), then by last_activity_at desc
+    result.sort((a, b) => {
+      if (a.pinned_at && !b.pinned_at) return -1;
+      if (!a.pinned_at && b.pinned_at) return 1;
+      if (a.pinned_at && b.pinned_at) return a.pinned_at < b.pinned_at ? 1 : a.pinned_at > b.pinned_at ? -1 : 0;
+      return new Date(b.last_activity_at).getTime() - new Date(a.last_activity_at).getTime();
+    });
 
     return c.json({ projects: result });
   });

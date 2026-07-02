@@ -40,6 +40,7 @@ import {
   useModels,
   useSetSessionModelMutation,
   useArchiveProjectMutation,
+  useSetProjectPinnedMutation,
   useDeleteProjectMutation,
   useGitPullMutation,
   useGitPushMutation,
@@ -367,6 +368,7 @@ export default function App() {
   const compactSessionMut = useCompactSessionMutation();
   const plannerRolePromptMut = usePlannerRolePromptMutation();
   const archiveProjectMut = useArchiveProjectMutation();
+  const setProjectPinnedMut = useSetProjectPinnedMutation();
   const deleteProjectMut = useDeleteProjectMutation();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
   // localRuntimeStatusBySession is updated immediately from WS runtime_status_changed events,
@@ -784,6 +786,13 @@ export default function App() {
     } catch {}
   }, [setSessionPinnedMut, treeQuery]);
 
+  const handleToggleProjectPinned = useCallback(async (projectId: string, pinned: boolean) => {
+    try {
+      await setProjectPinnedMut.mutateAsync({ projectId, pinned });
+      await treeQuery.refetch();
+    } catch {}
+  }, [setProjectPinnedMut, treeQuery]);
+
   const handleSendPlannerRolePrompt = useCallback(async () => {
     if (!selectedSessionId) return;
     const confirmed = confirm('仅在你觉得 planner 变得不会分配工作时使用，确定重新发送提示词吗？\n\n频繁发送可能会浪费一点点 context。');
@@ -1138,6 +1147,7 @@ export default function App() {
           onCreateProject={() => setShowCreateProject(true)}
           onCreateSession={handleCreateSession}
           onArchiveProject={handleArchiveProject}
+          onToggleProjectPinned={handleToggleProjectPinned}
           onToggleSessionPinned={handleToggleSessionPinned}
           onArchiveSession={handleArchiveSession}
           onDeleteProject={handleDeleteProject}
