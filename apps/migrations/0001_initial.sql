@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS messages (
   content_text TEXT NOT NULL,
   content_blocks_json TEXT,
   content_version INTEGER NOT NULL,
+  request_id TEXT,
   created_at INTEGER NOT NULL
 );
 

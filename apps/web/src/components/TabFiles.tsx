@@ -28,43 +28,127 @@ function isMarkdownFile(filePath: string | null): boolean {
 
 function getLanguageFromPath(filePath: string | null): string {
   if (!filePath) return 'text';
+
+  // Handle basename-only files (no dot extension, like Dockerfile, Makefile)
+  const basename = filePath.split('/').pop()?.toLowerCase() || '';
+  const BASENAME_LANGUAGE_MAP: Record<string, string> = {
+    'dockerfile': 'dockerfile',
+    'makefile': 'makefile',
+    'justfile': 'makefile',
+    'procfile': 'plaintext',
+    'caddyfile': 'nginx',
+    'gemfile': 'ruby',
+    'rakefile': 'ruby',
+  };
+  const mapped = BASENAME_LANGUAGE_MAP[basename];
+  if (mapped) return mapped;
+
   const extension = filePath.split('.').pop()?.toLowerCase();
   switch (extension) {
-    case 'ts':
-    case 'tsx':
-      return 'typescript';
+    case 'abi':
+      return 'json';
+    case 'astro':
+      return 'html';
+    case 'bash':
+    case 'sh':
+    case 'zsh':
+    case 'fish':
+      return 'bash';
+    case 'bat':
+    case 'cmd':
+      return 'dos';
+    case 'c':
+    case 'h':
+      return 'c';
+    case 'cairo':
+      return 'python';
+    case 'cc':
+    case 'cpp':
+    case 'cxx':
+    case 'hpp':
+    case 'hh':
+      return 'cpp';
+    case 'clj':
+    case 'cljs':
+      return 'clojure';
+    case 'cs':
+      return 'csharp';
+    case 'css':
+    case 'scss':
+    case 'sass':
+    case 'less':
+    case 'postcss':
+      return 'css';
+    case 'dart':
+      return 'dart';
+    case 'erl':
+      return 'erlang';
+    case 'ex':
+    case 'exs':
+      return 'elixir';
+    case 'go':
+      return 'go';
+    case 'graphql':
+    case 'gql':
+      return 'graphql';
+    case 'html':
+    case 'htm':
+    case 'svelte':
+    case 'vue':
+      return 'html';
+    case 'java':
+      return 'java';
+    case 'jl':
+      return 'julia';
     case 'js':
     case 'jsx':
     case 'mjs':
     case 'cjs':
       return 'javascript';
     case 'json':
+    case 'jsonc':
       return 'json';
-    case 'css':
-    case 'scss':
-    case 'sass':
-    case 'less':
-      return 'css';
-    case 'html':
-    case 'htm':
-      return 'html';
+    case 'kt':
+    case 'kts':
+      return 'kotlin';
+    case 'lua':
+      return 'lua';
+    case 'md':
+    case 'mdx':
+      return 'markdown';
+    case 'move':
+      return 'rust';
+    case 'php':
+      return 'php';
+    case 'proto':
+      return 'protobuf';
+    case 'ps1':
+      return 'powershell';
+    case 'py':
+    case 'pyi':
+      return 'python';
+    case 'r':
+      return 'r';
+    case 'rb':
+      return 'ruby';
+    case 'rs':
+      return 'rust';
+    case 'scala':
+      return 'scala';
+    case 'sol':
+      return 'solidity';
+    case 'sql':
+      return 'sql';
+    case 'swift':
+      return 'swift';
+    case 'ts':
+    case 'tsx':
+      return 'typescript';
+    case 'vy':
+      return 'python';
     case 'yml':
     case 'yaml':
       return 'yaml';
-    case 'md':
-      return 'markdown';
-    case 'sh':
-    case 'bash':
-    case 'zsh':
-      return 'bash';
-    case 'py':
-      return 'python';
-    case 'rs':
-      return 'rust';
-    case 'go':
-      return 'go';
-    case 'java':
-      return 'java';
     default:
       return extension || 'text';
   }

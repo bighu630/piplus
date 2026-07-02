@@ -292,4 +292,83 @@ describe('file content save route', () => {
     // Cleanup
     await rm(projectDir, { recursive: true, force: true });
   });
+
+  test('.sol file can be read via GET', async () => {
+    const dbPath = makeDbPath();
+    const projectDir = makeProjectDir();
+    createSeedDb(dbPath);
+    await mkdir(projectDir, { recursive: true });
+    Bun.env.DATABASE_URL = `file:${dbPath}`;
+    const app = createApp();
+
+    const solContent = `// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract HelloWorld {
+    string public greeting = "Hello, World!";
+
+    function greet() public view returns (string memory) {
+        return greeting;
+    }
+}`;
+    await writeFile(path.join(projectDir, 'test.sol'), solContent, 'utf8');
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Sol File Test', mode: 'existing', path: projectDir }),
+    });
+    expect(projectRes.status).toBe(201);
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    const getRes = await app.request(`/api/v1/sessions/${sessionId}/files/content?path=${encodeURIComponent('test.sol')}`, {
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(getRes.status).toBe(200);
+    const getBody = await getRes.json();
+    expect(getBody.content).toBe(solContent);
+    expect(getBody.truncated).toBe(false);
+
+    // Cleanup
+    await rm(projectDir, { recursive: true, force: true });
+  });
+
+  test('Dockerfile (no extension) can be read via GET', async () => {
+    const dbPath = makeDbPath();
+    const projectDir = makeProjectDir();
+    createSeedDb(dbPath);
+    await mkdir(projectDir, { recursive: true });
+    Bun.env.DATABASE_URL = `file:${dbPath}`;
+    const app = createApp();
+
+    const dockerfileContent = `FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+EXPOSE 3000
+CMD ["node", "index.js"]`;
+    await writeFile(path.join(projectDir, 'Dockerfile'), dockerfileContent, 'utf8');
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Dockerfile Test', mode: 'existing', path: projectDir }),
+    });
+    expect(projectRes.status).toBe(201);
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    const getRes = await app.request(`/api/v1/sessions/${sessionId}/files/content?path=${encodeURIComponent('Dockerfile')}`, {
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(getRes.status).toBe(200);
+    const getBody = await getRes.json();
+    expect(getBody.content).toBe(dockerfileContent);
+    expect(getBody.truncated).toBe(false);
+
+    // Cleanup
+    await rm(projectDir, { recursive: true, force: true });
+  });
 });

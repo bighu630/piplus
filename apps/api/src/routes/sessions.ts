@@ -65,10 +65,11 @@ const MAX_FILE_TREE_DEPTH = 6;
 const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
 const MAX_FILE_WRITE_BYTES = 1024 * 1024;
 const TEXT_FILE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.css', '.scss', '.sass', '.less', '.html', '.htm',
-  '.yml', '.yaml', '.xml', '.svg', '.sh', '.bash', '.zsh', '.env', '.toml', '.ini', '.conf', '.config', '.sql', '.py', '.rb',
-  '.rs', '.go', '.java', '.kt', '.swift', '.php', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.vue', '.svelte', '.astro',
-  '.gitignore', '.gitattributes', '.editorconfig', '.npmrc', '.prettierignore', '.prettierrc', '.eslintrc', '.eslintignore', '.dockerignore',
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.css', '.scss', '.sass', '.less', '.html', '.htm', '.mdx', '.jsonc', '.postcss',
+  '.yml', '.yaml', '.xml', '.svg', '.sh', '.bash', '.zsh', '.env', '.toml', '.ini', '.conf', '.config', '.sql', '.py', '.rb', '.pyi', '.kts', '.scala', '.zig', '.dart', '.lua', '.r', '.jl', '.ex', '.exs', '.erl', '.hrl', '.clj', '.cljs', '.graphql', '.gql', '.proto',
+  '.rs', '.go', '.java', '.kt', '.swift', '.php', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.vue', '.svelte', '.astro', '.sol', '.vy', '.move', '.cairo', '.abi',
+  '.gitignore', '.gitattributes', '.editorconfig', '.npmrc', '.prettierignore', '.prettierrc', '.eslintrc', '.eslintignore', '.dockerignore', '.env.example', '.nvmrc', '.babelrc',
+  '.fish', '.ps1', '.bat', '.cmd',
 ]);
 const IGNORED_ENTRY_NAMES = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.turbo', 'coverage']);
 
