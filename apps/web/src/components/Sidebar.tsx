@@ -21,6 +21,7 @@ import {
   Eye,
   User,
 } from 'lucide-react';
+import { fuzzyMatch } from '../lib/fuzzy';
 
 interface SidebarProps {
   projects: ProjectDTO[];
@@ -34,6 +35,7 @@ interface SidebarProps {
   onCreateProject: () => void;
   onCreateSession: () => void;
   onArchiveProject?: (projectId: string) => void;
+  onToggleSessionPinned?: (sessionId: string, pinned: boolean) => void;
   onArchiveSession?: (sessionId: string) => void;
   onDeleteProject?: (projectId: string) => void;
   onLogout: () => void;
@@ -83,22 +85,6 @@ function projectInitials(name: string): string {
   return trimmed[0].toUpperCase();
 }
 
-/**
- * Lightweight fuzzy match: checks if all characters of `query` appear in order (non-contiguous) within `text`.
- * Case-insensitive. Empty query matches everything.
- */
-function fuzzyMatch(query: string, text: string): boolean {
-  if (query.length === 0) return true;
-  const lower = text.toLowerCase();
-  let qi = 0;
-  for (let ti = 0; ti < lower.length && qi < query.length; ti++) {
-    if (lower[ti] === query[qi]) {
-      qi++;
-    }
-  }
-  return qi === query.length;
-}
-
 function runtimeColor(status: string): string | null {
   switch (status) {
     case 'running':
@@ -123,6 +109,7 @@ export default function Sidebar({
   onToggleSidebar,
   onCreateProject,
   onCreateSession,
+  onToggleSessionPinned,
   onArchiveProject,
   onArchiveSession,
   onDeleteProject,
@@ -265,7 +252,22 @@ export default function Sidebar({
       .filter((p): p is ProjectDTO => p !== null);
   }, [projects, sidebarSearch, showArchived, showWorker]);
 
-  // Sort planner's immediate children: feature_lead > bugfix_lead > other roles > blank
+  // Shared comparator: pinned first, then newest pinned first, then last_activity_at desc
+  function sortByPinnedThenActivity(a: SessionTreeNodeDTO, b: SessionTreeNodeDTO): number {
+    if (a.pinned_at && !b.pinned_at) return -1;
+    if (!a.pinned_at && b.pinned_at) return 1;
+    if (a.pinned_at && b.pinned_at) {
+      // Newer pinned first
+      if (a.pinned_at < b.pinned_at) return 1;
+      if (a.pinned_at > b.pinned_at) return -1;
+    }
+    // Fall back to last_activity_at desc for deterministic order
+    if (a.last_activity_at < b.last_activity_at) return 1;
+    if (a.last_activity_at > b.last_activity_at) return -1;
+    return 0;
+  }
+
+  // Sort planner's immediate children: pinned first, then role priority, then activity
   function sortPlannerChildren(sessions: SessionTreeNodeDTO[]): SessionTreeNodeDTO[] {
     const priority: Record<string, number> = {
       feature_lead: 0,
@@ -273,9 +275,22 @@ export default function Sidebar({
       blank: 3,
     };
     return [...sessions].sort((a, b) => {
+      // Pinned first
+      if (a.pinned_at && !b.pinned_at) return -1;
+      if (!a.pinned_at && b.pinned_at) return 1;
+      // Both pinned: newer pinned_at first
+      if (a.pinned_at && b.pinned_at) {
+        if (a.pinned_at < b.pinned_at) return 1;
+        if (a.pinned_at > b.pinned_at) return -1;
+      }
+      // Same pinned state: sort by role priority
       const pa = priority[a.role_template_key] ?? 2;
       const pb = priority[b.role_template_key] ?? 2;
-      return pa - pb;
+      if (pa !== pb) return pa - pb;
+      // Same role: fall back to last_activity_at desc
+      if (a.last_activity_at < b.last_activity_at) return 1;
+      if (a.last_activity_at > b.last_activity_at) return -1;
+      return 0;
     });
   }
 
@@ -285,6 +300,7 @@ export default function Sidebar({
     const isCollapsed = collapsedSessions[session.id];
     const isArchived = Boolean(session.archived_at);
     const statusDotColor = runtimeColor(session.runtime_status);
+    const isPinned = Boolean(session.pinned_at);
 
 
     return (
@@ -317,7 +333,7 @@ export default function Sidebar({
               </div>
             )}
             <div className="flex items-center space-x-1.5 min-w-0">
-              {!effectiveCollapsed && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}` })}
+              {(isPinned || !effectiveCollapsed) && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : isPinned ? 'text-amber-300 dark:text-amber-300' : 'text-slate-400'}` })}
 
             {!effectiveCollapsed && (
               <span
@@ -333,7 +349,14 @@ export default function Sidebar({
           {!effectiveCollapsed && (
             <div className="flex items-center gap-1 shrink-0 select-none">
               <span
-                className="text-[9px] text-slate-400 dark:text-slate-500 font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity cursor-context-menu"
+                className={`text-[9px] font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity cursor-pointer ${isPinned ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}
+                title={isPinned ? '左键取消置顶，右键归档' : '左键置顶，右键归档'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onToggleSessionPinned) {
+                    onToggleSessionPinned(session.id, !isPinned);
+                  }
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -356,7 +379,10 @@ export default function Sidebar({
 
         {!isCollapsed && hasChildren && (
           <div className="flex flex-col space-y-0.5 mt-0.5">
-            {(session.role_template_key === 'planner' ? sortPlannerChildren(session.children) : session.children).map((child) => renderSessionNode(child, projectId, depth + 1))}
+            {(session.role_template_key === 'planner' 
+              ? sortPlannerChildren(session.children) 
+              : [...session.children].sort(sortByPinnedThenActivity)
+            ).map((child) => renderSessionNode(child, projectId, depth + 1))}
           </div>
         )}
       </div>

@@ -31,6 +31,7 @@ import {
   useSendMessageMutation,
   useStopSessionMutation,
   useArchiveSessionMutation,
+  useSetSessionPinnedMutation,
   useCompactSessionMutation,
   usePlannerRolePromptMutation,
   useLoginMutation,
@@ -362,6 +363,7 @@ export default function App() {
   const sendMessageMut = useSendMessageMutation(selectedSessionId);
   const stopSessionMut = useStopSessionMutation();
   const archiveSessionMut = useArchiveSessionMutation();
+  const setSessionPinnedMut = useSetSessionPinnedMutation();
   const compactSessionMut = useCompactSessionMutation();
   const plannerRolePromptMut = usePlannerRolePromptMutation();
   const archiveProjectMut = useArchiveProjectMutation();
@@ -775,6 +777,13 @@ export default function App() {
     }
   }, [selectedSessionId, tree, archiveSessionMut, treeQuery, handleSelectSession]);
 
+  const handleToggleSessionPinned = useCallback(async (sessionId: string, pinned: boolean) => {
+    try {
+      await setSessionPinnedMut.mutateAsync({ sessionId, pinned });
+      await treeQuery.refetch();
+    } catch {}
+  }, [setSessionPinnedMut, treeQuery]);
+
   const handleSendPlannerRolePrompt = useCallback(async () => {
     if (!selectedSessionId) return;
     const confirmed = confirm('仅在你觉得 planner 变得不会分配工作时使用，确定重新发送提示词吗？\n\n频繁发送可能会浪费一点点 context。');
@@ -1129,6 +1138,7 @@ export default function App() {
           onCreateProject={() => setShowCreateProject(true)}
           onCreateSession={handleCreateSession}
           onArchiveProject={handleArchiveProject}
+          onToggleSessionPinned={handleToggleSessionPinned}
           onArchiveSession={handleArchiveSession}
           onDeleteProject={handleDeleteProject}
           onLogout={handleLogout}

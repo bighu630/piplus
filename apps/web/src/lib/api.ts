@@ -170,6 +170,13 @@ export function stopSession(sessionId: string) {
   return request<{ session_id: string; status: string }>(`/api/v1/sessions/${sessionId}/stop`, { method: 'POST' });
 }
 
+export function setSessionPinned(sessionId: string, pinned: boolean) {
+  return request<{ session_id: string; title: string; title_source: string; pinned_at: string | null }>(`/api/v1/sessions/${sessionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pinned }),
+  });
+}
+
 export function archiveSession(sessionId: string) {
   return request<{ session_id: string; status: string }>(`/api/v1/sessions/${sessionId}/archive`, { method: 'POST' });
 }

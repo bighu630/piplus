@@ -19,6 +19,7 @@ import {
   stopSession,
   archiveSession,
   updateSessionTitle,
+  setSessionPinned,
   getSessionGitDiff,
   getSessionFileTree,
   getSessionFileContent,
@@ -240,6 +241,16 @@ export function useArchiveSessionMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (sessionId: string) => archiveSession(sessionId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['tree'] });
+    },
+  });
+}
+
+export function useSetSessionPinnedMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, pinned }: { sessionId: string; pinned: boolean }) => setSessionPinned(sessionId, pinned),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },

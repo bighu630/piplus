@@ -64,6 +64,7 @@ export const sessions = sqliteTable('sessions', {
   createdBy: text('created_by').notNull(),
   archivedAt: nullableTimestamp('archived_at'),
   archivedBy: text('archived_by'),
+  pinnedAt: nullableTimestamp('pinned_at'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   roleBasePromptSnapshot: text('role_base_prompt_snapshot').notNull().default(''),

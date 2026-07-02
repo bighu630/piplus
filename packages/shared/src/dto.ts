@@ -25,6 +25,7 @@ export type SessionTreeNodeDTO = {
   status: keyof typeof SessionStatus;
   runtime_status: keyof typeof RuntimeStatus;
   archived_at: string | null;
+  pinned_at: string | null;
   last_activity_at: string;
   children: SessionTreeNodeDTO[];
 };
