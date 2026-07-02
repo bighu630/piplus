@@ -171,7 +171,8 @@ describe('pi client gateway', () => {
 
     const page = await client.getHistory(created.sessionId, created.locator, null, 20);
     expect(page.messages[0]?.role).toBe('user');
-    expect(page.messages[0]?.text).toBe('Reply with exactly: persist me');
+    // 首次对话合并角色 prompt 与用户消息，持久化的 user 消息包含合并后的内容
+    expect(page.messages[0]?.text).toContain('Reply with exactly: persist me');
     expect(page.messages.at(-1)?.role).toBe('assistant');
   });
 

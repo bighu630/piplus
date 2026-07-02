@@ -8,6 +8,7 @@ import { requireAuth } from './middleware/auth';
 import { registerProjectRoutes } from './routes/projects';
 import { registerSessionRoutes, registerSessionMutationRoutes } from './routes/sessions';
 import { registerModelRoutes } from './routes/models';
+import { registerPackagesRoutes } from './routes/packages';
 import { registerTreeRoutes } from './routes/tree';
 
 function normalizeOrigin(raw: string | undefined): string | undefined {
@@ -48,7 +49,9 @@ export function createApp() {
   registerProjectRoutes(app);
   registerSessionRoutes(app);
   registerSessionMutationRoutes(app);
+  app.use('/api/v1/packages/*', requireAuth);
   registerModelRoutes(app);
+  registerPackagesRoutes(app);
 
   // Serve web static files with runtime config injection (Docker/production mode)
   if (process.env.PIPLUS_SERVE_WEB === '1') {
@@ -69,6 +72,13 @@ export function createApp() {
         if (path.startsWith('/api/') || path === '/ws' || path === '/health') {
           await next();
           return;
+        }
+        // If a static asset under /assets/ wasn't found by serveStatic above,
+        // return 404 instead of falling through to index.html. Returning HTML
+        // for a missing JS/CSS file causes the browser to parse HTML as JS,
+        // resulting in a silent white-screen.
+        if (path.startsWith('/assets/')) {
+          return c.notFound();
         }
         const publicOrigin = normalizeOrigin(process.env.PUBLIC_WEB_ORIGIN);
         const indexPath = join(webRoot, 'index.html');

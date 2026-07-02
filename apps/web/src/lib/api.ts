@@ -7,6 +7,8 @@ import type {
   ChatImageContentBlockDTO,
   SessionFileTreeResponseDTO,
   SessionFileContentResponseDTO,
+  SessionFileSaveResponseDTO,
+  ProjectTodoDTO,
 } from '@piplus/shared';
 
 export type ModelInfo = {
@@ -139,6 +141,10 @@ export function getSessionMessages(sessionId: string, options?: { cursor?: strin
   return request<SessionMessagesPage>(`/api/v1/sessions/${sessionId}/chat/messages${query ? `?${query}` : ''}`);
 }
 
+export function getPlannerRolePrompt(sessionId: string) {
+  return request<{ session_id: string; prompt: string; prompt_length: number }>(`/api/v1/sessions/${sessionId}/planner-role-prompt`);
+}
+
 export type SessionMessageImageAttachment = {
   type: 'image';
   mime_type: string;
@@ -164,6 +170,13 @@ export function stopSession(sessionId: string) {
   return request<{ session_id: string; status: string }>(`/api/v1/sessions/${sessionId}/stop`, { method: 'POST' });
 }
 
+export function setSessionPinned(sessionId: string, pinned: boolean) {
+  return request<{ session_id: string; title: string; title_source: string; pinned_at: string | null }>(`/api/v1/sessions/${sessionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pinned }),
+  });
+}
+
 export function archiveSession(sessionId: string) {
   return request<{ session_id: string; status: string }>(`/api/v1/sessions/${sessionId}/archive`, { method: 'POST' });
 }
@@ -186,6 +199,13 @@ export function getSessionFileTree(sessionId: string) {
 export function getSessionFileContent(sessionId: string, path: string) {
   const params = new URLSearchParams({ path });
   return request<SessionFileContentResponseDTO>(`/api/v1/sessions/${sessionId}/files/content?${params.toString()}`);
+}
+
+export function saveSessionFileContent(sessionId: string, path: string, content: string) {
+  return request<SessionFileSaveResponseDTO>(`/api/v1/sessions/${sessionId}/files/content`, {
+    method: 'PUT',
+    body: JSON.stringify({ path, content }),
+  });
 }
 
 export type GitActionResult = {
@@ -267,6 +287,13 @@ export function createProjectSession(projectId: string) {
   });
 }
 
+export function setProjectPinned(projectId: string, pinned: boolean) {
+  return request<{ project_id: string; pinned_at: string | null }>(`/api/v1/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pinned }),
+  });
+}
+
 export function archiveProject(projectId: string) {
   return request<{ project_id: string; status: string }>(`/api/v1/projects/${projectId}/archive`, { method: 'POST' });
 }
@@ -283,5 +310,85 @@ export function setProjectRoleModels(projectId: string, models: Record<string, {
   return request<{ ok: boolean; role_default_models: Record<string, { provider: string; id: string } | null> }>(`/api/v1/projects/${projectId}/role-models`, {
     method: 'PUT',
     body: JSON.stringify(models),
+  });
+}
+
+export function getNativeModelProviders() {
+  return request<{ providers: Array<{ provider: string; label: string; env: string; hasAuth: boolean }> }>('/api/v1/models/native-providers');
+}
+
+export function setNativeProviderApiKey(provider: string, apiKey: string) {
+  return request<{ ok: boolean; provider: string }>('/api/v1/models/native-providers/auth', {
+    method: 'POST',
+    body: JSON.stringify({ provider, apiKey }),
+  });
+}
+
+// ── Package Management ───────────────────────────────────────────────
+
+export type PiPackageScope = 'user' | 'project';
+export type PiPackageListItem = {
+  source: string;
+  scope: PiPackageScope;
+  installedPath?: string;
+};
+
+export type PiPackageUpdate = {
+  source: string;
+  displayName: string;
+  type: 'npm' | 'git';
+  scope: 'user' | 'project';
+};
+
+export function getPackages() {
+  return request<{ packages: PiPackageListItem[] }>('/api/v1/packages');
+}
+
+export function installPackage(source: string, local?: boolean, projectId?: string) {
+  return request<{ ok: boolean }>('/api/v1/packages/install', {
+    method: 'POST',
+    body: JSON.stringify({ source, local, project_id: projectId }),
+  });
+}
+
+export function removePackage(source: string, local?: boolean, projectId?: string) {
+  return request<{ ok: boolean }>('/api/v1/packages/remove', {
+    method: 'POST',
+    body: JSON.stringify({ source, local, project_id: projectId }),
+  });
+}
+
+export function updatePackages(source?: string) {
+  return request<{ ok: boolean }>('/api/v1/packages/update', {
+    method: 'POST',
+    body: JSON.stringify({ source }),
+  });
+}
+
+export function getPackageUpdates() {
+  return request<{ updates: PiPackageUpdate[] }>('/api/v1/packages/updates');
+}
+
+export function getProjectTodos(projectId: string) {
+  return request<ProjectTodoDTO[]>(`/api/v1/projects/${projectId}/todos`);
+}
+
+export function createProjectTodo(projectId: string, text: string) {
+  return request<ProjectTodoDTO>(`/api/v1/projects/${projectId}/todos`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function updateProjectTodo(projectId: string, todoId: string, patch: { text?: string; done?: boolean; sort_order?: number }) {
+  return request<ProjectTodoDTO>(`/api/v1/projects/${projectId}/todos/${todoId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteProjectTodo(projectId: string, todoId: string) {
+  return request<{ ok: boolean }>(`/api/v1/projects/${projectId}/todos/${todoId}`, {
+    method: 'DELETE',
   });
 }

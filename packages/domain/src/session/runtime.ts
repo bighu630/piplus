@@ -1,10 +1,33 @@
-import { projects, sessionEvents, sessions } from '@piplus/db/schema';
+import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { and, eq } from 'drizzle-orm';
 import type { PiClient, PiImageInput, PiSessionStreamEvent } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
 import { setRequestContext, clearRequestContext } from './request-context';
+
+const NON_WORKER_IDLE_RUNTIME_TTL_MS = 30 * 60 * 1000;
+
+const idleRuntimeCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function clearIdleRuntimeCleanup(sessionId: string): void {
+  const timer = idleRuntimeCleanupTimers.get(sessionId);
+  if (timer) {
+    clearTimeout(timer);
+    idleRuntimeCleanupTimers.delete(sessionId);
+  }
+}
+
+export function scheduleIdleRuntimeCleanup(piClient: PiClient, sessionId: string, ttlMs = NON_WORKER_IDLE_RUNTIME_TTL_MS): void {
+  clearIdleRuntimeCleanup(sessionId);
+  const timer = setTimeout(() => {
+    piClient.closeRuntime(sessionId).catch((err) => {
+      console.error('[session-runtime] idle runtime cleanup failed', { sessionId, err });
+    });
+    idleRuntimeCleanupTimers.delete(sessionId);
+  }, ttlMs);
+  idleRuntimeCleanupTimers.set(sessionId, timer);
+}
 
 export type StartSessionRunInput = {
   db: RoleManagerDb;
@@ -74,6 +97,9 @@ export async function startSessionRun(input: StartSessionRunInput) {
   const startedAt = input.startedAt ?? new Date();
   const safetyTimeoutMs = input.safetyTimeoutMs ?? 10 * 60 * 1000;
 
+  // Cancel any pending idle cleanup timer for this session
+  clearIdleRuntimeCleanup(input.sessionId);
+
   const [session] = await input.db.select().from(sessions)
     .where(eq(sessions.id, input.sessionId))
     .limit(1);
@@ -122,7 +148,20 @@ export async function startSessionRun(input: StartSessionRunInput) {
     id: runtimeModel?.id ?? null,
   });
 
-  const toolDefs = await buildAllToolDefs(input.db);
+  // Load the role template key to determine which tools to expose
+  const [roleTmpl] = await input.db
+    .select({ key: roleTemplates.key })
+    .from(roleTemplates)
+    .where(eq(roleTemplates.id, session.roleTemplateId))
+    .limit(1);
+  const roleKey = roleTmpl?.key ?? null;
+
+  let toolDefs = await buildAllToolDefs(input.db);
+  // Planner is a root node — it coordinates children via spawn_session and send_message_to_session,
+  // but does not call writeback_to_parent itself (it reports directly to the user).
+  if (roleKey === 'planner') {
+    toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent');
+  }
   await input.piClient.bindToolRuntime(input.sessionId, toolDefs, async (toolName, args) => {
     return invokePlatformTool(toolName, args, {
       db: input.db,
@@ -130,6 +169,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
       sessionId: input.sessionId,
       userId: input.userId,
       onSessionCreated: input.onToolSessionCreated,
+      onRuntimeStatusChange: input.onRuntimeStatusChange,
     });
   }, project.projectPath);
 
@@ -140,18 +180,34 @@ export async function startSessionRun(input: StartSessionRunInput) {
     id: boundRuntimeModel?.id ?? null,
   });
 
-  const unsubscribe = input.onStreamEvent
-    ? await input.piClient.subscribeSession(input.sessionId, input.onStreamEvent)
-    : () => {};
-
   let cleanupDone = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let timeoutStartedAt: number | null = null;
+
   const doCleanup = async (error: unknown = null) => {
     if (cleanupDone) return;
     cleanupDone = true;
-    if (timeoutHandle) clearTimeout(timeoutHandle);
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+      timeoutHandle = null;
+      timeoutStartedAt = null;
+    }
 
-    const runtimeError = error ? formatRuntimeError(error) : null;
+    // Internal safety timeout: agent produced zero events for too long.
+    // This is not a real agent loop error — don't surface it to the user.
+    const isSafetyTimeout = error instanceof Error && error.message === 'session_run_timeout';
+
+    // Abort the running agent if cleanup was triggered by error or timeout.
+    // The agent may still be generating; abort fires in background to avoid blocking.
+    // When the prompt promise later settles, cleanupDone guards against re-entry.
+    if (error) {
+      input.piClient.stopSession(input.sessionId).catch((abortErr) => {
+        console.error('[session-runtime] abort during cleanup failed', { sessionId: input.sessionId, abortErr });
+      });
+    }
+
+    // Only surface real agent errors (not internal safety timeouts) to the user.
+    const runtimeError = (error && !isSafetyTimeout) ? formatRuntimeError(error) : null;
     if (runtimeError) {
       await persistRuntimeError(input.db, input.sessionId, runtimeError);
     }
@@ -165,7 +221,33 @@ export async function startSessionRun(input: StartSessionRunInput) {
     });
 
     unsubscribe();
+
+    if (roleKey === 'worker') {
+      // Worker: reclaim runtime immediately after completion
+      clearIdleRuntimeCleanup(input.sessionId);
+      input.piClient.closeRuntime(input.sessionId).catch((disposeErr) => {
+        console.error('[session-runtime] closeRuntime during cleanup failed', { sessionId: input.sessionId, disposeErr });
+      });
+    } else {
+      // Non-worker: schedule runtime reclamation after idle period
+      scheduleIdleRuntimeCleanup(input.piClient, input.sessionId);
+    }
   };
+
+  const resetTimeout = () => {
+    if (!timeoutHandle || cleanupDone) return;
+    // Only reset if less than 5 minutes remain on the countdown.
+    // During active streaming this avoids excessive
+    // clearTimeout/setTimeout calls while still extending near-expiry.
+    const remaining = safetyTimeoutMs - (Date.now() - (timeoutStartedAt ?? Date.now()));
+    if (remaining > 5 * 60_000) return;
+    clearTimeout(timeoutHandle);
+    timeoutStartedAt = Date.now();
+    timeoutHandle = setTimeout(() => {
+      void doCleanup(new Error('session_run_timeout'));
+    }, safetyTimeoutMs);
+  };
+
   await markSessionRunning(input.db, input.sessionId, startedAt);
 
   // Bind request context for cross-session wait coordination
@@ -181,9 +263,25 @@ export async function startSessionRun(input: StartSessionRunInput) {
     error: null,
   });
 
+  // Start the safety timeout before setting up the stream subscription,
+  // so that any early events can reset the timer immediately.
+  timeoutStartedAt = Date.now();
   timeoutHandle = setTimeout(() => {
     void doCleanup(new Error('session_run_timeout'));
   }, safetyTimeoutMs);
+
+  // Activity-based timeout: reset on every stream event so the safety
+  // timeout only fires when the agent is truly stuck (no events at all).
+  const wrappedListener = input.onStreamEvent
+    ? (event: PiSessionStreamEvent) => {
+        resetTimeout();
+        try { void input.onStreamEvent!(event); } catch { /* isolate async handler */ }
+      }
+    : undefined;
+
+  const unsubscribe = wrappedListener
+    ? await input.piClient.subscribeSession(input.sessionId, wrappedListener)
+    : () => {};
 
   const sendPromise = input.piClient.sendMessage(input.sessionId, input.content, input.images?.length ? { images: input.images } : undefined);
   void sendPromise.then(() => doCleanup()).catch((error) => doCleanup(error));

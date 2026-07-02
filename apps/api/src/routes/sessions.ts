@@ -12,7 +12,7 @@ import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
 import { createAuditService, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
-import { readdir, readFile, appendFile, access } from 'node:fs/promises';
+import { readdir, readFile, appendFile, access, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -63,11 +63,13 @@ const MAX_CHAT_IMAGE_ATTACHMENTS = 4;
 const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const MAX_FILE_TREE_DEPTH = 6;
 const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
+const MAX_FILE_WRITE_BYTES = 1024 * 1024;
 const TEXT_FILE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.css', '.scss', '.sass', '.less', '.html', '.htm',
-  '.yml', '.yaml', '.xml', '.svg', '.sh', '.bash', '.zsh', '.env', '.toml', '.ini', '.conf', '.config', '.sql', '.py', '.rb',
-  '.rs', '.go', '.java', '.kt', '.swift', '.php', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.vue', '.svelte', '.astro',
-  '.gitignore', '.gitattributes', '.editorconfig', '.npmrc', '.prettierignore', '.prettierrc', '.eslintrc', '.eslintignore', '.dockerignore',
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.css', '.scss', '.sass', '.less', '.html', '.htm', '.mdx', '.jsonc', '.postcss',
+  '.yml', '.yaml', '.xml', '.svg', '.sh', '.bash', '.zsh', '.env', '.toml', '.ini', '.conf', '.config', '.sql', '.py', '.rb', '.pyi', '.kts', '.scala', '.zig', '.dart', '.lua', '.r', '.jl', '.ex', '.exs', '.erl', '.hrl', '.clj', '.cljs', '.graphql', '.gql', '.proto',
+  '.rs', '.go', '.java', '.kt', '.swift', '.php', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.vue', '.svelte', '.astro', '.sol', '.vy', '.move', '.cairo', '.abi',
+  '.gitignore', '.gitattributes', '.editorconfig', '.npmrc', '.prettierignore', '.prettierrc', '.eslintrc', '.eslintignore', '.dockerignore', '.env.example', '.nvmrc', '.babelrc',
+  '.fish', '.ps1', '.bat', '.cmd',
 ]);
 const IGNORED_ENTRY_NAMES = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.turbo', 'coverage']);
 
@@ -271,6 +273,7 @@ export function registerSessionRoutes(app: Hono) {
         root_session_id: session.rootSessionId,
         created_by: session.createdBy,
         created_at: new Date(session.createdAt).toISOString(),
+        last_run_at: session.lastRunAt ? new Date(session.lastRunAt).toISOString() : null,
         archived_at: session.archivedAt ? new Date(session.archivedAt).toISOString() : null,
         pi_session_id: session.piSessionId,
         pi_session_locator_json: session.piSessionLocatorJson,
@@ -306,6 +309,50 @@ export function registerSessionRoutes(app: Hono) {
         payload: e.payload,
         created_at: new Date(e.createdAt).toISOString(),
       })),
+    });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/planner-role-prompt:
+   *   get:
+   *     summary: 获取顶层 planner 的角色系统提示词
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 仅顶层 planner 且 idle 可用，返回当前会话保存的 compiled planner prompt，供前端作为普通用户消息再次发送。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       400:
+   *         description: 非顶层 planner 或会话繁忙。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/planner-role-prompt', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [template] = await db.select({ key: roleTemplates.key }).from(roleTemplates).where(eq(roleTemplates.id, session.roleTemplateId)).limit(1);
+    if (!template || template.key !== 'planner' || session.depth !== 0) {
+      return c.json({ error: { code: 'NOT_PLANNER_ROOT', message: 'Only top-level planner sessions are supported' } }, 400);
+    }
+
+    if (session.runtimeStatus !== 'idle') {
+      return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+    }
+
+    return c.json({
+      session_id: sessionId,
+      prompt: session.compiledPrompt,
+      prompt_length: session.compiledPrompt.length,
     });
   });
 
@@ -464,8 +511,8 @@ export function registerSessionRoutes(app: Hono) {
           socketHub.sendToSession(sessionId, frame);
         }
       },
-      onRuntimeStatusChange: async ({ projectId, runtimeStatus, error }) => {
-        socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus, error }, { project_id: projectId, session_id: sessionId }));
+      onRuntimeStatusChange: async ({ sessionId: eventSessionId, projectId, runtimeStatus, error }) => {
+        socketHub.sendToSession(eventSessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus, error }, { project_id: projectId, session_id: eventSessionId }));
       },
       onToolSessionCreated: async ({ sessionId: childSessionId, projectId }) => {
         socketHub.broadcast(createEvent('session.created', { session_id: childSessionId }, { project_id: projectId, session_id: childSessionId }));
@@ -718,6 +765,84 @@ export function registerSessionRoutes(app: Hono) {
     const truncated = buffer.byteLength > MAX_FILE_CONTENT_BYTES;
     const content = buffer.subarray(0, MAX_FILE_CONTENT_BYTES).toString('utf8');
     return c.json({ session_id: sessionId, path: relativePath, content, truncated });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/files/content:
+   *   put:
+   *     summary: 保存文件内容
+   *     tags: [Sessions, Files]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 将内容写入指定文件。仅支持文本文件，大小不超过 1MB。
+   *     responses:
+   *       200:
+   *         description: 保存成功。
+   *       400:
+   *         description: 路径不合法、非文本文件、大小超限。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.put('/api/v1/sessions/:sessionId/files/content', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const relativePath = String((body as { path?: string }).path ?? '').trim();
+    const content = (body as { content?: string }).content ?? '';
+
+    if (!relativePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'File path is required' } }, 400);
+    }
+
+    if (typeof content !== 'string') {
+      return c.json({ error: { code: 'INVALID_CONTENT', message: 'Content must be a string' } }, 400);
+    }
+
+    const contentBytes = Buffer.from(content, 'utf8');
+    if (contentBytes.byteLength > MAX_FILE_WRITE_BYTES) {
+      return c.json({ error: { code: 'CONTENT_TOO_LARGE', message: `Content exceeds maximum size of ${MAX_FILE_WRITE_BYTES} bytes` } }, 413);
+    }
+
+    // Auth & resolve project root
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    // Path safety
+    const absolutePath = resolveSafeFilePath(cwd, relativePath);
+    if (!absolutePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Path is outside project root' } }, 400);
+    }
+
+    // Check for ignored directories
+    const pathSegments = absolutePath.replace(cwd, '').split(/[/\\]/).filter(Boolean);
+    const hasIgnoredSegment = pathSegments.some((seg) => IGNORED_ENTRY_NAMES.has(seg));
+    if (hasIgnoredSegment) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Cannot write to ignored directories (.git, node_modules, etc.)' } }, 400);
+    }
+
+    // Must not be a directory
+    const fileStat = await stat(absolutePath).catch(() => null);
+    if (!fileStat) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'File not found' } }, 404);
+    }
+    if (fileStat.isDirectory()) {
+      return c.json({ error: { code: 'IS_DIRECTORY', message: 'Cannot write to a directory' } }, 400);
+    }
+
+    // Only allow text file extensions
+    if (!isTextFilePath(absolutePath)) {
+      return c.json({ error: { code: 'UNSUPPORTED_FILE', message: 'Only text file editing is supported' } }, 400);
+    }
+
+    // Also check the written content doesn't look binary
+    if (looksLikeBinary(contentBytes)) {
+      return c.json({ error: { code: 'UNSUPPORTED_FILE', message: 'Binary content is not supported' } }, 400);
+    }
+
+    await writeFile(absolutePath, content, 'utf8');
+    return c.json({ session_id: sessionId, path: relativePath, size: contentBytes.byteLength });
   });
 
   app.get('/api/v1/sessions/:sessionId/git-diff', async (c) => {
@@ -1040,10 +1165,15 @@ export function registerSessionMutationRoutes(app: Hono) {
     const sessionId = decodeURIComponent(c.req.param('sessionId'));
     const userId = (c as any).get('userId') as string;
     const body = await c.req.json().catch(() => ({}));
-    const title = String((body as { title?: string }).title ?? '').trim();
+    const title = (body as { title?: string }).title;
+    const pinned: boolean | undefined = (body as { pinned?: boolean }).pinned;
 
-    if (!title || title.length > 200) {
-      return c.json({ error: { code: 'INVALID_TITLE', message: 'Title must be 1-200 characters' } }, 400);
+    // Only validate title when it is provided
+    if (title !== undefined) {
+      const trimmed = String(title).trim();
+      if (!trimmed || trimmed.length > 200) {
+        return c.json({ error: { code: 'INVALID_TITLE', message: 'Title must be 1-200 characters' } }, 400);
+      }
     }
 
     const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
@@ -1053,12 +1183,48 @@ export function registerSessionMutationRoutes(app: Hono) {
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
     const now = nextMessageTime();
-    await db.update(sessions).set({ title, titleSource: 'user', updatedAt: now }).where(eq(sessions.id, sessionId));
-    await createAuditService(db).record(userId, "title.changed", "session", sessionId, { old_title: session.title, new_title: title });
+    const updates: Record<string, any> = {};
+    if (title !== undefined) {
+      const trimmed = String(title).trim();
+      updates.title = trimmed;
+      updates.titleSource = 'user';
+    }
+    if (pinned === true) {
+      updates.pinnedAt = new Date();
+    } else if (pinned === false) {
+      updates.pinnedAt = null;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      // nothing to update, but still return success
+      return c.json({ session_id: sessionId, title: session.title, title_source: session.titleSource, pinned_at: session.pinnedAt ? new Date(session.pinnedAt).toISOString() : null });
+    }
+
+    updates.updatedAt = now;
+    await db.update(sessions).set(updates).where(eq(sessions.id, sessionId));
+
+    if (title !== undefined) {
+      await createAuditService(db).record(userId, "title.changed", "session", sessionId, { old_title: session.title, new_title: updates.title });
+    }
+    if (pinned !== undefined) {
+      const wasPinned = session.pinnedAt !== null;
+      if (pinned && !wasPinned) {
+        await createAuditService(db).record(userId, "session.pinned", "session", sessionId);
+      } else if (!pinned && wasPinned) {
+        await createAuditService(db).record(userId, "session.unpinned", "session", sessionId);
+      }
+    }
 
     socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
     socketHub.broadcast(createEvent('tree.changed', { project_id: session.projectId }, { project_id: session.projectId }));
 
-    return c.json({ session_id: sessionId, title, title_source: 'user' });
+    const updatedTitle = title !== undefined ? String(title).trim() : session.title;
+    const updatedPinnedAt = pinned === true ? new Date() : pinned === false ? null : session.pinnedAt;
+    return c.json({
+      session_id: sessionId,
+      title: updatedTitle,
+      title_source: title !== undefined ? 'user' : session.titleSource,
+      pinned_at: updatedPinnedAt ? new Date(updatedPinnedAt).toISOString() : null,
+    });
   });
 }

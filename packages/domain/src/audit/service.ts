@@ -7,7 +7,11 @@ export type AuditAction =
   | 'session.archived'
   | 'session.stopped'
   | 'message.sent'
-  | 'title.changed';
+  | 'title.changed'
+  | 'session.pinned'
+  | 'session.unpinned'
+  | 'project.pinned'
+  | 'project.unpinned';
 
 function id() {
   return `audit_${crypto.randomUUID().slice(0, 12)}`;

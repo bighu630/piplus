@@ -8,6 +8,7 @@ export type ProjectDTO = {
   source_type: string;
   source_url: string;
   archived_at: string | null;
+  pinned_at: string | null;
   last_activity_at: string;
   created_at: string;
   sessions: SessionTreeNodeDTO[];
@@ -25,6 +26,7 @@ export type SessionTreeNodeDTO = {
   status: keyof typeof SessionStatus;
   runtime_status: keyof typeof RuntimeStatus;
   archived_at: string | null;
+  pinned_at: string | null;
   last_activity_at: string;
   children: SessionTreeNodeDTO[];
 };
@@ -38,6 +40,7 @@ export type SessionInfoDTO = {
     root_session_id: string;
     created_by: string;
     created_at: string;
+    last_run_at: string | null;
     archived_at: string | null;
     pi_session_id: string;
     pi_session_locator_json: string;
@@ -112,6 +115,16 @@ export type ChatMessageDTO = {
   tool_args_json?: string | null;
 };
 
+export type ProjectTodoDTO = {
+  id: string;
+  project_id: string;
+  text: string;
+  done: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type SessionFileTreeNodeDTO = {
   name: string;
   path: string;
@@ -130,6 +143,12 @@ export type SessionFileContentResponseDTO = {
   path: string;
   content: string;
   truncated: boolean;
+};
+
+export type SessionFileSaveResponseDTO = {
+  session_id: string;
+  path: string;
+  size: number;
 };
 
 export type SessionContextUsageDTO = {

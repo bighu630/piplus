@@ -8,7 +8,7 @@ import {
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { readHistory } from './history';
 import { RuntimeRegistry } from './runtime-registry';
@@ -122,6 +122,23 @@ export function createPiClient(): PiClient {
         piSessionId: session.sessionId,
         sessionFile: session.sessionFile ?? '',
       };
+      // 确保 session 文件立即落盘。SessionManager._persist 在没有 assistant 消息时
+      // 不会刷新到磁盘，导致后续 appendModelChange 仅存于内存。提前创建文件让
+      // SessionManager.open 读取后设置 flushed=true，appendModelChange 即可立即持久化。
+      if (locator.sessionFile && !existsSync(locator.sessionFile)) {
+        const sessionDir = dirname(locator.sessionFile);
+        if (!existsSync(sessionDir)) {
+          mkdirSync(sessionDir, { recursive: true });
+        }
+        writeFileSync(locator.sessionFile, JSON.stringify({
+          type: 'session',
+          version: 3,
+          id: session.sessionId,
+          timestamp: new Date().toISOString(),
+          cwd,
+        }) + '\n');
+        console.log('[pi-client] createSession → seeded session file', { sessionFile: locator.sessionFile });
+      }
       if (input.model && locator.sessionFile) {
         const sessionManager = SessionManager.open(locator.sessionFile);
         if (!sessionFileHasModelChange(sessionManager, model.provider, model.id)) {
@@ -159,18 +176,30 @@ export function createPiClient(): PiClient {
           modelRegistry,
         };
 
-        if (!sessionContext.model) {
+        if (sessionContext.model) {
+          const available = await modelRegistry.getAvailable();
+          const restored = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+          if (restored) {
+            options.model = restored;
+            console.log('[pi-client] restoreRuntime restored session model', {
+              sessionId,
+              provider: restored.provider,
+              id: restored.id,
+            });
+          } else {
+            options.model = await ensureModel();
+            console.log('[pi-client] restoreRuntime session model not in registry, fallback default', {
+              sessionId,
+              provider: options.model?.provider ?? null,
+              id: options.model?.id ?? null,
+            });
+          }
+        } else {
           options.model = await ensureModel();
-          console.log('[pi-client] restoreRuntime fallback default model', {
+          console.log('[pi-client] restoreRuntime no session model, fallback default', {
             sessionId,
             provider: options.model?.provider ?? null,
             id: options.model?.id ?? null,
-          });
-        } else {
-          console.log('[pi-client] restoreRuntime sessionContext model', {
-            sessionId,
-            provider: sessionContext.model.provider,
-            id: sessionContext.model.modelId,
           });
         }
 
@@ -231,14 +260,44 @@ export function createPiClient(): PiClient {
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
       if (session.agentSession) {
-        // 首次发消息时先注入角色 prompt（bindToolRuntime 会重建 agent session，需要重新注入）
         if (session.prompt && !session.promptSent) {
-          console.log('[pi-client] sendMessage → injecting role prompt', { sessionId, promptLen: session.prompt.length, preview: session.prompt.slice(0, 120) });
-          await session.agentSession.prompt(session.prompt);
-          session.promptSent = true;
-        }
-        // 有实际内容时才发送用户消息；空内容（如 spawn_session 场景）略过
-        if (content || options?.images?.length) {
+          if (content || options?.images?.length) {
+            // 首次对话且 content 非空：合并角色提示词和用户消息为 1 轮
+            const merged = `${session.prompt}\n\n请尊重用户的语言习惯，现在用户说：\n\n${content}`;
+            console.log('[pi-client] sendMessage → merged prompt + user message', { sessionId, promptLen: session.prompt.length, contentLen: content.length, imageCount: options?.images?.length ?? 0 });
+            try {
+              const images = normalizeImages(options?.images);
+              if (images?.length) {
+                await session.agentSession.prompt(merged, { images });
+              } else {
+                await session.agentSession.prompt(merged);
+              }
+            } catch (err) {
+              const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
+              for (const listener of session.listeners) {
+                await listener(errorEvent);
+              }
+              throw err;
+            }
+            session.promptSent = true;
+            console.log('[pi-client] sendMessage ← merged prompt done', { sessionId });
+          } else {
+            // spawn_session 场景：content 为空，仅注入角色 prompt（1 轮）
+            console.log('[pi-client] sendMessage → injecting role prompt (no user message)', { sessionId, promptLen: session.prompt.length });
+            try {
+              await session.agentSession.prompt(session.prompt);
+            } catch (err) {
+              const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
+              for (const listener of session.listeners) {
+                await listener(errorEvent);
+              }
+              throw err;
+            }
+            session.promptSent = true;
+            console.log('[pi-client] sendMessage ← role prompt done', { sessionId });
+          }
+        } else if (content || options?.images?.length) {
+          // 后续消息：promptSent 已为 true，仅发送用户消息
           console.log('[pi-client] sendMessage → agentSession.prompt', {
             sessionId,
             content: content.slice(0, 80),
@@ -313,8 +372,18 @@ export function createPiClient(): PiClient {
     },
     async closeRuntime(sessionId) {
       const session = runtimeRegistry.get(sessionId);
-      session?.agentSession?.dispose();
-      runtimeRegistry.delete(sessionId);
+      if (!session) return; // idempotent, already cleaned
+      session.agentSession?.dispose();
+      session.agentSession = undefined;
+      session.listeners.clear();
+      session.toolHandler = undefined;
+      session.toolDefs = [];
+      session.messages = [];
+      session.prompt = '';
+      session.promptSent = false;
+      // Preserve the registry entry (locator, cwd, model) so that
+      // bindToolRuntime() and restoreRuntime() can still find the
+      // session file and model metadata on subsequent calls.
     },
     async listAvailableModels() {
       const models = await modelRegistry.getAvailable();
@@ -359,12 +428,11 @@ export function createPiClient(): PiClient {
 
       await session.agentSession.setModel(target);
 
-      // 兜底：确保模型切换一定持久化到 session 文件。
-      // 按文档 AgentSession.setModel() 会 appendModelChange，但当前集成路径下测试显示
-      // 某些情况下 session 文件没有写入 model_change，因此这里做一次镜像校验与补写。
-      const sessionManager = SessionManager.open(locator.sessionFile);
-      if (!sessionFileHasModelChange(sessionManager, target.provider, target.id)) {
-        sessionManager.appendModelChange(target.provider, target.id);
+      // 兜底：使用 agent 自身的 sessionManager 做镜像校验与补写，
+      // 避免 SessionManager.open 创建新实例导致 model_change 无法立即落盘。
+      const agsm = session.agentSession.sessionManager;
+      if (!sessionFileHasModelChange(agsm, target.provider, target.id)) {
+        agsm.appendModelChange(target.provider, target.id);
       }
 
       session.model = {
@@ -434,35 +502,51 @@ export function createPiClient(): PiClient {
         modelRegistry,
       };
 
-      if (!sessionContext.model) {
-        if (session.model) {
-          const available = await modelRegistry.getAvailable();
-          const cached = available.find(
-            (candidate: any) => candidate.provider === session.model!.provider && candidate.id === session.model!.id,
-          );
-          if (cached) {
-            options.model = cached;
-            console.log('[pi-client] bindToolRuntime using cached registry model', {
-              sessionId,
-              provider: cached.provider,
-              id: cached.id,
-            });
-          } else {
-            options.model = await ensureModel();
-            console.log('[pi-client] bindToolRuntime cached model not found in registry, fallback default', {
-              sessionId,
-              provider: options.model?.provider ?? null,
-              id: options.model?.id ?? null,
-            });
-          }
+      if (sessionContext.model) {
+        const available = await modelRegistry.getAvailable();
+        const restored = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+        if (restored) {
+          options.model = restored;
+          console.log('[pi-client] bindToolRuntime restored session model', {
+            sessionId,
+            provider: restored.provider,
+            id: restored.id,
+          });
         } else {
           options.model = await ensureModel();
-          console.log('[pi-client] bindToolRuntime no cached model, fallback default', {
+          console.log('[pi-client] bindToolRuntime session model not in registry, fallback default', {
             sessionId,
             provider: options.model?.provider ?? null,
             id: options.model?.id ?? null,
           });
         }
+      } else if (session.model) {
+        const available = await modelRegistry.getAvailable();
+        const cached = available.find(
+          (candidate: any) => candidate.provider === session.model!.provider && candidate.id === session.model!.id,
+        );
+        if (cached) {
+          options.model = cached;
+          console.log('[pi-client] bindToolRuntime using cached registry model', {
+            sessionId,
+            provider: cached.provider,
+            id: cached.id,
+          });
+        } else {
+          options.model = await ensureModel();
+          console.log('[pi-client] bindToolRuntime cached model not found in registry, fallback default', {
+            sessionId,
+            provider: options.model?.provider ?? null,
+            id: options.model?.id ?? null,
+          });
+        }
+      } else {
+        options.model = await ensureModel();
+        console.log('[pi-client] bindToolRuntime no cached model, fallback default', {
+          sessionId,
+          provider: options.model?.provider ?? null,
+          id: options.model?.id ?? null,
+        });
       }
 
       const { session: agentSession } = await createAgentSession(options);
@@ -576,6 +660,18 @@ export function createPiClient(): PiClient {
         headers: config.headers,
         models,
       } as any);
+    },
+
+    async setProviderApiKey(provider, apiKey) {
+      authStorage.set(provider, { type: 'api_key', key: apiKey });
+    },
+
+    async removeProviderApiKey(provider) {
+      authStorage.remove(provider);
+    },
+
+    async getProviderAuthStatus(provider) {
+      return authStorage.getAuthStatus(provider);
     },
   };
 }

@@ -5,6 +5,7 @@ import {
   getSessionContextUsage,
   compactSession,
   getSessionMessages,
+  getPlannerRolePrompt,
   checkAuth,
   login,
   getModelsStatus,
@@ -12,15 +13,18 @@ import {
   setSessionModel,
   archiveProject,
   deleteProject,
+  setProjectPinned,
   createProject,
   createProjectSession,
   sendSessionMessage,
   stopSession,
   archiveSession,
   updateSessionTitle,
+  setSessionPinned,
   getSessionGitDiff,
   getSessionFileTree,
   getSessionFileContent,
+  saveSessionFileContent,
   gitPull,
   gitPush,
   gitCommit,
@@ -31,9 +35,20 @@ import {
   createModelProvider,
   getProjectRoleModels,
   setProjectRoleModels,
+  getNativeModelProviders,
+  setNativeProviderApiKey,
   type ModelInfo,
   type ProviderFormPayload,
   type SendSessionMessagePayload,
+  getPackages,
+  installPackage,
+  removePackage,
+  updatePackages,
+  getPackageUpdates,
+  getProjectTodos,
+  createProjectTodo,
+  updateProjectTodo,
+  deleteProjectTodo,
 } from './api';
 
 export function useAuthSession() {
@@ -170,6 +185,20 @@ export function useSessionFileContent(sessionId: string | null, path: string | n
   });
 }
 
+export function useSaveSessionFileContentMutation(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, content }: { path: string; content: string }) =>
+      saveSessionFileContent(sessionId!, path, content),
+    onSuccess: (_data, variables) => {
+      // Invalidate the specific file content query
+      queryClient.invalidateQueries({ queryKey: ['session', 'files', 'content', sessionId, variables.path] });
+      // Also invalidate the file tree (size may have changed)
+      queryClient.invalidateQueries({ queryKey: ['session', 'files', 'tree', sessionId] });
+    },
+  });
+}
+
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -197,6 +226,12 @@ export function useSendMessageMutation(sessionId: string | null) {
   });
 }
 
+export function usePlannerRolePromptMutation() {
+  return useMutation({
+    mutationFn: (sessionId: string) => getPlannerRolePrompt(sessionId),
+  });
+}
+
 export function useStopSessionMutation() {
   return useMutation({
     mutationFn: (sessionId: string) => stopSession(sessionId),
@@ -213,10 +248,30 @@ export function useArchiveSessionMutation() {
   });
 }
 
+export function useSetSessionPinnedMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, pinned }: { sessionId: string; pinned: boolean }) => setSessionPinned(sessionId, pinned),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['tree'] });
+    },
+  });
+}
+
 export function useArchiveProjectMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (projectId: string) => archiveProject(projectId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['tree'] });
+    },
+  });
+}
+
+export function useSetProjectPinnedMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, pinned }: { projectId: string; pinned: boolean }) => setProjectPinned(projectId, pinned),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },
@@ -342,6 +397,128 @@ export function useSetProjectRoleModelsMutation() {
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['project', 'role-models', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['tree'] });
+    },
+  });
+}
+
+export function useNativeModelProviders() {
+  return useQuery({
+    queryKey: ['models', 'native-providers'],
+    queryFn: getNativeModelProviders,
+    staleTime: 30_000,
+  });
+}
+
+export function useSetNativeProviderApiKeyMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ provider, apiKey }: { provider: string; apiKey: string }) =>
+      setNativeProviderApiKey(provider, apiKey),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['models', 'status'] }),
+        queryClient.invalidateQueries({ queryKey: ['models', 'native-providers'] }),
+      ]);
+    },
+  });
+}
+
+// ── Package Management Hooks ─────────────────────────────────────────
+
+export function usePackages() {
+  return useQuery({
+    queryKey: ['packages'],
+    queryFn: async () => {
+      const res = await getPackages();
+      return res.packages;
+    },
+    staleTime: 10_000,
+  });
+}
+
+export function useInstallPackageMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ source, local, projectId }: { source: string; local?: boolean; projectId?: string }) =>
+      installPackage(source, local, projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['packages'] });
+      queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+    },
+  });
+}
+
+export function useRemovePackageMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ source, local, projectId }: { source: string; local?: boolean; projectId?: string }) =>
+      removePackage(source, local, projectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['packages'] });
+      queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+    },
+  });
+}
+
+export function useUpdatePackagesMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (source?: string) => updatePackages(source),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['packages'] });
+      queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+    },
+  });
+}
+
+export function usePackageUpdates() {
+  return useQuery({
+    queryKey: ['packages', 'updates'],
+    queryFn: async () => {
+      const res = await getPackageUpdates();
+      return res.updates;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function useProjectTodos(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project', 'todos', projectId],
+    queryFn: () => getProjectTodos(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 5_000,
+  });
+}
+
+export function useCreateProjectTodoMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (text: string) => createProjectTodo(projectId!, text),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'todos', projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectTodoMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ todoId, patch }: { todoId: string; patch: { text?: string; done?: boolean; sort_order?: number } }) =>
+      updateProjectTodo(projectId!, todoId, patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'todos', projectId] });
+    },
+  });
+}
+
+export function useDeleteProjectTodoMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (todoId: string) => deleteProjectTodo(projectId!, todoId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'todos', projectId] });
     },
   });
 }

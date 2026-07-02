@@ -15,6 +15,7 @@ type TreeNode = {
   status: string;
   runtime_status: string;
   archived_at: string | null;
+  pinned_at: string | null;
   last_activity_at: string;
   children: TreeNode[];
 };
@@ -53,6 +54,7 @@ export function registerTreeRoutes(app: Hono) {
             status: sessions.status,
             runtimeStatus: sessions.runtimeStatus,
             archivedAt: sessions.archivedAt,
+            pinnedAt: sessions.pinnedAt,
             lastActivityAt: sessions.lastActivityAt,
             roleTemplateId: sessions.roleTemplateId,
           })
@@ -82,6 +84,7 @@ export function registerTreeRoutes(app: Hono) {
             status: s.status,
             runtime_status: s.runtimeStatus,
             archived_at: s.archivedAt ? new Date(s.archivedAt).toISOString() : null,
+            pinned_at: s.pinnedAt ? new Date(s.pinnedAt).toISOString() : null,
             last_activity_at: new Date(s.lastActivityAt).toISOString(),
             children: [],
           };
@@ -92,10 +95,18 @@ export function registerTreeRoutes(app: Hono) {
         }
 
         const buildTree = (parentId: string | null): TreeNode[] => {
-          return (childrenMap.get(parentId) ?? []).map((node) => ({
+          const nodes = (childrenMap.get(parentId) ?? []).map((node) => ({
             ...node,
             children: buildTree(node.id),
           }));
+          // Sort: pinned first (newer pinned first), then by last_activity_at desc
+          nodes.sort((a, b) => {
+            if (a.pinned_at && !b.pinned_at) return -1;
+            if (!a.pinned_at && b.pinned_at) return 1;
+            if (a.pinned_at && b.pinned_at) return a.pinned_at < b.pinned_at ? 1 : a.pinned_at > b.pinned_at ? -1 : 0;
+            return new Date(b.last_activity_at).getTime() - new Date(a.last_activity_at).getTime();
+          });
+          return nodes;
         };
 
         return {
@@ -103,6 +114,7 @@ export function registerTreeRoutes(app: Hono) {
           name: project.name,
           status: project.status,
           archived_at: project.archivedAt ? new Date(project.archivedAt).toISOString() : null,
+          pinned_at: project.pinnedAt ? new Date(project.pinnedAt).toISOString() : null,
           last_activity_at: new Date(project.lastActivityAt).toISOString(),
           created_at: new Date(project.createdAt).toISOString(),
           role_default_models: (() => { try { return JSON.parse(project.roleDefaultModels ?? '{}'); } catch { return {}; } })(),
@@ -110,6 +122,14 @@ export function registerTreeRoutes(app: Hono) {
         };
       }),
     );
+
+    // Sort projects: pinned first (newer pinned first), then by last_activity_at desc
+    result.sort((a, b) => {
+      if (a.pinned_at && !b.pinned_at) return -1;
+      if (!a.pinned_at && b.pinned_at) return 1;
+      if (a.pinned_at && b.pinned_at) return a.pinned_at < b.pinned_at ? 1 : a.pinned_at > b.pinned_at ? -1 : 0;
+      return new Date(b.last_activity_at).getTime() - new Date(a.last_activity_at).getTime();
+    });
 
     return c.json({ projects: result });
   });

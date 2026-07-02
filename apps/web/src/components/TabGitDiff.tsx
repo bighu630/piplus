@@ -16,6 +16,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  PanelLeft,
 } from 'lucide-react';
 
 interface GitActionResult {
@@ -245,6 +246,7 @@ export default function TabGitDiff({
   const [opFeedback, setOpFeedback] = useState<{ op: GitOp; result: 'ok' | 'error'; message: string } | null>(null);
   const [treeExpanded, setTreeExpanded] = useState<Record<string, boolean>>({});
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const branchSelectorRef = useRef<HTMLDivElement>(null);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -415,8 +417,8 @@ export default function TabGitDiff({
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50/60 dark:bg-slate-900/10 overflow-hidden">
       {/* Top controls */}
-      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 shrink-0 flex items-center justify-between gap-4 select-none">
-        <div className="flex items-center space-x-3 shrink-0">
+      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 md:px-6 py-3 shrink-0 flex flex-col md:flex-row md:items-center md:justify-between gap-3 md:gap-4 select-none">
+        <div className="flex items-center space-x-3 shrink-0 min-w-0">
           {/* Branch selector dropdown */}
           <div className="relative" ref={branchSelectorRef}>
             <button
@@ -502,11 +504,11 @@ export default function TabGitDiff({
           </div>
         </div>
 
-        <div className="flex items-center space-x-2 flex-wrap gap-y-2">
+        <div className="grid grid-cols-2 md:flex items-center gap-2 w-full md:w-auto">
           <button
             onClick={onRefresh}
             disabled={isLoading}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200/50 dark:border-indigo-900 rounded-xl text-indigo-600 dark:text-indigo-400 font-semibold hover:bg-indigo-100/70 dark:hover:bg-indigo-900 disabled:opacity-50 text-xs transition cursor-pointer"
+            className="flex items-center justify-center space-x-1.5 px-3 py-2 md:py-1.5 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200/50 dark:border-indigo-900 rounded-xl text-indigo-600 dark:text-indigo-400 font-semibold hover:bg-indigo-100/70 dark:hover:bg-indigo-900 disabled:opacity-50 text-xs transition cursor-pointer"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
             <span>{isLoading ? '加载中…' : '刷新'}</span>
@@ -515,7 +517,7 @@ export default function TabGitDiff({
           <button
             onClick={handlePull}
             disabled={anyBusy}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/50 dark:border-emerald-900 rounded-xl text-emerald-600 dark:text-emerald-400 font-semibold hover:bg-emerald-100/70 dark:hover:bg-emerald-900 disabled:opacity-50 text-xs transition cursor-pointer"
+            className="flex items-center justify-center space-x-1.5 px-3 py-2 md:py-1.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/50 dark:border-emerald-900 rounded-xl text-emerald-600 dark:text-emerald-400 font-semibold hover:bg-emerald-100/70 dark:hover:bg-emerald-900 disabled:opacity-50 text-xs transition cursor-pointer"
           >
             <ArrowUpCircle className={`w-3.5 h-3.5 ${isPulling ? 'animate-spin' : ''}`} />
             <span>{isPulling ? 'Pulling…' : 'Pull'}</span>
@@ -524,7 +526,7 @@ export default function TabGitDiff({
           <button
             onClick={handlePush}
             disabled={anyBusy}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/50 dark:border-amber-900 rounded-xl text-amber-600 dark:text-amber-400 font-semibold hover:bg-amber-100/70 dark:hover:bg-amber-900 disabled:opacity-50 text-xs transition cursor-pointer"
+            className="flex items-center justify-center space-x-1.5 px-3 py-2 md:py-1.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/50 dark:border-amber-900 rounded-xl text-amber-600 dark:text-amber-400 font-semibold hover:bg-amber-100/70 dark:hover:bg-amber-900 disabled:opacity-50 text-xs transition cursor-pointer"
           >
             <GitPullRequest className={`w-3.5 h-3.5 ${isPushing ? 'animate-spin' : ''}`} />
             <span>{isPushing ? 'Pushing…' : 'Push'}</span>
@@ -536,7 +538,7 @@ export default function TabGitDiff({
               setCommitMessage('');
             }}
             disabled={anyBusy}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-violet-50 dark:bg-violet-950/30 border border-violet-200/50 dark:border-violet-900 rounded-xl text-violet-600 dark:text-violet-400 font-semibold hover:bg-violet-100/70 dark:hover:bg-violet-900 disabled:opacity-50 text-xs transition cursor-pointer"
+            className="flex items-center justify-center space-x-1.5 px-3 py-2 md:py-1.5 bg-violet-50 dark:bg-violet-950/30 border border-violet-200/50 dark:border-violet-900 rounded-xl text-violet-600 dark:text-violet-400 font-semibold hover:bg-violet-100/70 dark:hover:bg-violet-900 disabled:opacity-50 text-xs transition cursor-pointer"
           >
             <GitCommitVertical className={`w-3.5 h-3.5 ${isCommitting ? 'animate-spin' : ''}`} />
             <span>{isCommitting ? 'Committing…' : 'Commit'}</span>
@@ -546,7 +548,7 @@ export default function TabGitDiff({
             <>
               <button
                 onClick={handleCopyText}
-                className="flex items-center space-x-1 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-medium cursor-pointer transition border border-transparent dark:border-slate-700/60"
+                className="flex items-center justify-center space-x-1 px-2.5 py-2 md:py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-medium cursor-pointer transition border border-transparent dark:border-slate-700/60"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copied ? '已复制' : '复制'}</span>
@@ -554,7 +556,7 @@ export default function TabGitDiff({
 
               <button
                 onClick={downloadPatch}
-                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-100 text-slate-500 dark:text-slate-400 rounded-lg cursor-pointer transition"
+                className="flex items-center justify-center p-2 md:p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-100 text-slate-500 dark:text-slate-400 rounded-lg cursor-pointer transition border border-slate-200 dark:border-slate-700 md:border-transparent"
                 title="下载 Patch"
               >
                 <Download className="w-4 h-4" />
@@ -633,42 +635,68 @@ export default function TabGitDiff({
         ) : (
           <>
             {/* Left sidebar - file tree */}
-            <aside className="w-[300px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col">
-              <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800">
-                <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
-                  <FileCode className="w-4 h-4 text-blue-500" />
-                  <span>变更文件</span>
+            {!isTreePanelCollapsed && (
+              <aside className="w-[300px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col">
+                <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
+                      <FileCode className="w-4 h-4 text-blue-500" />
+                      <span>变更文件</span>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400 mt-0.5">
+                      {functionalFiles.length} 个文件
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsTreePanelCollapsed(true)}
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                    title="收起文件树"
+                    aria-label="收起文件树"
+                  >
+                    <PanelLeft className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-                <div className="text-[10px] font-mono text-slate-400 mt-0.5">
-                  {functionalFiles.length} 个文件
-                </div>
-              </div>
 
-              <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-                {fileTree.length === 0 ? (
-                  <div className="text-xs text-slate-400 p-2">无变更文件</div>
-                ) : (
-                  <DiffFileTree
-                    nodes={fileTree}
-                    depth={0}
-                    expanded={treeExpanded}
-                    onToggle={toggleTreeExpanded}
-                    selectedPath={selectedFilePath}
-                    onSelect={handleFileSelect}
-                    onAddGitignore={(filePath) => { onAddGitignore(filePath); }}
-                    isAddingGitignore={isAddingGitignore}
-                  />
-                )}
-              </div>
-            </aside>
+                <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+                  {fileTree.length === 0 ? (
+                    <div className="text-xs text-slate-400 p-2">无变更文件</div>
+                  ) : (
+                    <DiffFileTree
+                      nodes={fileTree}
+                      depth={0}
+                      expanded={treeExpanded}
+                      onToggle={toggleTreeExpanded}
+                      selectedPath={selectedFilePath}
+                      onSelect={handleFileSelect}
+                      onAddGitignore={(filePath) => { onAddGitignore(filePath); }}
+                      isAddingGitignore={isAddingGitignore}
+                    />
+                  )}
+                </div>
+              </aside>
+            )}
 
             {/* Right diff viewer */}
-            <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex-1 overflow-y-auto p-4 md:p-6">
               <div className="max-w-5xl mx-auto space-y-6">
-                <div className="flex items-start space-x-3 bg-blue-50/50 dark:bg-indigo-950/20 border border-blue-100 dark:border-indigo-900/60 p-4 rounded-xl text-xs text-blue-800 dark:text-indigo-300 leading-relaxed font-sans">
-                  <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold">Git Diff：</span>新增行以绿色高亮，删除行以红色高亮。可点击文件名展开/收起每个文件的变更。左侧目录可快速跳转。
+                <div className="flex items-start gap-3">
+                  {isTreePanelCollapsed && (
+                    <button
+                      type="button"
+                      onClick={() => setIsTreePanelCollapsed(false)}
+                      className="shrink-0 p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                      title="展开文件树"
+                      aria-label="展开文件树"
+                    >
+                      <PanelLeft className="w-4 h-4" />
+                    </button>
+                  )}
+                  <div className="flex items-start space-x-3 bg-blue-50/50 dark:bg-indigo-950/20 border border-blue-100 dark:border-indigo-900/60 p-4 rounded-xl text-xs text-blue-800 dark:text-indigo-300 leading-relaxed font-sans flex-1 min-w-0">
+                    <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold">Git Diff：</span>新增行以绿色高亮，删除行以红色高亮。可点击文件名展开/收起每个文件的变更。左侧目录可快速跳转。
+                    </div>
                   </div>
                 </div>
 

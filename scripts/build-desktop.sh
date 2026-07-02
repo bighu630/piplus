@@ -9,31 +9,90 @@ echo "  ╚═══════════════════════
 echo ""
 
 # ── 1. API bundle ──────────────────────────────────────────
-echo "[1/4] Building API bundle ..."
+echo "[1/5] Building API bundle ..."
 cd apps/api
 bun run build:bundle
 cd "$OLDPWD"
 
 # ── 2. Web build (desktop) ──────────────────────────────────
-echo "[2/4] Building web for desktop ..."
+echo "[2/5] Building web for desktop ..."
 cd apps/web
 bun run build:desktop
 cd "$OLDPWD"
 
 # ── 3. Desktop compile ──────────────────────────────────────
-echo "[3/4] Building desktop main/preload ..."
+echo "[3/5] Building desktop main/preload ..."
 cd apps/desktop
 bun run build
 cd "$OLDPWD"
 
-# ── 4. Package ──────────────────────────────────────────────
-echo "[4/4] Packaging for Linux ..."
+TARGET="${1:-linux}"
+
+# ── 4. Prepare bundled bun ──────────────────────────────────
+echo "[4/5] Preparing bundled bun ..."
+
+# Clean up any previous bun-bin
+rm -rf apps/desktop/bun-bin
+
+if [ "$TARGET" = "win" ]; then
+  if [ -n "${PIPLUS_BUN_WIN_PATH:-}" ] && [ -f "$PIPLUS_BUN_WIN_PATH" ]; then
+    mkdir -p apps/desktop/bun-bin
+    cp "$PIPLUS_BUN_WIN_PATH" apps/desktop/bun-bin/bun.exe
+    echo "  → bun.exe bundled from PIPLUS_BUN_WIN_PATH ($PIPLUS_BUN_WIN_PATH)"
+  else
+    echo "  ⚠️  PIPLUS_BUN_WIN_PATH is not set or file not found."
+    echo "  → Attempting to download bun for Windows ..."
+    mkdir -p apps/desktop/bun-bin
+    if command -v curl &>/dev/null; then
+      BUN_ZIP="/tmp/bun-windows-x64.zip"
+      BUN_EXTRACT="/tmp/bun-windows-extract"
+      rm -rf "$BUN_EXTRACT" "$BUN_ZIP"
+      curl -fsSL "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64.zip" \
+        -o "$BUN_ZIP" 2>/dev/null || {
+        echo "  ❌ Download failed. To bundle bun.exe:"
+        echo "     $$ PIPLUS_BUN_WIN_PATH=/path/to/bun.exe $0 win"
+        echo "  → Continuing without bundled bun (Windows may need system Bun)."
+        rm -rf apps/desktop/bun-bin
+      }
+      if [ -f "$BUN_ZIP" ]; then
+        if command -v unzip &>/dev/null; then
+          mkdir -p "$BUN_EXTRACT"
+          unzip -o "$BUN_ZIP" -d "$BUN_EXTRACT" 2>/dev/null
+          # Find bun.exe inside the extracted tree (may be nested, e.g. bun-windows-x64/bun.exe)
+          FOUND_BUN=$(find "$BUN_EXTRACT" -name 'bun.exe' -type f 2>/dev/null | head -1)
+          if [ -n "$FOUND_BUN" ] && [ -f "$FOUND_BUN" ]; then
+            cp "$FOUND_BUN" apps/desktop/bun-bin/bun.exe
+            echo "  → bun.exe downloaded and extracted to apps/desktop/bun-bin/bun.exe"
+          else
+            echo "  ❌ Extracted archive does not contain bun.exe"
+            rm -rf apps/desktop/bun-bin
+          fi
+          rm -rf "$BUN_EXTRACT"
+        else
+          echo "  ❌ 'unzip' not found. Please install unzip or set PIPLUS_BUN_WIN_PATH."
+          rm -rf apps/desktop/bun-bin
+        fi
+        rm -f "$BUN_ZIP"
+      fi
+    else
+      echo "  ❌ 'curl' not found. Please set PIPLUS_BUN_WIN_PATH:"
+      echo "     $$ PIPLUS_BUN_WIN_PATH=/path/to/bun.exe $0 win"
+      rm -rf apps/desktop/bun-bin
+    fi
+  fi
+fi
+
+# ── 5. Package ──────────────────────────────────────────────
+echo "[5/5] Packaging${TARGET:+ for $TARGET} ..."
 cd apps/desktop
 
 # 清理上次产物，避免 asar 膨胀
-rm -rf dist/linux-unpacked dist/*.AppImage dist/*.deb
+case "$TARGET" in
+  linux) rm -rf dist/linux-unpacked dist/*.AppImage dist/*.deb ;;
+  mac)   rm -rf dist/mac dist/*.dmg ;;
+  win)   rm -rf dist/win-unpacked dist/*.exe ;;
+esac
 
-TARGET="${1:-linux}"
 case "$TARGET" in
   linux)
     bunx electron-builder --linux

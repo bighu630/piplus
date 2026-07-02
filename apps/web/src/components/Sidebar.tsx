@@ -20,7 +20,9 @@ import {
   Bug,
   Eye,
   User,
+  ArrowUp,
 } from 'lucide-react';
+import { fuzzyMatch } from '../lib/fuzzy';
 
 interface SidebarProps {
   projects: ProjectDTO[];
@@ -34,6 +36,8 @@ interface SidebarProps {
   onCreateProject: () => void;
   onCreateSession: () => void;
   onArchiveProject?: (projectId: string) => void;
+  onToggleSessionPinned?: (sessionId: string, pinned: boolean) => void;
+  onToggleProjectPinned?: (projectId: string, pinned: boolean) => void;
   onArchiveSession?: (sessionId: string) => void;
   onDeleteProject?: (projectId: string) => void;
   onLogout: () => void;
@@ -45,6 +49,12 @@ interface SidebarProps {
   onToggleShowWorker: () => void;
   treeLoading: boolean;
   creatingSession: boolean;
+  /** 移动端模式：全宽展示树，无折叠/拖拽交互 */
+  isMobile?: boolean;
+  /** 移动端模式下控制侧边栏显示/隐藏 */
+  isMobileVisible?: boolean;
+  /** 移动端返回目录树回调 */
+  onReturnToTree?: () => void;
 }
 
 function roleLabel(key: string): string {
@@ -101,6 +111,8 @@ export default function Sidebar({
   onToggleSidebar,
   onCreateProject,
   onCreateSession,
+  onToggleSessionPinned,
+  onToggleProjectPinned,
   onArchiveProject,
   onArchiveSession,
   onDeleteProject,
@@ -113,6 +125,9 @@ export default function Sidebar({
   onToggleShowWorker,
   treeLoading,
   creatingSession,
+  isMobile,
+  isMobileVisible,
+  onReturnToTree,
 }: SidebarProps) {
   const [sidebarSearch, setSidebarSearch] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(() => {
@@ -216,8 +231,9 @@ export default function Sidebar({
               : null;
           }
           if (includeSearch && hasSearch) {
-            if (!s.title.toLowerCase().includes(q) && !roleLabel(s.role_template_key).includes(q)) {
-              return filteredChildren.length > 0 && anyRunning(filteredChildren)
+            if (!fuzzyMatch(q, s.title) && !fuzzyMatch(q, s.role_template_key) && !fuzzyMatch(q, roleLabel(s.role_template_key))) {
+              // Bridge node: keep visible if any child matched the search
+              return filteredChildren.length > 0
                 ? { ...s, children: filteredChildren }
                 : null;
             }
@@ -229,7 +245,7 @@ export default function Sidebar({
 
     return projects
       .map((p) => {
-        if (hasSearch && p.name.toLowerCase().includes(q)) {
+        if (hasSearch && fuzzyMatch(q, p.name)) {
           // project name matched — only apply archive/worker filters to sessions, skip search
           return { ...p, sessions: filterSessions(p.sessions, false) };
         }
@@ -239,7 +255,22 @@ export default function Sidebar({
       .filter((p): p is ProjectDTO => p !== null);
   }, [projects, sidebarSearch, showArchived, showWorker]);
 
-  // Sort planner's immediate children: feature_lead > bugfix_lead > other roles > blank
+  // Shared comparator: pinned first, then newest pinned first, then last_activity_at desc
+  function sortByPinnedThenActivity(a: SessionTreeNodeDTO, b: SessionTreeNodeDTO): number {
+    if (a.pinned_at && !b.pinned_at) return -1;
+    if (!a.pinned_at && b.pinned_at) return 1;
+    if (a.pinned_at && b.pinned_at) {
+      // Newer pinned first
+      if (a.pinned_at < b.pinned_at) return 1;
+      if (a.pinned_at > b.pinned_at) return -1;
+    }
+    // Fall back to last_activity_at desc for deterministic order
+    if (a.last_activity_at < b.last_activity_at) return 1;
+    if (a.last_activity_at > b.last_activity_at) return -1;
+    return 0;
+  }
+
+  // Sort planner's immediate children: pinned first, then role priority, then activity
   function sortPlannerChildren(sessions: SessionTreeNodeDTO[]): SessionTreeNodeDTO[] {
     const priority: Record<string, number> = {
       feature_lead: 0,
@@ -247,9 +278,22 @@ export default function Sidebar({
       blank: 3,
     };
     return [...sessions].sort((a, b) => {
+      // Pinned first
+      if (a.pinned_at && !b.pinned_at) return -1;
+      if (!a.pinned_at && b.pinned_at) return 1;
+      // Both pinned: newer pinned_at first
+      if (a.pinned_at && b.pinned_at) {
+        if (a.pinned_at < b.pinned_at) return 1;
+        if (a.pinned_at > b.pinned_at) return -1;
+      }
+      // Same pinned state: sort by role priority
       const pa = priority[a.role_template_key] ?? 2;
       const pb = priority[b.role_template_key] ?? 2;
-      return pa - pb;
+      if (pa !== pb) return pa - pb;
+      // Same role: fall back to last_activity_at desc
+      if (a.last_activity_at < b.last_activity_at) return 1;
+      if (a.last_activity_at > b.last_activity_at) return -1;
+      return 0;
     });
   }
 
@@ -259,13 +303,14 @@ export default function Sidebar({
     const isCollapsed = collapsedSessions[session.id];
     const isArchived = Boolean(session.archived_at);
     const statusDotColor = runtimeColor(session.runtime_status);
+    const isPinned = Boolean(session.pinned_at);
 
 
     return (
       <div key={session.id} className="w-full flex flex-col">
         <div
           onClick={() => onSelectSession(projectId, session.id)}
-          style={{ paddingLeft: isSidebarCollapsed ? '0px' : `${Math.max(0, depth * 14 + 8 - 20)}px` }}
+          style={{ paddingLeft: effectiveCollapsed ? '0px' : `${Math.max(0, depth * 14 + 8 - 20)}px` }}
           className={`group flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition ${
             isActive
               ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold shadow-2xs'
@@ -274,7 +319,7 @@ export default function Sidebar({
         >
           <div className="flex items-center flex-1 min-w-0">
             {/* 固定宽度的 chevron 位，有按钮显示按钮，无按钮留空 — 保证图标文字对齐 */}
-            {!isSidebarCollapsed && (
+            {!effectiveCollapsed && (
               <div className="w-4 shrink-0 flex items-center justify-start">
                 {hasChildren && (
                   <button
@@ -291,9 +336,9 @@ export default function Sidebar({
               </div>
             )}
             <div className="flex items-center space-x-1.5 min-w-0">
-              {!isSidebarCollapsed && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-slate-400'}` })}
+              {(isPinned || !effectiveCollapsed) && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : isPinned ? 'text-amber-300 dark:text-amber-300' : 'text-slate-400'}` })}
 
-            {!isSidebarCollapsed && (
+            {!effectiveCollapsed && (
               <span
                 className="text-[11.5px] truncate font-sans tracking-tight"
                 title={session.title}
@@ -304,10 +349,17 @@ export default function Sidebar({
             </div>
           </div>
 
-          {!isSidebarCollapsed && (
+          {!effectiveCollapsed && (
             <div className="flex items-center gap-1 shrink-0 select-none">
               <span
-                className="text-[9px] text-slate-400 dark:text-slate-500 font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity cursor-context-menu"
+                className={`text-[9px] font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity cursor-pointer ${isPinned ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}
+                title={isPinned ? '左键取消置顶，右键归档' : '左键置顶，右键归档'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onToggleSessionPinned) {
+                    onToggleSessionPinned(session.id, !isPinned);
+                  }
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -330,21 +382,32 @@ export default function Sidebar({
 
         {!isCollapsed && hasChildren && (
           <div className="flex flex-col space-y-0.5 mt-0.5">
-            {(session.role_template_key === 'planner' ? sortPlannerChildren(session.children) : session.children).map((child) => renderSessionNode(child, projectId, depth + 1))}
+            {(session.role_template_key === 'planner' 
+              ? sortPlannerChildren(session.children) 
+              : [...session.children].sort(sortByPinnedThenActivity)
+            ).map((child) => renderSessionNode(child, projectId, depth + 1))}
           </div>
         )}
       </div>
     );
   };
 
+  const isMobileMode = isMobile === true;
+  const isVisible = isMobileMode ? isMobileVisible === true : true;
+  // 移动端：把 isSidebarCollapsed 视为 false（始终展开），禁用折叠/拖拽
+  const effectiveCollapsed = isMobileMode ? false : isSidebarCollapsed;
+
   return (
     <div
-      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-screen select-none relative ${
+      className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-[100dvh] min-h-0 overflow-hidden select-none relative ${
         isDragging ? '' : 'transition-all duration-200'
-      }`}
-      style={{ width: isSidebarCollapsed ? 64 : sidebarWidth }}
+      } ${!isVisible ? 'hidden' : ''}`}
+      style={{
+        width: isMobileMode ? '100%' : effectiveCollapsed ? 64 : sidebarWidth,
+      }}
     >
-      {!isSidebarCollapsed && (
+      {/* 移动端不显示拖拽手柄 */}
+      {!isMobileMode && !effectiveCollapsed && (
         <div
           className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 z-10"
           style={{ touchAction: 'none' }}
@@ -357,7 +420,7 @@ export default function Sidebar({
       )}
       {/* Header */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
-        {!isSidebarCollapsed && (
+        {!isMobileMode && !effectiveCollapsed && (
           <div className="flex items-center space-x-2">
             <div className="bg-blue-600 text-white font-black px-2 py-1 rounded text-sm tracking-widest font-sans flex items-center">
               Pi
@@ -367,16 +430,37 @@ export default function Sidebar({
             </span>
           </div>
         )}
-        <button
-          onClick={onToggleSidebar}
-          className="p-1 px-1.5 hover:bg-slate-200/70 text-slate-500 rounded transition ml-auto flex items-center cursor-pointer"
-        >
-          {isSidebarCollapsed ? <ChevronRight className="w-4 h-4" /> : <span className="text-xs font-mono font-bold">«</span>}
-        </button>
+
+        {/* 移动端：返回按钮 + 标题 */}
+        {isMobileMode && (
+          <div className="flex items-center space-x-2 w-full">
+            <button
+              onClick={onReturnToTree}
+              className="p-1.5 hover:bg-slate-200/70 text-slate-500 rounded transition flex items-center cursor-pointer"
+              title="返回目录树"
+              aria-label="返回目录树"
+            >
+              <ChevronRight className="w-5 h-5 rotate-180" />
+            </button>
+            <span className="font-semibold text-slate-800 dark:text-slate-100 text-sm tracking-tight font-sans">
+              Piplus
+            </span>
+          </div>
+        )}
+
+        {/* 桌面端：折叠切换按钮 */}
+        {!isMobileMode && (
+          <button
+            onClick={onToggleSidebar}
+            className="p-1 px-1.5 hover:bg-slate-200/70 text-slate-500 rounded transition ml-auto flex items-center cursor-pointer"
+          >
+            {effectiveCollapsed ? <ChevronRight className="w-4 h-4" /> : <span className="text-xs font-mono font-bold">«</span>}
+          </button>
+        )}
       </div>
 
       {/* New Project button */}
-      {!isSidebarCollapsed && (
+      {!effectiveCollapsed && (
         <div className="p-3 shrink-0">
           <button
             onClick={onCreateProject}
@@ -389,7 +473,7 @@ export default function Sidebar({
       )}
 
       {/* Search */}
-      {!isSidebarCollapsed && (
+      {!effectiveCollapsed && (
         <div className="px-3 mb-2 relative">
           <input
             type="text"
@@ -403,7 +487,7 @@ export default function Sidebar({
       )}
 
       {/* Filter toggles */}
-      {!isSidebarCollapsed && (
+      {!effectiveCollapsed && (
         <div className="px-3 mb-2 flex flex-row items-center">
           <label className="flex items-center gap-1.5 cursor-pointer select-none">
             <input
@@ -432,7 +516,7 @@ export default function Sidebar({
 
       {/* Tree */}
       <div className="flex-1 overflow-y-auto px-2 space-y-1 py-2">
-        {isSidebarCollapsed ? (
+        {effectiveCollapsed ? (
           treeLoading ? (
             <div className="text-xs text-slate-400 text-center py-4">加载中…</div>
           ) : filteredProjects.length === 0 ? null : (
@@ -454,37 +538,37 @@ export default function Sidebar({
         ) : filteredProjects.length === 0 ? (
           <div className="text-xs text-slate-400 text-center py-4">暂无项目</div>
         ) : (
-          filteredProjects.map((project) => {
-            const isCollapsed = collapsedProjects[project.id];
+          filteredProjects.map((fp) => {
+            const isCollapsed = collapsedProjects[fp.id];
             return (
-              <div key={project.id} className="space-y-0.5">
+              <div key={fp.id} className="space-y-0.5">
                 <div
                   className={`group flex items-center justify-between p-1.5 rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300 cursor-pointer ${
-                    isSidebarCollapsed ? 'justify-center' : ''
+                    effectiveCollapsed ? 'justify-center' : ''
                   }`}
-                  onClick={() => !isSidebarCollapsed && toggleProject(project.id)}
+                  onClick={() => !effectiveCollapsed && toggleProject(fp.id)}
                 >
                   <div className="flex items-center space-x-1.5 flex-1 min-w-0">
-                    {!isSidebarCollapsed ? (
+                    {!effectiveCollapsed ? (
                       <>
                         <FolderOpen className="w-4 h-4 shrink-0 text-blue-400/80 dark:text-blue-500/80" />
                         <span className="text-xs font-semibold truncate text-slate-700 dark:text-slate-200 leading-tight">
-                          {project.name}
+                          {fp.name}
                         </span>
                       </>
                     ) : (
-                      <div title={project.name}>
+                      <div title={fp.name}>
                         <Folder className="w-4 h-4 text-slate-400" />
                       </div>
                     )}
                   </div>
 
-                  {!isSidebarCollapsed && (
+                  {!effectiveCollapsed && (
                     <div className="flex items-center space-x-1 pl-1">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          onSelectProject(project.id);
+                          onSelectProject(fp.id);
                           onCreateSession();
                         }}
                         className="p-0.5 hover:bg-blue-50 hover:text-blue-600 rounded text-slate-400 cursor-pointer transition-colors"
@@ -498,13 +582,26 @@ export default function Sidebar({
                           <Plus className="w-3.5 h-3.5" />
                         )}
                       </button>
+                      {onToggleProjectPinned && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleProjectPinned(fp.id, !Boolean(fp.pinned_at));
+                          }}
+                          className={`p-0.5 rounded cursor-pointer transition-colors ${fp.pinned_at ? 'text-amber-500 hover:text-amber-600 hover:bg-amber-50' : 'text-slate-400 hover:text-amber-500 hover:bg-amber-50'}`}
+                          title={fp.pinned_at ? '取消置顶' : '置顶项目'}
+                          type="button"
+                        >
+                          <ArrowUp className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <div className="flex items-center space-x-1">
                         {onArchiveProject && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (confirm(`确定归档项目 "${project.name}"？`)) {
-                                onArchiveProject(project.id);
+                              if (confirm(`确定归档项目 "${fp.name}"？`)) {
+                                onArchiveProject(fp.id);
                               }
                             }}
                             className="p-0.5 hover:bg-amber-100 hover:text-amber-600 rounded text-slate-400 cursor-pointer transition-colors"
@@ -517,7 +614,7 @@ export default function Sidebar({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              onOpenProjectSettings(project.id);
+                              onOpenProjectSettings(fp.id);
                             }}
                             className="p-0.5 hover:bg-slate-100 hover:text-slate-600 rounded text-slate-400 cursor-pointer transition-colors"
                             title="项目设置"
@@ -529,8 +626,8 @@ export default function Sidebar({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (confirm(`确定删除项目 "${project.name}" 及其所有会话？`)) {
-                                onDeleteProject(project.id);
+                              if (confirm(`确定删除项目 "${fp.name}" 及其所有会话？`)) {
+                                onDeleteProject(fp.id);
                               }
                             }}
                             className="p-0.5 hover:bg-red-50 hover:text-red-600 rounded text-slate-400 cursor-pointer transition-colors"
@@ -546,10 +643,10 @@ export default function Sidebar({
 
 
 
-                {/* Sessions */}
+                {/* Sessions — fp.sessions comes from filteredProjects, already filtered */}
                 {!isCollapsed && (
-                  <div className={isSidebarCollapsed ? 'space-y-1' : 'space-y-0.5'}>
-                    {project.sessions.map((session) => renderSessionNode(session, project.id, 1))}
+                  <div className={effectiveCollapsed ? 'space-y-1' : 'space-y-0.5'}>
+                    {fp.sessions.map((session) => renderSessionNode(session, fp.id, 1))}
                   </div>
                 )}
               </div>
@@ -559,7 +656,7 @@ export default function Sidebar({
       </div>
 
       {/* Footer */}
-      {!isSidebarCollapsed && (
+      {!effectiveCollapsed && (
         <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-slate-200/60 dark:bg-slate-900/60 flex flex-row items-center">
           <button
             onClick={onLogout}
@@ -573,7 +670,7 @@ export default function Sidebar({
             href="https://github.com/bighu630/piplus"
             target="_blank"
             rel="noopener noreferrer"
-            className="ml-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer inline-flex items-center"
+            className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer inline-flex items-center"
             title="GitHub 仓库"
           >
             <Github className="w-4 h-4" />
@@ -581,7 +678,7 @@ export default function Sidebar({
 
           <button
             onClick={onOpenSettings}
-            className="ml-auto p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
+            className="ml-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg text-slate-500 dark:text-slate-400 transition cursor-pointer"
             title="设置"
           >
             <Settings className="w-4 h-4" />

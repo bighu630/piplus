@@ -197,6 +197,10 @@ bun run dev
 - API：`http://localhost:3001`
 - Web：`http://localhost:3002`
 
+> **日志排障**：开发模式下输出同时写入终端和日志文件。
+> - Dev 日志：`/tmp/piplus-logs/`（可覆盖 `PIPLUS_LOG_DIR` 环境变量）
+> - Desktop 日志：Electron 应用目录下 `logs/` 子目录
+
 ---
 
 ## 常用脚本

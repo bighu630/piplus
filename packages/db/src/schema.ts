@@ -20,6 +20,7 @@ export const projects = sqliteTable('projects', {
   sourceUrl: text('source_url').notNull().default(''),
   archivedAt: nullableTimestamp('archived_at'),
   archivedBy: text('archived_by'),
+  pinnedAt: nullableTimestamp('pinned_at'),
   lastActivityAt: integer('last_activity_at', { mode: 'timestamp_ms' }).notNull(),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
@@ -64,6 +65,7 @@ export const sessions = sqliteTable('sessions', {
   createdBy: text('created_by').notNull(),
   archivedAt: nullableTimestamp('archived_at'),
   archivedBy: text('archived_by'),
+  pinnedAt: nullableTimestamp('pinned_at'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   roleBasePromptSnapshot: text('role_base_prompt_snapshot').notNull().default(''),
@@ -109,6 +111,17 @@ export const sessionSyncStates = sqliteTable('session_sync_states', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 });
 
+export const projectTodos = sqliteTable('project_todos', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id),
+  text: text('text').notNull(),
+  done: integer('done', { mode: 'boolean' }).notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdBy: text('created_by').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
 export const auditEvents = sqliteTable('audit_events', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
@@ -127,6 +140,7 @@ export const schema = {
   messages,
   sessionEvents,
   sessionSyncStates,
+  projectTodos,
   auditEvents,
 };
 
