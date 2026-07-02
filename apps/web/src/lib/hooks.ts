@@ -43,6 +43,10 @@ import {
   removePackage,
   updatePackages,
   getPackageUpdates,
+  getProjectTodos,
+  createProjectTodo,
+  updateProjectTodo,
+  deleteProjectTodo,
 } from './api';
 
 export function useAuthSession() {
@@ -454,5 +458,45 @@ export function usePackageUpdates() {
       return res.updates;
     },
     staleTime: 60_000,
+  });
+}
+
+export function useProjectTodos(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project', 'todos', projectId],
+    queryFn: () => getProjectTodos(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 5_000,
+  });
+}
+
+export function useCreateProjectTodoMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (text: string) => createProjectTodo(projectId!, text),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'todos', projectId] });
+    },
+  });
+}
+
+export function useUpdateProjectTodoMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ todoId, patch }: { todoId: string; patch: { text?: string; done?: boolean; sort_order?: number } }) =>
+      updateProjectTodo(projectId!, todoId, patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'todos', projectId] });
+    },
+  });
+}
+
+export function useDeleteProjectTodoMutation(projectId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (todoId: string) => deleteProjectTodo(projectId!, todoId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'todos', projectId] });
+    },
   });
 }

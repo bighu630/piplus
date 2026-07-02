@@ -59,6 +59,10 @@ import {
   useRemovePackageMutation,
   useUpdatePackagesMutation,
   usePackageUpdates,
+  useProjectTodos,
+  useCreateProjectTodoMutation,
+  useUpdateProjectTodoMutation,
+  useDeleteProjectTodoMutation,
 } from './lib/hooks';
 import {
   Settings,
@@ -342,6 +346,10 @@ export default function App() {
   const setNativeApiKeyMut = useSetNativeProviderApiKeyMutation();
   const setProjectRoleModelsMut = useSetProjectRoleModelsMutation();
   const projectRoleModelsQuery = useProjectRoleModels(showProjectSettings ? selectedProjectId : null);
+  const projectTodosQuery = useProjectTodos(selectedSessionId ? selectedProjectId : null);
+  const createTodoMut = useCreateProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
+  const updateTodoMut = useUpdateProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
+  const deleteTodoMut = useDeleteProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
 
   const packagesQuery = usePackages();
   const installPkgMut = useInstallPackageMutation();
@@ -1304,7 +1312,19 @@ export default function App() {
                   isMobile={isMobile}
                 />
               )}
-              {activeTab === 'info' && <TabSessionInfo sessionInfo={sessionInfo ?? null} isLoading={sessionInfoQuery.isLoading} />}
+              {activeTab === 'info' && (
+  <TabSessionInfo
+    sessionInfo={sessionInfo ?? null}
+    isLoading={sessionInfoQuery.isLoading}
+    projectId={selectedProjectId}
+    todos={projectTodosQuery.data ?? []}
+    todosLoading={projectTodosQuery.isLoading}
+    onCreateTodo={(text, onSuccess) => createTodoMut.mutate(text, { onSuccess })}
+    onToggleTodo={(todoId, done) => updateTodoMut.mutate({ todoId, patch: { done } })}
+    onDeleteTodo={(todoId) => deleteTodoMut.mutate(todoId)}
+    createTodoPending={createTodoMut.isPending}
+  />
+)}
               {activeTab === 'diff' && (
                 <TabGitDiff
                   diff={gitDiffQuery.data?.diff ?? null}

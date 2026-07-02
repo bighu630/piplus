@@ -53,6 +53,23 @@ function ensureMessageRequestIdColumn(sqlite: Database) {
   }
 }
 
+function ensureProjectTodosTable(sqlite: Database) {
+  const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='project_todos'").all();
+  if (tables.length === 0) {
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS project_todos (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  text TEXT NOT NULL,
+  done INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+)`);
+    sqlite.exec('CREATE INDEX IF NOT EXISTS idx_project_todos_project ON project_todos(project_id)');
+  }
+}
+
 function ensureBuiltinRows(sqlite: Database) {
   const now = Date.now();
   const seedPassword = Bun.password.hashSync('seed123', 'bcrypt');
@@ -192,6 +209,7 @@ export function createSeedDb(path: string) {
   ensureProjectPathColumns(sqlite);
   ensureRoleDefaultModelsColumn(sqlite);
   ensureMessageRequestIdColumn(sqlite);
+  ensureProjectTodosTable(sqlite);
   ensureBuiltinRows(sqlite);
   ensureBuiltinTemplatesUpdated(sqlite);
   sqlite.close();

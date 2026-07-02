@@ -38,6 +38,7 @@ export type SessionInfoDTO = {
     root_session_id: string;
     created_by: string;
     created_at: string;
+    last_run_at: string | null;
     archived_at: string | null;
     pi_session_id: string;
     pi_session_locator_json: string;
@@ -110,6 +111,16 @@ export type ChatMessageDTO = {
   created_at: string;
   tool_name?: string | null;
   tool_args_json?: string | null;
+};
+
+export type ProjectTodoDTO = {
+  id: string;
+  project_id: string;
+  text: string;
+  done: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
 };
 
 export type SessionFileTreeNodeDTO = {

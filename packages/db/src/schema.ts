@@ -109,6 +109,17 @@ export const sessionSyncStates = sqliteTable('session_sync_states', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 });
 
+export const projectTodos = sqliteTable('project_todos', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id),
+  text: text('text').notNull(),
+  done: integer('done', { mode: 'boolean' }).notNull().default(false),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdBy: text('created_by').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
 export const auditEvents = sqliteTable('audit_events', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
@@ -127,6 +138,7 @@ export const schema = {
   messages,
   sessionEvents,
   sessionSyncStates,
+  projectTodos,
   auditEvents,
 };
 

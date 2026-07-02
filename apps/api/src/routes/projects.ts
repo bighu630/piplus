@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
 import { createAuditService } from '@piplus/domain';
-import { messages, projects, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
+import { messages, projects, projectTodos, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
 import { createProjectWithPlanner } from '@piplus/domain/project/service';
 import { createTopLevelSession } from '@piplus/domain/session/service';
 import { createPiClient } from '@piplus/pi-client';
@@ -11,7 +11,7 @@ import { getDbPath } from '../db-context';
 import { getServerConfig } from '../server-config';
 import { createEvent } from '../ws/protocol';
 import { socketHub } from '../ws/server';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 
 export function registerProjectRoutes(app: Hono) {
   const piClient = createPiClient();
@@ -219,6 +219,174 @@ export function registerProjectRoutes(app: Hono) {
     return c.json({ ok: true, role_default_models: validated });
   });
 
+  app.get('/api/v1/projects/:projectId/todos', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy })
+      .from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.createdBy !== userId) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    }
+
+    const todos = await db.select()
+      .from(projectTodos)
+      .where(eq(projectTodos.projectId, projectId))
+      .orderBy(projectTodos.done, projectTodos.sortOrder, projectTodos.createdAt);
+
+    return c.json(todos.map((t) => ({
+      id: t.id,
+      project_id: t.projectId,
+      text: t.text,
+      done: t.done,
+      sort_order: t.sortOrder,
+      created_at: new Date(t.createdAt).toISOString(),
+      updated_at: new Date(t.updatedAt).toISOString(),
+    })));
+  });
+
+  app.post('/api/v1/projects/:projectId/todos', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+    const body = await c.req.json().catch(() => ({}));
+    const text = String((body as { text?: string }).text ?? '').trim();
+
+    if (!text || text.length > 500) {
+      return c.json({ error: { code: 'INVALID_TEXT', message: 'Text must be 1-500 characters' } }, 400);
+    }
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy })
+      .from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.createdBy !== userId) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    }
+
+    // Get max sort_order
+    const [maxRow] = await db.select({ maxOrder: projectTodos.sortOrder })
+      .from(projectTodos)
+      .where(eq(projectTodos.projectId, projectId))
+      .orderBy(desc(projectTodos.sortOrder))
+      .limit(1);
+
+    const now = new Date();
+    const id = `todo_${crypto.randomUUID().slice(0, 12)}`;
+    const sortOrder = (maxRow?.maxOrder ?? -1) + 1;
+
+    await db.insert(projectTodos).values({
+      id,
+      projectId,
+      text,
+      done: false,
+      sortOrder,
+      createdBy: userId,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    return c.json({
+      id,
+      project_id: projectId,
+      text,
+      done: false,
+      sort_order: sortOrder,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    }, 201);
+  });
+
+  app.patch('/api/v1/projects/:projectId/todos/:todoId', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const todoId = c.req.param('todoId');
+    const userId = (c as any).get('userId') as string;
+    const body = await c.req.json().catch(() => ({}));
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy })
+      .from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.createdBy !== userId) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    }
+
+    const [todo] = await db.select()
+      .from(projectTodos)
+      .where(and(eq(projectTodos.id, todoId), eq(projectTodos.projectId, projectId)))
+      .limit(1);
+    if (!todo) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Todo not found' } }, 404);
+    }
+
+    const patch: Record<string, unknown> = {};
+    const updates = body as { text?: string; done?: boolean; sort_order?: number };
+
+    if (typeof updates.text === 'string') {
+      const trimmed = updates.text.trim();
+      if (!trimmed || trimmed.length > 500) {
+        return c.json({ error: { code: 'INVALID_TEXT', message: 'Text must be 1-500 characters' } }, 400);
+      }
+      patch.text = trimmed;
+    }
+    if (typeof updates.done === 'boolean') {
+      patch.done = updates.done;
+    }
+    if (typeof updates.sort_order === 'number') {
+      patch.sortOrder = updates.sort_order;
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return c.json({ error: { code: 'INVALID_PATCH', message: 'No valid fields to update' } }, 400);
+    }
+
+    const now = new Date();
+    patch.updatedAt = now;
+
+    await db.update(projectTodos).set(patch as any)
+      .where(and(eq(projectTodos.id, todoId), eq(projectTodos.projectId, projectId)));
+
+    // Fetch updated
+    const [updated] = await db.select()
+      .from(projectTodos)
+      .where(eq(projectTodos.id, todoId))
+      .limit(1);
+
+    return c.json({
+      id: updated!.id,
+      project_id: updated!.projectId,
+      text: updated!.text,
+      done: updated!.done,
+      sort_order: updated!.sortOrder,
+      created_at: new Date(updated!.createdAt).toISOString(),
+      updated_at: new Date(updated!.updatedAt).toISOString(),
+    });
+  });
+
+  app.delete('/api/v1/projects/:projectId/todos/:todoId', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const todoId = c.req.param('todoId');
+    const userId = (c as any).get('userId') as string;
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy })
+      .from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.createdBy !== userId) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    }
+
+    const [todo] = await db.select({ id: projectTodos.id })
+      .from(projectTodos)
+      .where(and(eq(projectTodos.id, todoId), eq(projectTodos.projectId, projectId)))
+      .limit(1);
+    if (!todo) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Todo not found' } }, 404);
+    }
+
+    await db.delete(projectTodos)
+      .where(and(eq(projectTodos.id, todoId), eq(projectTodos.projectId, projectId)));
+
+    return c.json({ ok: true });
+  });
+
   app.delete('/api/v1/projects/:projectId', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
     const projectId = c.req.param('projectId');
@@ -229,6 +397,9 @@ export function registerProjectRoutes(app: Hono) {
 
     const sessionRows = await db.select({ id: sessions.id }).from(sessions).where(eq(sessions.projectId, projectId));
     const sessionIds = sessionRows.map((s) => s.id);
+
+    // Delete project todos
+    await db.delete(projectTodos).where(eq(projectTodos.projectId, projectId));
 
     if (sessionIds.length) {
       await db.delete(messages).where(inArray(messages.sessionId, sessionIds));
