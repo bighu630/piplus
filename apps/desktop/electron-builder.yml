@@ -7,6 +7,8 @@ files:
   - package.json
   - "!node_modules/**"
 extraResources:
+  - from: assets
+    to: assets
   - from: ../api/dist
     to: api-dist
   - from: ../web/dist
