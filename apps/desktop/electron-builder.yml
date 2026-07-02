@@ -13,6 +13,10 @@ extraResources:
     to: web-dist
   - from: ../migrations
     to: migrations
+  - from: bun-bin
+    to: bun-bin
+    filter:
+      - "**"
 linux:
   category: Development
   executableName: piplus

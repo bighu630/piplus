@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createWriteStream, type WriteStream } from 'node:fs';
 import { resolve } from 'node:path';
 import type { AppPaths } from './paths.js';
-import { getApiCwd, getApiEntryPath, repoRoot } from './resolve-paths.js';
+import { getApiCwd, getApiEntryPath, repoRoot, resolveBunExecutable } from './resolve-paths.js';
 
 export type ApiProcessOptions = {
   port: number;
@@ -12,7 +12,8 @@ export type ApiProcessOptions = {
 };
 
 export function startApiProcess(options: ApiProcessOptions): ChildProcessWithoutNullStreams {
-  const bunExecutable = process.env.PIPLUS_BUN_PATH ?? 'bun';
+  const bunExecutable = resolveBunExecutable();
+  console.log(`[desktop/api] Using bun executable: ${bunExecutable}`);
   const webDistDir = options.webDistDir ?? resolve(repoRoot, 'apps/web/dist');
   const apiLogPath = resolve(options.paths.logsDir, 'api.log');
   const logStream: WriteStream = createWriteStream(apiLogPath, { flags: 'a' });
