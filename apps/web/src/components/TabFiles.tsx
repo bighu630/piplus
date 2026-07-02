@@ -19,6 +19,12 @@ interface TabFilesProps {
   onSelectPath: (path: string) => void;
   onSaveContent?: (path: string, content: string) => Promise<void>;
   saving?: boolean;
+  /** Filter the tree to only show the root-level directory whose name matches one of these (case-insensitive) */
+  rootPathFilter?: string[];
+  /** Message to show when rootPathFilter is set but no matching directory is found */
+  emptyMessage?: string;
+  /** Label to display in the panel header (defaults to 'Files') */
+  panelTitle?: string;
 }
 
 function isMarkdownFile(filePath: string | null): boolean {
@@ -366,7 +372,7 @@ function CodePreview({ filePath, content }: { filePath: string | null; content: 
   }, [content, language]);
 
   return (
-    <pre className="h-full overflow-auto p-4 text-xs leading-6 bg-white dark:bg-slate-950">
+    <pre className="min-h-full overflow-x-auto p-4 text-xs leading-6 bg-white dark:bg-slate-950">
       <code
         className={`language-${language} hljs`}
         dangerouslySetInnerHTML={{ __html: highlighted }}
@@ -387,7 +393,24 @@ export default function TabFiles({
   onSelectPath,
   onSaveContent,
   saving,
+  rootPathFilter,
+  emptyMessage,
+  panelTitle,
 }: TabFilesProps) {
+  // Filter tree if rootPathFilter is specified (case-insensitive match)
+  const filteredTreeNodes = useMemo(() => {
+    if (!treeResponse?.tree) return [];
+    if (!rootPathFilter || rootPathFilter.length === 0) return treeResponse.tree;
+    const lowerNames = rootPathFilter.map((n) => n.toLowerCase());
+    const match = treeResponse.tree.find(
+      (node) => lowerNames.includes(node.name.toLowerCase()) && node.kind === 'directory'
+    );
+    return match ? [match] : [];
+  }, [treeResponse, rootPathFilter]);
+
+  const isEmptyByFilter = rootPathFilter && rootPathFilter.length > 0 && treeResponse && !treeLoading && treeResponse.tree.length > 0 && filteredTreeNodes.length === 0;
+  const defaultEmptyMessage = rootPathFilter && rootPathFilter.length > 0 ? '当前项目没有文档目录' : undefined;
+
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [refreshSpinning, setRefreshSpinning] = useState(false);
   const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
@@ -413,8 +436,31 @@ export default function TabFiles({
       }
       return null;
     };
-    return visit(treeResponse?.tree ?? []);
-  }, [treeResponse]);
+    return visit(filteredTreeNodes);
+  }, [filteredTreeNodes]);
+
+  // Validate that selectedPath still exists in the filtered tree.
+  // If the tree changes and the previously selected path is no longer
+  // present, fall back to firstFilePath or clear the selection.
+  const selectedPathExistsInTree = useMemo(() => {
+    if (!selectedPath) return false;
+    const visit = (nodes: SessionFileTreeNodeDTO[]): boolean => {
+      for (const node of nodes) {
+        if (node.path === selectedPath) return true;
+        if (node.children?.length && visit(node.children)) return true;
+      }
+      return false;
+    };
+    return visit(filteredTreeNodes);
+  }, [filteredTreeNodes, selectedPath]);
+
+  useEffect(() => {
+    if (selectedPath && !selectedPathExistsInTree) {
+      if (firstFilePath) {
+        onSelectPath(firstFilePath);
+      }
+    }
+  }, [selectedPath, selectedPathExistsInTree, firstFilePath, onSelectPath]);
 
   useEffect(() => {
     if (!selectedPath && firstFilePath) {
@@ -434,7 +480,7 @@ export default function TabFiles({
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
                 <FileCode2 className="w-4 h-4 text-blue-500" />
-                <span>Files</span>
+                <span>{panelTitle ?? 'Files'}</span>
               </div>
               <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
                 {treeResponse?.root_path ?? '加载中…'}
@@ -471,11 +517,13 @@ export default function TabFiles({
               <div className="h-full flex items-center justify-center text-xs text-slate-400">文件树加载中…</div>
             ) : treeError ? (
               <div className="h-full flex items-center justify-center text-xs text-red-500 px-4 text-center">{treeError}</div>
-            ) : !treeResponse || treeResponse.tree.length === 0 ? (
+            ) : isEmptyByFilter ? (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400 px-4 text-center">{emptyMessage ?? defaultEmptyMessage}</div>
+            ) : !treeResponse || filteredTreeNodes.length === 0 ? (
               <div className="h-full flex items-center justify-center text-xs text-slate-400">当前项目暂无可预览文件</div>
             ) : (
               <div className="space-y-0.5">
-                {treeResponse.tree.map((node) => (
+                {filteredTreeNodes.map((node) => (
                   <FileTreeNode
                     key={node.path}
                     node={node}
@@ -566,7 +614,7 @@ export default function TabFiles({
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto p-5">
+        <div className="flex-1 min-h-0 p-5">
           {contentLoading ? (
             <div className="h-full flex items-center justify-center text-xs text-slate-400">文件内容加载中…</div>
           ) : contentError ? (
@@ -576,17 +624,17 @@ export default function TabFiles({
           ) : !contentResponse ? (
             <div className="h-full flex items-center justify-center text-xs text-slate-400">暂无内容</div>
           ) : (
-            <div className="h-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-              <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between gap-3">
+            <div className="h-full flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+              <div className="shrink-0 px-4 py-2 border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between gap-3">
                 <span className="truncate">{isMarkdownFile(selectedPath) ? 'Markdown 渲染' : getLanguageFromPath(selectedPath)}</span>
                 {contentResponse.truncated ? <span>已截断（最多 1MB）</span> : null}
               </div>
-              <div className="h-[calc(100%-41px)] overflow-auto">
+              <div className="flex-1 min-h-0 overflow-auto">
                 {editingPath !== null ? (
                   <textarea
                     value={draftContent}
                     onChange={(e) => setDraftContent(e.target.value)}
-                    className="w-full h-full p-4 text-xs leading-6 font-mono resize-none focus:outline-none bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 border-0"
+                    className="w-full min-h-full p-4 text-xs leading-6 font-mono resize-none focus:outline-none bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 border-0"
                     spellCheck={false}
                   />
                 ) : (
@@ -598,7 +646,7 @@ export default function TabFiles({
                 )}
               </div>
               {editError && (
-                <div className="px-4 py-2 border-t border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 text-xs text-red-600 dark:text-red-400">
+                <div className="shrink-0 px-4 py-2 border-t border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 text-xs text-red-600 dark:text-red-400">
                   保存失败: {editError}
                 </div>
               )}

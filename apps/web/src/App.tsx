@@ -78,7 +78,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-type Tab = 'chat' | 'info' | 'diff' | 'files';
+type Tab = 'chat' | 'info' | 'diff' | 'files' | 'doce';
 type SendShortcutMode = 'enter' | 'mod_enter';
 type ProviderModelForm = ProviderFormPayload['models'][number];
 
@@ -338,8 +338,11 @@ export default function App() {
   const sessionInfo = sessionInfoQuery.data;
   const gitDiffQuery = useSessionGitDiff(activeTab === 'diff' ? selectedSessionId : null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const fileTreeQuery = useSessionFileTree(activeTab === 'files' ? selectedSessionId : null);
+  const [selectedDocePath, setSelectedDocePath] = useState<string | null>(null);
+  const isFileOrDoce = activeTab === 'files' || activeTab === 'doce';
+  const fileTreeQuery = useSessionFileTree(isFileOrDoce ? selectedSessionId : null);
   const fileContentQuery = useSessionFileContent(activeTab === 'files' ? selectedSessionId : null, activeTab === 'files' ? selectedFilePath : null);
+  const doceContentQuery = useSessionFileContent(activeTab === 'doce' ? selectedSessionId : null, activeTab === 'doce' ? selectedDocePath : null);
   const modelsQuery = useModels();
   const setModelMut = useSetSessionModelMutation();
   const testProviderMut = useTestModelProviderMutation();
@@ -390,6 +393,7 @@ export default function App() {
     // localRuntimeStatusBySession is intentionally NOT cleared here —
     // per-session state survives session switches and is keyed by sessionId.
     setSelectedFilePath(null);
+    setSelectedDocePath(null);
     setEditingTitle(false);
     setEditTitleValue('');
   }, [selectedSessionId]);
@@ -615,7 +619,7 @@ export default function App() {
         socket.setContext({
           project_id: selectedProjectIdRef.current ?? undefined,
           session_id: selectedSessionId,
-          current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' ? 'files' : 'chat',
+          current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' || activeTabRef.current === 'doce' ? 'files' : 'chat',
         });
         socket.ping();
         // Refetch tree and current session info as reconnect safety net.
@@ -643,7 +647,7 @@ export default function App() {
     socketRef.current.setContext({
       project_id: selectedProjectId ?? undefined,
       session_id: selectedSessionId,
-      current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : activeTab === 'files' ? 'files' : 'chat',
+      current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : activeTab === 'files' || activeTab === 'doce' ? 'files' : 'chat',
     });
   }, [activeTab, selectedProjectId, selectedSessionId]);
 
@@ -836,7 +840,7 @@ export default function App() {
   const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
   const gitCheckoutMut = useGitCheckoutMutation();
   const updateTitleMut = useUpdateSessionTitleMutation();
-  const saveFileContentMut = useSaveSessionFileContentMutation(activeTab === 'files' ? selectedSessionId : null);
+  const saveFileContentMut = useSaveSessionFileContentMutation(isFileOrDoce ? selectedSessionId : null);
   const savingFile = saveFileContentMut.isPending;
   
   const handleSaveFileContent = useCallback(async (path: string, content: string) => {
@@ -1232,6 +1236,7 @@ export default function App() {
                   <button onClick={() => setActiveTab('info')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'info' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Session Info</button>
                   <button onClick={() => setActiveTab('diff')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'diff' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Git</button>
                   <button onClick={() => setActiveTab('files')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'files' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Files</button>
+                  <button onClick={() => setActiveTab('doce')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'doce' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Doce</button>
                 </div>
               </div>
             </>
@@ -1274,6 +1279,7 @@ export default function App() {
                 <button onClick={() => setActiveTab('info')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'info' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Session Info</button>
                 <button onClick={() => setActiveTab('diff')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'diff' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Git</button>
                 <button onClick={() => setActiveTab('files')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'files' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Files</button>
+                <button onClick={() => setActiveTab('doce')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'doce' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Doce</button>
               </div>
             </>
           )}
@@ -1378,6 +1384,23 @@ export default function App() {
                   onRefresh={() => { void fileTreeQuery.refetch(); }}
                   onSaveContent={handleSaveFileContent}
                   saving={savingFile}
+                />
+              )}
+              {activeTab === 'doce' && (
+                <TabFiles
+                  treeResponse={fileTreeQuery.data ?? null}
+                  treeLoading={fileTreeQuery.isLoading}
+                  treeError={fileTreeQuery.error instanceof Error ? fileTreeQuery.error.message : null}
+                  contentResponse={doceContentQuery.data ?? null}
+                  contentLoading={doceContentQuery.isLoading}
+                  contentError={doceContentQuery.error instanceof Error ? doceContentQuery.error.message : null}
+                  selectedPath={selectedDocePath}
+                  onSelectPath={setSelectedDocePath}
+                  onRefresh={() => { void fileTreeQuery.refetch(); }}
+                  onSaveContent={handleSaveFileContent}
+                  saving={savingFile}
+                  rootPathFilter={['doce', 'docs', 'doc']}
+                  panelTitle="Doce"
                 />
               )}
             </>
