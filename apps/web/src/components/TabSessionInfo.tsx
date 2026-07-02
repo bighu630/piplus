@@ -5,10 +5,7 @@ import {
   Cpu,
   Clock,
   CheckCircle,
-  FileCode,
   Tag,
-  AlertCircle,
-  RefreshCw,
   Trash2,
 } from 'lucide-react';
 
@@ -33,20 +30,6 @@ function runtimeStatusLabel(status: string): string {
     case 'idle':
     default:
       return '空闲';
-  }
-}
-
-function syncStatusLabel(status: string): string {
-  switch (status) {
-    case 'syncing':
-      return '同步中';
-    case 'synced':
-      return '已同步';
-    case 'error':
-      return '同步错误';
-    case 'idle':
-    default:
-      return '待同步';
   }
 }
 
@@ -202,7 +185,7 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
           ) : todos.length === 0 ? (
             <div className="text-center py-4 text-xs text-slate-400">暂无任务</div>
           ) : (
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 max-h-60 overflow-y-auto">
               {todos.map((todo) => (
                 <div
                   key={todo.id}
@@ -274,45 +257,7 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
           )}
         </div>
 
-        {/* Sync Status & Role Info */}
-        <div className="space-y-6">
-          {/* Sync Status */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-2xs space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-              <h3 className="font-bold text-slate-800 dark:text-slate-200 text-sm tracking-tight flex items-center space-x-1.5">
-                <RefreshCw className="w-4 h-4 text-indigo-500" />
-                <span>同步状态</span>
-              </h3>
-              <span
-                className={`text-[10px] font-mono px-2 py-0.5 rounded ${
-                  sessionInfo.sync.sync_status === 'error'
-                    ? 'bg-red-100 dark:bg-red-950/30 text-red-600 dark:text-red-400'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                }`}
-              >
-                {syncStatusLabel(sessionInfo.sync.sync_status)}
-              </span>
-            </div>
-            <div className="space-y-2 text-xs text-slate-600 dark:text-slate-400">
-              {sessionInfo.sync.last_synced_at && (
-                <div className="flex justify-between">
-                  <span>最近同步</span>
-                  <span className="font-mono">{new Date(sessionInfo.sync.last_synced_at).toLocaleString()}</span>
-                </div>
-              )}
-              {sessionInfo.sync.last_error && (
-                <div className="flex items-start gap-2 p-2 rounded-lg bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                  <span className="break-all">{sessionInfo.sync.last_error}</span>
-                </div>
-              )}
-              {!sessionInfo.sync.last_synced_at && !sessionInfo.sync.last_error && (
-                <div className="text-slate-400">暂无同步记录</div>
-              )}
-            </div>
-          </div>
-
-          {/* Role & Prompts */}
+        {/* Role & Prompts */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-2xs space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <h3 className="font-bold text-slate-800 dark:text-slate-200 text-sm tracking-tight flex items-center space-x-1.5">
@@ -343,7 +288,6 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
               )}
             </div>
           </div>
-        </div>
       </div>
 
     </div>
