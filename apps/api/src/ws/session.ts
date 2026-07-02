@@ -43,7 +43,8 @@ export function registerSocket() {
         if (!shouldDeliver(message, context)) continue;
         try {
           ws.send(payload);
-        } catch {
+        } catch (err) {
+          console.warn('[ws-session] broadcast send failed, removing socket', err);
           sockets.delete(ws);
           contexts.delete(ws);
         }

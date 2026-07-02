@@ -249,7 +249,8 @@ export default function App() {
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
   const [currentModelSupportsImages, setCurrentModelSupportsImages] = useState<boolean | null>(null);
   const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
-  const [localRuntimeStatus, setLocalRuntimeStatus] = useState<'running' | 'idle' | null>(null);
+  type RuntimeStatus = 'running' | 'idle';
+  const [localRuntimeStatusBySession, setLocalRuntimeStatusBySession] = useState<Record<string, RuntimeStatus>>({});
   const [wsConnected, setWsConnected] = useState(false);
 
   const initialUrlSessionId = useMemo(() => getSessionIdFromPath(window.location.pathname), []);
@@ -358,10 +359,12 @@ export default function App() {
   const archiveProjectMut = useArchiveProjectMutation();
   const deleteProjectMut = useDeleteProjectMutation();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
-  // localRuntimeStatus is set immediately from WS runtime_status_changed events,
+  // localRuntimeStatusBySession is updated immediately from WS runtime_status_changed events,
   // before async query refetches complete. This prevents stale query data from
   // keeping the UI stuck in 'running' after the session has actually ended.
-  const runtimeStatus = localRuntimeStatus ?? currentSessionNode?.runtime_status ?? sessionInfo?.session.runtime_status ?? 'idle';
+  const runtimeStatus = selectedSessionId
+  ? (localRuntimeStatusBySession[selectedSessionId] ?? currentSessionNode?.runtime_status ?? sessionInfo?.session.runtime_status ?? 'idle')
+  : 'idle';
   const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null, 20, runtimeStatus === 'running' ? 1500 : false);
   const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [];
   const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
@@ -372,7 +375,8 @@ export default function App() {
     setStreamingContent('');
     setStreamNote('');
     setRuntimeErrors([]);
-    setLocalRuntimeStatus(null);
+    // localRuntimeStatusBySession is intentionally NOT cleared here —
+    // per-session state survives session switches and is keyed by sessionId.
     setSelectedFilePath(null);
     setEditingTitle(false);
     setEditTitleValue('');
@@ -519,37 +523,64 @@ export default function App() {
             }
           }
           if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
-            const status = message.payload?.runtime_status as 'running' | 'idle' | undefined;
-            // Update UI immediately from WS event, before async query refetches.
-            setLocalRuntimeStatus(status ?? null);
+            const eventSessionId = message.scope?.session_id as string | undefined;
+            const status = message.payload?.runtime_status as RuntimeStatus | undefined;
+
+            // Always update per-session status map regardless of which session is selected
+            if (eventSessionId && status) {
+              setLocalRuntimeStatusBySession(prev => ({ ...prev, [eventSessionId]: status }));
+            }
+
+            // Always refetch the tree so sidebar badge reflects status for all sessions
             treeQuery.refetch();
+
             if (status === 'running') {
-              // Refetch messages immediately so tool_call entries appear promptly
-              queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
-              // Clear completion notification tracking so a new run can trigger a new notification
-              const msgSessionId = message.scope?.session_id;
-              if (msgSessionId) {
-                notifiedRef.current.delete(`done:${msgSessionId}`);
+              // Only refetch messages for the currently selected session
+              if (eventSessionId === selectedSessionId) {
+                queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+              }
+              // Clear completion notification tracking for this session
+              if (eventSessionId) {
+                notifiedRef.current.delete(`done:${eventSessionId}`);
               }
             }
+
+            // For idle/idle-error events, only affect the current session's UI state
             if (status === 'idle') {
-              setStreamNote('');
-              setPendingUserMessages([]);
-              const idleError = message.payload?.error;
-              if (idleError && typeof idleError === 'string' && idleError) {
-                setRuntimeErrors([{ runId: 'runtime-status', error: idleError }]);
+              if (eventSessionId === selectedSessionId) {
+                setStreamNote('');
+                setPendingUserMessages([]);
+                const idleError = message.payload?.error;
+                if (idleError && typeof idleError === 'string' && idleError) {
+                  setRuntimeErrors([{ runId: 'runtime-status', error: idleError }]);
+                }
+                Promise.all([
+                  queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
+                  queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
+                  queryClient.invalidateQueries({ queryKey: ['tree'] }),
+                ]).then(() => {
+                  setStreamingContent('');
+                });
+                // Clear the local override — refetched server data is now authoritative
+                setLocalRuntimeStatusBySession(prev => {
+                  const { [selectedSessionId!]: _, ...rest } = prev;
+                  return rest;
+                });
+              } else {
+                // For other sessions going idle, just invalidate their data silently
+                if (eventSessionId) {
+                  queryClient.invalidateQueries({ queryKey: ['session', 'info', eventSessionId] });
+                  queryClient.invalidateQueries({ queryKey: ['session', 'messages', eventSessionId] });
+                }
+                setLocalRuntimeStatusBySession(prev => {
+                  const { [eventSessionId]: _, ...rest } = prev;
+                  return rest;
+                });
               }
-              // System notification: session completed or errored
+              // System notification: session completed or errored (any session, not just current)
               if (systemNotificationsEnabledRef.current) {
                 notifyRuntimeStatusChanged(message);
               }
-              Promise.all([
-                queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
-                queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
-                queryClient.invalidateQueries({ queryKey: ['tree'] }),
-              ]).then(() => {
-                setStreamingContent('');
-              });
             }
           }
           if (message.kind === 'event' && (message.type === 'tree.changed' || message.type === 'project.created' || message.type === 'session.created' || message.type === 'session.archived')) {
@@ -565,6 +596,9 @@ export default function App() {
       },
       onOpen() {
         setWsConnected(true);
+        // Reset all local status overrides on reconnect.
+        // Server data, which we refetch immediately below, is authoritative.
+        setLocalRuntimeStatusBySession({});
         socket.hello();
         socket.setContext({
           project_id: selectedProjectIdRef.current ?? undefined,
@@ -572,6 +606,14 @@ export default function App() {
           current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' ? 'files' : 'chat',
         });
         socket.ping();
+        // Refetch tree and current session info as reconnect safety net.
+        // If we missed runtime_status_changed events while disconnected,
+        // this ensures we recover the correct state on reconnect.
+        treeQuery.refetch();
+        if (selectedSessionId) {
+          queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] });
+          queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+        }
       },
       onClose() {
         setWsConnected(false);

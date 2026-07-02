@@ -169,6 +169,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
       sessionId: input.sessionId,
       userId: input.userId,
       onSessionCreated: input.onToolSessionCreated,
+      onRuntimeStatusChange: input.onRuntimeStatusChange,
     });
   }, project.projectPath);
 

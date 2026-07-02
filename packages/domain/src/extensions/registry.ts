@@ -9,6 +9,12 @@ export type PlatformToolContext = {
   sessionId: string;
   userId: string;
   onSessionCreated?: (payload: { sessionId: string; projectId: string }) => void | Promise<void>;
+  onRuntimeStatusChange?: (payload: {
+    sessionId: string;
+    projectId: string;
+    runtimeStatus: 'running' | 'idle';
+    error: string | null;
+  }) => void | Promise<void>;
 };
 
 export async function buildAllToolDefs(db: RoleManagerDb) {
