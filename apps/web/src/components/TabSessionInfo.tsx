@@ -58,7 +58,7 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
   const description = `${lineageText} · 项目 ${sessionInfo.project.name} · 角色 ${sessionInfo.role_template.name}`;
 
   return (
-    <div className="flex-1 overflow-y-auto bg-slate-50 dark:bg-slate-900/10 p-6 space-y-6">
+    <div className="h-full overflow-y-auto bg-slate-50 dark:bg-slate-900/10 p-6 space-y-6">
       {/* Summary Header */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-2xs space-y-4">
         <div className="flex items-center space-x-2 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 px-3 py-1 rounded-full text-xs font-semibold select-none w-fit">
