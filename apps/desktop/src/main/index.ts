@@ -32,7 +32,7 @@ async function bootstrap() {
   const wsBaseUrl = `ws://127.0.0.1:${port}`;
 
   await waitForHealth(`${apiBaseUrl}/health`);
-  await createMainWindow(apiBaseUrl);
+  await createMainWindow(apiBaseUrl, paths.logsDir);
 }
 
 app.whenReady().then(async () => {

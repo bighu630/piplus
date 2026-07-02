@@ -70,6 +70,13 @@ export function createApp() {
           await next();
           return;
         }
+        // If a static asset under /assets/ wasn't found by serveStatic above,
+        // return 404 instead of falling through to index.html. Returning HTML
+        // for a missing JS/CSS file causes the browser to parse HTML as JS,
+        // resulting in a silent white-screen.
+        if (path.startsWith('/assets/')) {
+          return c.notFound();
+        }
         const publicOrigin = normalizeOrigin(process.env.PUBLIC_WEB_ORIGIN);
         const indexPath = join(webRoot, 'index.html');
         let html: string;
