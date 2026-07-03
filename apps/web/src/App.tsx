@@ -1381,7 +1381,7 @@ export default function App() {
                   isPulling={gitPullMut.isPending}
                   isPushing={gitPushMut.isPending}
                   isCommitting={gitCommitMut.isPending}
-                  onAddGitignore={(filePath) => addGitignoreMut.mutateAsync({ sessionId: selectedSessionId, path: filePath })}
+                  onAddGitignore={async (filePath) => { await addGitignoreMut.mutateAsync({ sessionId: selectedSessionId, path: filePath }); handleRefreshDiff(); }}
                   isAddingGitignore={addGitignoreMut.isPending}
                   currentBranch={gitBranchesQuery.data?.current_branch ?? null}
                   branches={gitBranchesQuery.data?.branches ?? null}
