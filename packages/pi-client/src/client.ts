@@ -412,47 +412,6 @@ export function createPiClient(): PiClient {
       const session = getOrCreateSession(sessionId);
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
-      // Intercept slash commands — execute locally, don't send to LLM
-      if (content && isSlashCommandMessage(content)) {
-        const { name, args } = parseSlashCommand(content);
-        if (name) {
-          const result = await executeBuiltinCommand(name, args, sessionId, session);
-          if (result !== null) {
-            console.log('[pi-client] sendMessage → slash command executed', { sessionId, command: name });
-            // Persist user command + assistant response to session file
-            try {
-              const mgr = SessionManager.open(session.locator.sessionFile);
-              mgr.appendMessage({
-                role: 'user',
-                content: content.trim(),
-                timestamp: Date.now(),
-              });
-              mgr.appendMessage({
-                role: 'assistant',
-                content: [{ type: 'text', text: result }],
-                api: 'slash_command',
-                provider: 'slash_command',
-                model: 'slash_command',
-                usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-                stopReason: 'stop',
-                timestamp: Date.now(),
-              });
-            } catch (persistErr) {
-              console.warn('[pi-client] sendMessage → failed to persist command response', { sessionId, error: String(persistErr) });
-            }
-            // Emit to stream listeners for real-time UI update
-            for (const listener of session.listeners) {
-              await listener({ type: 'message_start', sessionId, runId });
-              await listener({ type: 'text_delta', sessionId, runId, delta: result });
-              await listener({ type: 'message_end', sessionId, runId });
-            }
-            return { sessionId, runId };
-          }
-          // Unknown builtin command — let agentSession handle it (may be extension command)
-          console.log('[pi-client] sendMessage → unknown command, passing to agentSession', { sessionId, command: name });
-        }
-      }
-
       if (session.agentSession) {
         if (session.prompt && !session.promptSent) {
           if (content || options?.images?.length) {
@@ -851,6 +810,14 @@ export function createPiClient(): PiClient {
       const session = runtimeRegistry.get(sessionId);
       const cmds = session?.commands ?? [];
       return cmds.length > 0 ? cmds : BUILTIN_COMMANDS;
+    },
+
+    async executeCommand(sessionId, content) {
+      const session = runtimeRegistry.get(sessionId);
+      if (!session) return null;
+      const { name, args } = parseSlashCommand(content);
+      if (!name) return null;
+      return executeBuiltinCommand(name, args, sessionId, session);
     },
 
     async registerTools(_tools: PiToolDef[]) {

@@ -90,6 +90,9 @@ function makeRecordingPiClient() {
     async getCommands() {
       return [];
     },
+    async executeCommand() {
+      return null;
+    },
   };
 }
 

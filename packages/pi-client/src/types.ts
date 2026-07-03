@@ -134,6 +134,7 @@ export type PiClient = {
   getContextUsage(sessionId: string, locator: PiSessionLocator): Promise<PiContextUsage | null>;
   compactSession(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<void>;
   getCommands(sessionId: string): Promise<PiSlashCommandInfo[]>;
+  executeCommand(sessionId: string, content: string): Promise<string | null>;
   registerTools?(tools: PiToolDef[]): Promise<void>;
 
   /**

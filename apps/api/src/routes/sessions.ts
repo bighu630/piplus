@@ -386,11 +386,32 @@ export function registerSessionRoutes(app: Hono) {
     const piPage = await piClient.getHistory(sessionId, parseLocator(session.piSessionLocatorJson), cursor ?? null, limit);
     const pageRows = piPage.messages;
 
+    // Merge slash_command messages from DB (not in Pi session file)
+    let dbCommandMessages: Array<typeof pageRows[number]> = [];
+    if (!cursor || cursor === '0') {
+      const dbRows = await db.select().from(messages)
+        .where(and(eq(messages.sessionId, sessionId), eq(messages.messageKind, 'slash_command')))
+        .orderBy(desc(messages.createdAt))
+        .limit(20);
+      dbCommandMessages = dbRows.map((row) => ({
+        id: row.id,
+        role: row.role as 'user' | 'assistant',
+        text: row.contentText,
+        messageKind: row.messageKind as any,
+        createdAt: new Date(row.createdAt).toISOString(),
+        toolName: undefined,
+        toolArgs: undefined,
+        contentBlocks: undefined,
+      }));
+    }
+
+    const allMessages = [...dbCommandMessages.reverse(), ...pageRows];
+
     return c.json({
       session_id: sessionId,
       cursor: cursor ?? null,
       next_cursor: piPage.nextCursor,
-      messages: pageRows.map((row: typeof pageRows[number]) => ({
+      messages: allMessages.map((row: typeof pageRows[number]) => ({
         id: row.id,
         role: row.role,
         message_kind: row.messageKind ?? 'normal',
@@ -458,6 +479,43 @@ export function registerSessionRoutes(app: Hono) {
 
     if (session.runtimeStatus === 'running' || session.runtimeStatus === 'stopping') {
       return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+    }
+
+    // Intercept slash commands — execute locally, don't call agent
+    if (content && /^\s*\//.test(content)) {
+      const commandResult = await piClient.executeCommand(sessionId, content);
+      if (commandResult !== null) {
+        const now = nextMessageTime();
+        const userMsgId = randomId('message');
+        const assistantMsgId = randomId('message');
+
+        await db.insert(messages).values({
+          id: userMsgId, sessionId, piMessageId: null, messageKind: 'normal',
+          sourceSessionId: null, role: 'user', contentText: content,
+          contentBlocksJson: null, contentVersion: 1, createdAt: now,
+        } as any);
+
+        const responseNow = nextMessageTime();
+        await db.insert(messages).values({
+          id: assistantMsgId, sessionId, piMessageId: null, messageKind: 'slash_command',
+          sourceSessionId: null, role: 'assistant', contentText: commandResult,
+          contentBlocksJson: null, contentVersion: 1, createdAt: responseNow,
+        } as any);
+
+        log.info('slash command executed', { sessionId, content });
+        await createAuditService(db).record(userId, "message.sent", "session", sessionId, { message_id: userMsgId });
+
+        // Push via WebSocket for real-time UI
+        socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, phase: 'start' }));
+        socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, delta: commandResult, phase: 'delta' }));
+        socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, phase: 'complete' }));
+
+        socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
+        socketHub.broadcast(createEvent('tree.changed', { project_id: session.projectId }, { project_id: session.projectId }));
+
+        return c.json({ accepted: true, session_id: sessionId, run_id: `cmd_${crypto.randomUUID().slice(0, 8)}`, message_id: assistantMsgId }, 202);
+      }
+      // Unknown command — fall through to normal agent handling
     }
 
     const currentModel = await resolveSessionModelWithCapabilities(piClient, session);

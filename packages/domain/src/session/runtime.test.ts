@@ -78,6 +78,9 @@ function makePiClient(options?: { sendError?: Error }) {
     async getCommands() {
       return [];
     },
+    async executeCommand() {
+      return null;
+    },
     async bindToolRuntime(sessionId, tools, _handler, cwd) {
       state.bound.push({ sessionId, cwd, tools });
     },
