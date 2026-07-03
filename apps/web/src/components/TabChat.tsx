@@ -168,6 +168,7 @@ export default function TabChat({
     setCommandFilter('');
     setSelectedCommandIdx(0);
   };
+  const commandJustSelectedRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -1247,6 +1248,7 @@ export default function TabChat({
                       }`}
                       onMouseDown={(e) => {
                         e.preventDefault();
+                        commandJustSelectedRef.current = true;
                         setDraft(`/${cmd.name} `);
                         closeCommands();
                         requestAnimationFrame(() => {
@@ -1282,6 +1284,11 @@ export default function TabChat({
               onChange={(e) => {
                 const value = e.target.value;
                 setDraft(value);
+                // Skip slash detection if command was just selected
+                if (commandJustSelectedRef.current) {
+                  commandJustSelectedRef.current = false;
+                  return;
+                }
                 // Detect slash command: cursor at start or value starts with /
                 const textarea = e.target;
                 const cursorPos = textarea.selectionStart;
@@ -1324,6 +1331,7 @@ export default function TabChat({
                     e.preventDefault();
                     const cmd = filteredCommands[selectedCommandIdx];
                     if (cmd) {
+                      commandJustSelectedRef.current = true;
                       setDraft(`/${cmd.name} `);
                       closeCommands();
                       // Focus back and move cursor to end
