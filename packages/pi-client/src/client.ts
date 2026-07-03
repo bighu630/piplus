@@ -121,8 +121,13 @@ async function executeBuiltinCommand(
   const info = session;
   switch (name) {
     case 'help': {
-      const cmds = info?.commands.length ? info.commands : BUILTIN_COMMANDS;
-      const lines = cmds.map((c) => `  /${c.name} — ${c.description || ''}`);
+      const dynamic = info?.commands ?? [];
+      const seen = new Set<string>();
+      const all: PiSlashCommandInfo[] = [];
+      for (const cmd of [...BUILTIN_COMMANDS, ...dynamic]) {
+        if (!seen.has(cmd.name)) { seen.add(cmd.name); all.push(cmd); }
+      }
+      const lines = all.map((c) => `  /${c.name} — ${c.description || ''}`);
       return `可用命令：\n${lines.join('\n')}`;
     }
     case 'model': {
@@ -181,7 +186,7 @@ async function executeBuiltinCommand(
 }
 
 function collectCommands(agentSession: any): PiSlashCommandInfo[] {
-  const commands: PiSlashCommandInfo[] = [...BUILTIN_COMMANDS];
+  const commands: PiSlashCommandInfo[] = [];
 
   // Extension commands
   try {
@@ -808,8 +813,17 @@ export function createPiClient(): PiClient {
 
     async getCommands(sessionId) {
       const session = runtimeRegistry.get(sessionId);
-      const cmds = session?.commands ?? [];
-      return cmds.length > 0 ? cmds : BUILTIN_COMMANDS;
+      const dynamic = session?.commands ?? [];
+      // Merge builtins + dynamic, deduplicate by name
+      const seen = new Set<string>();
+      const merged: PiSlashCommandInfo[] = [];
+      for (const cmd of [...BUILTIN_COMMANDS, ...dynamic]) {
+        if (!seen.has(cmd.name)) {
+          seen.add(cmd.name);
+          merged.push(cmd);
+        }
+      }
+      return merged;
     },
 
     async executeCommand(sessionId, content) {
