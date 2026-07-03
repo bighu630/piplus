@@ -661,6 +661,15 @@ export function createPiClient(): PiClient {
       });
       await loader.reload();
 
+      // Debug: log discovered skills
+      const skillsResult = loader.getSkills();
+      console.log('[pi-client] bindToolRuntime skills discovered', {
+        sessionId,
+        skillCount: skillsResult.skills.length,
+        skillNames: skillsResult.skills.map((s: any) => s.name),
+        diagnosticCount: skillsResult.diagnostics.length,
+      });
+
       const sessionManager = SessionManager.open(session.locator.sessionFile);
       const sessionContext = sessionManager.buildSessionContext();
       console.log('[pi-client] bindToolRuntime start', {
