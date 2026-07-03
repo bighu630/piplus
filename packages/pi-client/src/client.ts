@@ -175,6 +175,23 @@ async function executeBuiltinCommand(
       }
       return '无法压缩（runtime 未连接）。';
     }
+    case 'thinking': {
+      if (info?.agentSession) {
+        const level = info.agentSession.thinkingLevel;
+        const available = info.agentSession.getAvailableThinkingLevels?.() ?? [];
+        return `思考层级：${level}${available.length ? `（可用：${available.join(', ')}）` : ''}`;
+      }
+      return '思考层级暂不可用（runtime 未连接）。';
+    }
+    case 'reload':
+      return '扩展重载功能需通过 Pi 终端执行。';
+    case 'active-tools': {
+      if (info?.agentSession) {
+        const tools = info.agentSession.getActiveToolNames();
+        return `激活的工具：${tools.join(', ') || '(无)'}`;
+      }
+      return '工具列表暂不可用（runtime 未连接）。';
+    }
     default:
       return null; // Unknown command — let agentSession handle it
   }
