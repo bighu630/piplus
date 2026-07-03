@@ -541,7 +541,7 @@ export default function App() {
               setStreamNote('');
               setPendingUserMessages([]);
               Promise.all([
-                queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
+                queryClient.refetchQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'commands', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['tree'] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
