@@ -109,6 +109,8 @@ export type PiClient = {
   sendMessage(sessionId: string, content: string, options?: { images?: PiImageInput[] }): Promise<PiRunAccepted>;
   stopSession(sessionId: string): Promise<PiStopSessionResult>;
   closeRuntime(sessionId: string): Promise<void>;
+  /** Close all idle runtimes. Running sessions are left untouched. Returns count of closed runtimes. */
+  reloadIdleRuntimes(): Promise<number>;
   listAvailableModels(): Promise<PiModelInfo[]>;
   getCurrentModel(sessionId: string): Promise<PiModelInfo | null>;
   setSessionModel(

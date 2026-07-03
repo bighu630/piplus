@@ -385,6 +385,25 @@ export function createPiClient(): PiClient {
       // bindToolRuntime() and restoreRuntime() can still find the
       // session file and model metadata on subsequent calls.
     },
+
+    /**
+     * Close all idle runtimes so they pick up new settings on next restore.
+     * Running sessions are left untouched.
+     */
+    async reloadIdleRuntimes(): Promise<number> {
+      return runtimeRegistry.closeIdle((session) => {
+        try {
+          if (session.agentSession) {
+            session.agentSession.dispose();
+          }
+        } catch {
+          // Ignore disposal errors
+        }
+        if (session.locator.piSessionId) {
+          runtimeRegistry.delete(session.locator.piSessionId);
+        }
+      });
+    },
     async listAvailableModels() {
       const models = await modelRegistry.getAvailable();
       return models.map((m) => ({

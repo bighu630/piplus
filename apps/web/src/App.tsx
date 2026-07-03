@@ -61,6 +61,7 @@ import {
   useInstallPackageMutation,
   useRemovePackageMutation,
   useUpdatePackagesMutation,
+  useTogglePackageMutation,
   usePackageUpdates,
   useProjectTodos,
   useCreateProjectTodoMutation,
@@ -227,6 +228,7 @@ export default function App() {
   const [createRepoUrl, setCreateRepoUrl] = useState('');
   const [createProjectModelKey, setCreateProjectModelKey] = useState('');
   const [showProjectSettings, setShowProjectSettings] = useState(false);
+  const [projectSettingsTab, setProjectSettingsTab] = useState<'roles' | 'packages'>('roles');
   const [editRoleModels, setEditRoleModels] = useState<Record<string, string>>({});
   const [roleDefaultModels, setRoleDefaultModels] = useState<Record<string, { provider: string; id: string } | null>>({});
 
@@ -250,6 +252,9 @@ export default function App() {
   const [packageSource, setPackageSource] = useState('');
   const [packageError, setPackageError] = useState<string | null>(null);
   const [packageSuccess, setPackageSuccess] = useState<string | null>(null);
+  const [projectPackageSource, setProjectPackageSource] = useState('');
+  const [projectPackageError, setProjectPackageError] = useState<string | null>(null);
+  const [projectPackageSuccess, setProjectPackageSuccess] = useState<string | null>(null);
 
   const [streamNote, setStreamNote] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
@@ -360,9 +365,12 @@ export default function App() {
   const deleteTodoMut = useDeleteProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
 
   const packagesQuery = usePackages();
+  const projectPackagesQuery = usePackages(showProjectSettings ? selectedProjectId : null);
+  const projectPackagesUpdatesQuery = usePackageUpdates(showProjectSettings ? selectedProjectId : null);
   const installPkgMut = useInstallPackageMutation();
   const removePkgMut = useRemovePackageMutation();
   const updatePkgMut = useUpdatePackagesMutation();
+  const togglePkgMut = useTogglePackageMutation();
   const packagesUpdatesQuery = usePackageUpdates();
 
   const createProjectMut = useCreateProjectMutation();
@@ -1082,6 +1090,10 @@ export default function App() {
 
   const handleOpenProjectSettings = useCallback((projectId: string) => {
     setSelectedProjectId(projectId);
+    setProjectSettingsTab('roles');
+    setProjectPackageSource('');
+    setProjectPackageError(null);
+    setProjectPackageSuccess(null);
     setShowProjectSettings(true);
   }, []);
 
@@ -1623,7 +1635,7 @@ export default function App() {
                   {installPkgMut.isPending ? '安装中…' : '安装'}
                 </button>
               </div>
-              <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">当前仅支持全局安装。项目级安装将在后续版本支持。</p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">当前为全局安装。项目级安装请前往「项目设置 → 扩展管理」。</p>
             </div>
 
             {packageError && (
@@ -1651,13 +1663,30 @@ export default function App() {
                 ) : (
                   (packagesQuery.data ?? []).map((pkg) => (
                     <div key={pkg.source} className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 px-3 py-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">{pkg.source}</div>
-                        <div className="text-[10px] text-slate-400 dark:text-slate-500">
-                          {pkg.scope === 'user' ? '全局' : '项目'}
-                          {pkg.installedPath ? ` · ${pkg.installedPath}` : ''}
+                      <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!pkg.filtered}
+                          onChange={async () => {
+                            setPackageError(null);
+                            setPackageSuccess(null);
+                            try {
+                              await togglePkgMut.mutateAsync({ source: pkg.source, filtered: !pkg.filtered });
+                            } catch (err) {
+                              setPackageError(err instanceof Error ? err.message : '切换失败');
+                            }
+                          }}
+                          disabled={togglePkgMut.isPending}
+                          className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 shrink-0"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">{pkg.source}</div>
+                          <div className="text-[10px] text-slate-400 dark:text-slate-500">
+                            {pkg.scope === 'user' ? '全局' : '项目'}
+                            {pkg.installedPath ? ` · ${pkg.installedPath}` : ''}
+                          </div>
                         </div>
-                      </div>
+                      </label>
                       <button
                         onClick={async () => {
                           setPackageError(null);
@@ -1738,36 +1767,210 @@ export default function App() {
         )}
       </Modal>
 
-      <Modal isOpen={showProjectSettings} onClose={() => setShowProjectSettings(false)} title="项目设置" icon={<Settings className="w-4 h-4" />}>
-        <div className="space-y-4">
-          <div className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">角色默认模型</div>
-          {CONFIGURABLE_ROLE_KEYS.map((role) => (
-            <div key={role.key} className="flex items-center gap-3">
-              <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{role.label}</span>
-              <div className="flex-1">
-                <Select
-                  value={editRoleModels[role.key] ?? ''}
-                  onChange={(v) => handleRoleModelChange(role.key, v)}
-                  options={[
-                    { value: '', label: '继承（使用父级模型）' },
-                    ...(modelsQuery.data ?? []).map((m) => ({
-                      value: `${m.provider}/${m.id}`,
-                      label: `${m.provider} / ${m.label}`,
-                    })),
-                  ]}
-                  searchable
-                  className="w-full"
+      <Modal isOpen={showProjectSettings} onClose={() => { setShowProjectSettings(false); setProjectPackageError(null); setProjectPackageSuccess(null); setProjectPackageSource(''); }} title="项目设置" icon={<Settings className="w-4 h-4" />}>
+        {/* Tab bar */}
+        <div className="flex border-b border-slate-200 dark:border-slate-700 -mx-1">
+          <button onClick={() => setProjectSettingsTab('roles')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'roles' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>角色模型</button>
+          <button onClick={() => setProjectSettingsTab('packages')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'packages' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>扩展管理</button>
+        </div>
+
+        {/* 角色模型 tab */}
+        {projectSettingsTab === 'roles' && (
+          <div className="space-y-4">
+            <div className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">角色默认模型</div>
+            {CONFIGURABLE_ROLE_KEYS.map((role) => (
+              <div key={role.key} className="flex items-center gap-3">
+                <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{role.label}</span>
+                <div className="flex-1">
+                  <Select
+                    value={editRoleModels[role.key] ?? ''}
+                    onChange={(v) => handleRoleModelChange(role.key, v)}
+                    options={[
+                      { value: '', label: '继承（使用父级模型）' },
+                      ...(modelsQuery.data ?? []).map((m) => ({
+                        value: `${m.provider}/${m.id}`,
+                        label: `${m.provider} / ${m.label}`,
+                      })),
+                    ]}
+                    searchable
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            ))}
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+              <button onClick={() => setShowProjectSettings(false)} className="px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer">取消</button>
+              <button onClick={handleSaveProjectRoleModels} disabled={setProjectRoleModelsMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg cursor-pointer disabled:opacity-50">
+                {setProjectRoleModelsMut.isPending ? '保存中…' : '保存'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 扩展管理 tab */}
+        {projectSettingsTab === 'packages' && (
+          <div className="space-y-4">
+            <div className="text-[11px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900 rounded-lg px-3 py-2">
+              项目级扩展仅对当前项目生效。
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">安装新扩展</label>
+              <div className="flex gap-2">
+                <input
+                  value={projectPackageSource}
+                  onChange={(e) => setProjectPackageSource(e.target.value)}
+                  placeholder="npm:@foo/pi-tools / git:github.com/user/repo"
+                  className="flex-1 px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400"
                 />
+                <button
+                  onClick={async () => {
+                    if (!projectPackageSource.trim() || !selectedProjectId) return;
+                    setProjectPackageError(null);
+                    setProjectPackageSuccess(null);
+                    try {
+                      await installPkgMut.mutateAsync({ source: projectPackageSource.trim(), local: true, projectId: selectedProjectId });
+                      setProjectPackageSource('');
+                      setProjectPackageSuccess('安装成功');
+                    } catch (err) {
+                      setProjectPackageError(err instanceof Error ? err.message : '安装失败');
+                    }
+                  }}
+                  disabled={installPkgMut.isPending || !projectPackageSource.trim() || !selectedProjectId}
+                  className="px-4 py-2 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50 shrink-0"
+                >
+                  {installPkgMut.isPending ? '安装中…' : '安装'}
+                </button>
               </div>
             </div>
-          ))}
-          <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
-            <button onClick={() => setShowProjectSettings(false)} className="px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer">取消</button>
-            <button onClick={handleSaveProjectRoleModels} disabled={setProjectRoleModelsMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg cursor-pointer disabled:opacity-50">
-              {setProjectRoleModelsMut.isPending ? '保存中…' : '保存'}
-            </button>
+
+            {projectPackageError && (
+              <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">{projectPackageError}</div>
+            )}
+            {projectPackageSuccess && (
+              <div className="text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-lg px-3 py-2">{projectPackageSuccess}</div>
+            )}
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">已安装扩展</div>
+                <button
+                  onClick={() => projectPackagesUpdatesQuery.refetch()}
+                  disabled={projectPackagesUpdatesQuery.isFetching}
+                  className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${projectPackagesUpdatesQuery.isFetching ? 'animate-spin' : ''}`} />
+                  检查更新
+                </button>
+              </div>
+              <div className="space-y-2">
+                {(projectPackagesQuery.data ?? []).length === 0 ? (
+                  <div className="text-xs text-slate-400 dark:text-slate-500 text-center py-4">暂无已安装的扩展</div>
+                ) : (
+                  (projectPackagesQuery.data ?? []).map((pkg) => (
+                    <div key={pkg.source} className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 px-3 py-2">
+                      <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!pkg.filtered}
+                          onChange={async () => {
+                            setProjectPackageError(null);
+                            setProjectPackageSuccess(null);
+                            try {
+                              await togglePkgMut.mutateAsync({ source: pkg.source, filtered: !pkg.filtered, local: true, projectId: selectedProjectId! });
+                            } catch (err) {
+                              setProjectPackageError(err instanceof Error ? err.message : '切换失败');
+                            }
+                          }}
+                          disabled={togglePkgMut.isPending}
+                          className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 shrink-0"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">{pkg.source}</div>
+                          <div className="text-[10px] text-slate-400 dark:text-slate-500">
+                            项目级
+                            {pkg.installedPath ? ` · ${pkg.installedPath}` : ''}
+                          </div>
+                        </div>
+                      </label>
+                      <button
+                        onClick={async () => {
+                          setProjectPackageError(null);
+                          setProjectPackageSuccess(null);
+                          try {
+                            await removePkgMut.mutateAsync({ source: pkg.source, local: true, projectId: selectedProjectId! });
+                            setProjectPackageSuccess(`已移除：${pkg.source}`);
+                          } catch (err) {
+                            setProjectPackageError(err instanceof Error ? err.message : '移除失败');
+                          }
+                        }}
+                        disabled={removePkgMut.isPending}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition cursor-pointer disabled:opacity-50 shrink-0"
+                        title="移除"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {projectPackagesUpdatesQuery.data && projectPackagesUpdatesQuery.data.length > 0 && (
+              <div>
+                <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">可用更新</div>
+                <div className="space-y-2">
+                  {projectPackagesUpdatesQuery.data.map((update) => (
+                    <div key={update.source} className="flex items-center justify-between rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/20 px-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-amber-800 dark:text-amber-200 truncate">{update.displayName}</div>
+                        <div className="text-[10px] text-amber-600 dark:text-amber-400">{update.source} · {update.type === 'npm' ? 'npm 包' : 'git 仓库'}</div>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          setProjectPackageError(null);
+                          setProjectPackageSuccess(null);
+                          try {
+                            await updatePkgMut.mutateAsync({ source: update.source, projectId: selectedProjectId! });
+                            setProjectPackageSuccess(`已更新：${update.displayName}`);
+                            projectPackagesUpdatesQuery.refetch();
+                            projectPackagesQuery.refetch();
+                          } catch (err) {
+                            setProjectPackageError(err instanceof Error ? err.message : '更新失败');
+                          }
+                        }}
+                        disabled={updatePkgMut.isPending}
+                        className="px-3 py-1 text-xs font-semibold bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition cursor-pointer disabled:opacity-50"
+                      >
+                        更新
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-end pt-2">
+                  <button
+                    onClick={async () => {
+                      setProjectPackageError(null);
+                      setProjectPackageSuccess(null);
+                      try {
+                        await updatePkgMut.mutateAsync({ projectId: selectedProjectId! });
+                        setProjectPackageSuccess('所有扩展已更新');
+                        projectPackagesUpdatesQuery.refetch();
+                        projectPackagesQuery.refetch();
+                      } catch (err) {
+                        setProjectPackageError(err instanceof Error ? err.message : '更新失败');
+                      }
+                    }}
+                    disabled={updatePkgMut.isPending}
+                    className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    {updatePkgMut.isPending ? '更新中…' : '更新全部'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
+        )}
       </Modal>
 
       <Modal isOpen={showProviderModal} onClose={handleCloseProviderModal} title="添加模型" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />} maxWidthClassName="max-w-3xl">

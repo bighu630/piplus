@@ -45,6 +45,7 @@ import {
   installPackage,
   removePackage,
   updatePackages,
+  togglePackage,
   getPackageUpdates,
   getProjectTodos,
   createProjectTodo,
@@ -441,13 +442,14 @@ export function useSetNativeProviderApiKeyMutation() {
 
 // ── Package Management Hooks ─────────────────────────────────────────
 
-export function usePackages() {
+export function usePackages(projectId?: string | null) {
   return useQuery({
-    queryKey: ['packages'],
+    queryKey: ['packages', projectId ?? 'global'],
     queryFn: async () => {
-      const res = await getPackages();
+      const res = await getPackages(projectId ?? undefined);
       return res.packages;
     },
+    enabled: projectId !== null,
     staleTime: 10_000,
   });
 }
@@ -457,9 +459,13 @@ export function useInstallPackageMutation() {
   return useMutation({
     mutationFn: ({ source, local, projectId }: { source: string; local?: boolean; projectId?: string }) =>
       installPackage(source, local, projectId),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['packages'] });
       queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+      if (vars.projectId) {
+        queryClient.invalidateQueries({ queryKey: ['packages', vars.projectId] });
+        queryClient.invalidateQueries({ queryKey: ['packages', 'updates', vars.projectId] });
+      }
     },
   });
 }
@@ -469,9 +475,13 @@ export function useRemovePackageMutation() {
   return useMutation({
     mutationFn: ({ source, local, projectId }: { source: string; local?: boolean; projectId?: string }) =>
       removePackage(source, local, projectId),
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['packages'] });
       queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+      if (vars.projectId) {
+        queryClient.invalidateQueries({ queryKey: ['packages', vars.projectId] });
+        queryClient.invalidateQueries({ queryKey: ['packages', 'updates', vars.projectId] });
+      }
     },
   });
 }
@@ -479,21 +489,47 @@ export function useRemovePackageMutation() {
 export function useUpdatePackagesMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (source?: string) => updatePackages(source),
-    onSuccess: () => {
+    mutationFn: (vars?: string | { source?: string; projectId?: string }) => {
+      if (typeof vars === 'string') return updatePackages(vars);
+      if (vars === undefined) return updatePackages(undefined);
+      return updatePackages(vars.source, vars.projectId);
+    },
+    onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['packages'] });
       queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+      const projectId = typeof vars === 'object' ? vars?.projectId : undefined;
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: ['packages', projectId] });
+        queryClient.invalidateQueries({ queryKey: ['packages', 'updates', projectId] });
+      }
     },
   });
 }
 
-export function usePackageUpdates() {
+export function useTogglePackageMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ source, filtered, local, projectId }: { source: string; filtered: boolean; local?: boolean; projectId?: string }) =>
+      togglePackage(source, filtered, local, projectId),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['packages'] });
+      queryClient.invalidateQueries({ queryKey: ['packages', 'updates'] });
+      if (vars.projectId) {
+        queryClient.invalidateQueries({ queryKey: ['packages', vars.projectId] });
+        queryClient.invalidateQueries({ queryKey: ['packages', 'updates', vars.projectId] });
+      }
+    },
+  });
+}
+
+export function usePackageUpdates(projectId?: string | null) {
   return useQuery({
-    queryKey: ['packages', 'updates'],
+    queryKey: ['packages', 'updates', projectId ?? 'global'],
     queryFn: async () => {
-      const res = await getPackageUpdates();
+      const res = await getPackageUpdates(projectId ?? undefined);
       return res.updates;
     },
+    enabled: projectId !== null,
     staleTime: 60_000,
   });
 }

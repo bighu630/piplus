@@ -57,6 +57,9 @@ function makeRecordingPiClient() {
     async closeRuntime() {
       return;
     },
+    async reloadIdleRuntimes() {
+      return 0;
+    },
     async bindToolRuntime() {
       return;
     },

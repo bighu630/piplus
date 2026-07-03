@@ -54,4 +54,22 @@ export class RuntimeRegistry {
   delete(sessionId: string) {
     this.sessions.delete(sessionId);
   }
+
+  /** List all active session runtimes (for iteration). */
+  list(): ActiveSessionRuntime[] {
+    return Array.from(this.sessions.values());
+  }
+
+  /** Close idle runtimes: dispose runtimes that are not actively running.
+   *  Returns the number of runtimes closed. */
+  closeIdle(dispose: (session: ActiveSessionRuntime) => void): number {
+    let closed = 0;
+    for (const session of this.sessions.values()) {
+      if (session.stopped && session.agentSession) {
+        dispose(session);
+        closed++;
+      }
+    }
+    return closed;
+  }
 }

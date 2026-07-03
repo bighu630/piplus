@@ -24,6 +24,7 @@ export type PiPackageScope = 'user' | 'project';
 export type PiPackageListItem = {
   source: string;
   scope: PiPackageScope;
+  filtered: boolean;
   installedPath?: string;
 };
 
@@ -40,6 +41,7 @@ export function listPiPackages(cwd?: string): PiPackageListItem[] {
   return pm.listConfiguredPackages().map((p: ConfiguredPackage) => ({
     source: p.source,
     scope: p.scope as PiPackageScope,
+    filtered: p.filtered,
     installedPath: p.installedPath,
   }));
 }
@@ -77,4 +79,34 @@ export async function checkPiPackageUpdates(
 ): Promise<PackageUpdate[]> {
   const pm = createManager(options?.cwd);
   return pm.checkForAvailableUpdates() as Promise<PackageUpdate[]>;
+}
+
+/** Enable or disable a configured package by toggling the settings format.
+ *  When filtered=true, the package source is stored as an object with empty
+ *  resource arrays, causing the runtime to skip loading it.
+ *  When filtered=false, the package source is stored as a plain string.
+ *  Returns true if the package was actually modified. */
+export function setPackageFiltered(
+  source: string,
+  filtered: boolean,
+  options?: { local?: boolean; cwd?: string },
+): boolean {
+  const pm = createManager(options?.cwd);
+
+  if (filtered) {
+    // Disable: convert string to object form with empty resource arrays
+    return pm.addSourceToSettings(
+      { source, extensions: [], skills: [], prompts: [], themes: [] } as any,
+      { local: options?.local },
+    );
+  } else {
+    // Enable: remove the object form (which disables it) and add back as string
+    // First remove the object form
+    pm.removeSourceFromSettings(
+      { source, extensions: [], skills: [], prompts: [], themes: [] } as any,
+      { local: options?.local },
+    );
+    // Then add as plain string (enabled)
+    return pm.addSourceToSettings(source, { local: options?.local });
+  }
 }
