@@ -404,6 +404,13 @@ export function createPiClient(): PiClient {
           provider: session.model?.provider ?? null,
           id: session.model?.id ?? null,
         });
+
+        // Schedule idle cleanup: dispose runtime after 30min of inactivity
+        if (session.idleCleanupTimer) clearTimeout(session.idleCleanupTimer);
+        session.idleCleanupTimer = setTimeout(() => {
+          console.log('[pi-client] restoreRuntime idle cleanup triggered', { sessionId });
+          this.closeRuntime(sessionId).catch(() => {});
+        }, 30 * 60 * 1000);
       } catch {
         throw new Error('pi_session_runtime_unavailable');
       }
@@ -548,6 +555,7 @@ export function createPiClient(): PiClient {
     async closeRuntime(sessionId) {
       const session = runtimeRegistry.get(sessionId);
       if (!session) return; // idempotent, already cleaned
+      if (session.idleCleanupTimer) { clearTimeout(session.idleCleanupTimer); session.idleCleanupTimer = undefined; }
       session.agentSession?.dispose();
       session.agentSession = undefined;
       session.listeners.clear();
@@ -651,6 +659,7 @@ export function createPiClient(): PiClient {
 
       if (session.agentSession) {
         session.agentSession.dispose();
+        if (session.idleCleanupTimer) { clearTimeout(session.idleCleanupTimer); session.idleCleanupTimer = undefined; }
       }
 
       const loader = new DefaultResourceLoader({
@@ -677,15 +686,6 @@ export function createPiClient(): PiClient {
         ],
       });
       await loader.reload();
-
-      // Debug: log discovered skills
-      const skillsResult = loader.getSkills();
-      console.log('[pi-client] bindToolRuntime skills discovered', {
-        sessionId,
-        skillCount: skillsResult.skills.length,
-        skillNames: skillsResult.skills.map((s: any) => s.name),
-        diagnosticCount: skillsResult.diagnostics.length,
-      });
 
       const sessionManager = SessionManager.open(session.locator.sessionFile);
       const sessionContext = sessionManager.buildSessionContext();

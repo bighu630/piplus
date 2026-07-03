@@ -483,13 +483,6 @@ export function registerSessionRoutes(app: Hono) {
 
     // Intercept slash commands — execute locally, don't call agent
     if (content && /^\s*\//.test(content)) {
-      // Ensure runtime is available for commands that need it
-      try {
-        const locator = parseLocator(session.piSessionLocatorJson);
-        await piClient.restoreRuntime(sessionId, locator, project.projectPath);
-      } catch {
-        // Runtime may already be alive, or unrecoverable — continue anyway
-      }
       const commandResult = await piClient.executeCommand(sessionId, content);
       if (commandResult !== null) {
         const now = nextMessageTime();

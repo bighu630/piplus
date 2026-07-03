@@ -18,6 +18,7 @@ export type ActiveSessionRuntime = {
   promptSent: boolean;
   title: string | null;
   listeners: Set<SessionListener>;
+  idleCleanupTimer?: ReturnType<typeof setTimeout>;
 };
 
 export class RuntimeRegistry {
