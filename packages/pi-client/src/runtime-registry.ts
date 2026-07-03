@@ -1,6 +1,6 @@
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { PiSessionLocator } from './locator';
-import type { PiMessage, PiSessionStreamEvent, PiToolDef } from './types';
+import type { PiMessage, PiSessionStreamEvent, PiSlashCommandInfo, PiToolDef } from './types';
 
 type SessionListener = (event: PiSessionStreamEvent) => void | Promise<void>;
 
@@ -11,6 +11,7 @@ export type ActiveSessionRuntime = {
   model?: { provider: string; id: string; label: string };
   toolHandler?: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>;
   toolDefs?: PiToolDef[];
+  commands: PiSlashCommandInfo[];
   messages: PiMessage[];
   stopped: boolean;
   prompt: string;
@@ -42,6 +43,7 @@ export class RuntimeRegistry {
       cwd: cwd ?? process.cwd(),
       messages: [],
       stopped: false,
+      commands: [],
       prompt: '',
       promptSent: false,
       title: null,

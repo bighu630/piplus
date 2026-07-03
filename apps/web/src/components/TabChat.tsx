@@ -25,7 +25,8 @@ import {
 import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
 import Select from './Select';
-import { useSessionContextUsage } from '../lib/hooks';
+import { useSessionContextUsage, useSessionCommands } from '../lib/hooks';
+import { fuzzyScore } from '../lib/fuzzy';
 import { loadSessionDraft, saveSessionDraft } from '../lib/session-drafts';
 
 interface ModelOption {
@@ -142,6 +143,31 @@ export default function TabChat({
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<ChatImageContentBlockDTO | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Slash command completion state
+  const [showCommands, setShowCommands] = useState(false);
+  const [commandFilter, setCommandFilter] = useState('');
+  const [selectedCommandIdx, setSelectedCommandIdx] = useState(0);
+  const commandsQuery = useSessionCommands(selectedSessionId ?? null);
+  const availableCommands = commandsQuery.data ?? [];
+
+  // Filtered and scored command list
+  const filteredCommands = (() => {
+    if (!commandFilter) return availableCommands;
+    const q = commandFilter.toLowerCase();
+    return availableCommands
+      .map((cmd) => ({ cmd, score: fuzzyScore(q, cmd.name) }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((item) => item.cmd);
+  })();
+
+  const closeCommands = () => {
+    setShowCommands(false);
+    setCommandFilter('');
+    setSelectedCommandIdx(0);
+  };
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -1199,10 +1225,69 @@ export default function TabChat({
                 ))}
               </div>
             )}
+            {/* Slash command dropdown */}
+            {showCommands && filteredCommands.length > 0 && (
+              <div className="relative">
+                <div className="absolute bottom-full left-0 right-0 mb-1 z-50 max-h-48 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg">
+                  {filteredCommands.map((cmd, idx) => (
+                    <button
+                      key={cmd.name}
+                      type="button"
+                      className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors ${
+                        idx === selectedCommandIdx
+                          ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setDraft(`/${cmd.name} `);
+                        closeCommands();
+                        requestAnimationFrame(() => {
+                          const ta = textareaRef.current;
+                          if (ta) {
+                            ta.focus();
+                            ta.selectionStart = ta.selectionEnd = ta.value.length;
+                          }
+                        });
+                      }}
+                    >
+                      <span className="font-mono font-semibold text-blue-600 dark:text-blue-400 shrink-0">/{cmd.name}</span>
+                      {cmd.description && (
+                        <span className="truncate text-xs text-slate-400 dark:text-slate-500">{cmd.description}</span>
+                      )}
+                      <span className={`ml-auto shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        cmd.source === 'extension' ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400' :
+                        cmd.source === 'prompt' ? 'bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400' :
+                        'bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400'
+                      }`}>
+                        {cmd.source}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <textarea
               className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition"
               disabled={isRunning || sending}
-              onChange={(e) => setDraft(e.target.value)}
+              ref={textareaRef}
+              onChange={(e) => {
+                const value = e.target.value;
+                setDraft(value);
+                // Detect slash command: cursor at start or value starts with /
+                const textarea = e.target;
+                const cursorPos = textarea.selectionStart;
+                const textBeforeCursor = value.slice(0, cursorPos);
+                // Only show commands when / is the first character and no other text before cursor
+                if (textBeforeCursor.startsWith('/') && !textBeforeCursor.includes('\n')) {
+                  const filter = textBeforeCursor.slice(1);
+                  setCommandFilter(filter);
+                  setShowCommands(true);
+                  setSelectedCommandIdx(0);
+                } else {
+                  closeCommands();
+                }
+              }}
               onPaste={async (e: ClipboardEvent<HTMLTextAreaElement>) => {
                 const files = Array.from(e.clipboardData.files ?? []);
                 if (!files.some((file) => allowedImageMimeTypes.has(file.type))) return;
@@ -1210,6 +1295,42 @@ export default function TabChat({
                 await addImageFiles(files.filter((file) => allowedImageMimeTypes.has(file.type)));
               }}
               onKeyDown={(e) => {
+                // Command dropdown keyboard navigation
+                if (showCommands && filteredCommands.length > 0) {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setSelectedCommandIdx((prev) => Math.min(prev + 1, filteredCommands.length - 1));
+                    return;
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setSelectedCommandIdx((prev) => Math.max(prev - 1, 0));
+                    return;
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    closeCommands();
+                    return;
+                  }
+                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+                    e.preventDefault();
+                    const cmd = filteredCommands[selectedCommandIdx];
+                    if (cmd) {
+                      setDraft(`/${cmd.name} `);
+                      closeCommands();
+                      // Focus back and move cursor to end
+                      requestAnimationFrame(() => {
+                        const ta = textareaRef.current;
+                        if (ta) {
+                          ta.focus();
+                          ta.selectionStart = ta.selectionEnd = ta.value.length;
+                        }
+                      });
+                    }
+                    return;
+                  }
+                }
+
                 if (e.key !== 'Enter') return;
 
                 if (sendShortcutMode === 'mod_enter') {

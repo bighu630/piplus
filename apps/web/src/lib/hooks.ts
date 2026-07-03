@@ -51,6 +51,7 @@ import {
   createProjectTodo,
   updateProjectTodo,
   deleteProjectTodo,
+  getSessionCommands,
 } from './api';
 
 export function useAuthSession() {
@@ -571,5 +572,19 @@ export function useDeleteProjectTodoMutation(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['project', 'todos', projectId] });
     },
+  });
+}
+
+// ── Slash Commands ───────────────────────────────────────────────────
+
+export function useSessionCommands(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'commands', sessionId],
+    queryFn: async () => {
+      const res = await getSessionCommands(sessionId!);
+      return res.commands;
+    },
+    enabled: Boolean(sessionId),
+    staleTime: 60_000,
   });
 }

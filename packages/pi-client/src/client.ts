@@ -20,6 +20,7 @@ import type {
   PiMessage,
   PiRunAccepted,
   PiSessionStreamEvent,
+  PiSlashCommandInfo,
   PiToolDef,
 } from './types';
 import type { PiSessionLocator } from './locator';
@@ -86,6 +87,60 @@ function normalizeImages(images: PiImageInput[] | undefined) {
     data: image.dataBase64,
     mimeType: image.mimeType ?? image.mediaType ?? 'image/png',
   }));
+}
+
+function collectCommands(agentSession: any): PiSlashCommandInfo[] {
+  const commands: PiSlashCommandInfo[] = [];
+
+  // Extension commands
+  try {
+    const extensionCommands = agentSession.extensionRunner?.getRegisteredCommands();
+    if (Array.isArray(extensionCommands)) {
+      for (const cmd of extensionCommands) {
+        commands.push({
+          name: cmd.name,
+          description: cmd.description,
+          source: 'extension' as const,
+        });
+      }
+    }
+  } catch {
+    // Extension runner may not be ready
+  }
+
+  // Prompt templates
+  try {
+    const promptTemplates = agentSession.promptTemplates;
+    if (Array.isArray(promptTemplates)) {
+      for (const pt of promptTemplates) {
+        commands.push({
+          name: pt.name,
+          description: pt.description,
+          source: 'prompt' as const,
+        });
+      }
+    }
+  } catch {
+    // Resource loader may not be ready
+  }
+
+  // Skills
+  try {
+    const skillsResult = agentSession.resourceLoader?.getSkills();
+    if (skillsResult?.skills && Array.isArray(skillsResult.skills)) {
+      for (const skill of skillsResult.skills) {
+        commands.push({
+          name: `skill:${skill.name}`,
+          description: skill.description,
+          source: 'skill' as const,
+        });
+      }
+    }
+  } catch {
+    // Resource loader may not be ready
+  }
+
+  return commands;
 }
 
 export function createPiClient(): PiClient {
@@ -216,6 +271,13 @@ export function createPiClient(): PiClient {
           }
         }
         session.agentSession = agentSession;
+
+        // Collect slash commands from restored agent session
+        try {
+          session.commands = collectCommands(agentSession);
+        } catch (err) {
+          console.warn('[pi-client] restoreRuntime failed to collect commands', { sessionId, error: String(err) });
+        }
 
         if (agentSession.model) {
           session.model = {
@@ -577,6 +639,14 @@ export function createPiClient(): PiClient {
           label: agentSession.model.name ?? `${agentSession.model.provider}/${agentSession.model.id}`,
         };
       }
+      // Collect slash commands from extensions, prompt templates, and skills
+      try {
+        session.commands = collectCommands(agentSession);
+        console.log('[pi-client] bindToolRuntime collected commands', { sessionId, count: session.commands.length });
+      } catch (err) {
+        console.warn('[pi-client] bindToolRuntime failed to collect commands', { sessionId, error: String(err) });
+      }
+
       console.log('[pi-client] bindToolRuntime done', {
         sessionId,
         provider: session.model?.provider ?? null,
@@ -643,6 +713,11 @@ export function createPiClient(): PiClient {
       }
 
       await session.agentSession.compact();
+    },
+
+    async getCommands(sessionId) {
+      const session = runtimeRegistry.get(sessionId);
+      return session?.commands ?? [];
     },
 
     async registerTools(_tools: PiToolDef[]) {
