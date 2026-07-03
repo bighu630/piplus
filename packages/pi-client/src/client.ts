@@ -827,11 +827,10 @@ export function createPiClient(): PiClient {
     },
 
     async executeCommand(sessionId, content) {
-      const session = runtimeRegistry.get(sessionId);
-      if (!session) return null;
+      const session = runtimeRegistry.get(sessionId) ?? null;
       const { name, args } = parseSlashCommand(content);
       if (!name) return null;
-      return executeBuiltinCommand(name, args, sessionId, session);
+      return executeBuiltinCommand(name, args, sessionId, session as any);
     },
 
     async registerTools(_tools: PiToolDef[]) {
