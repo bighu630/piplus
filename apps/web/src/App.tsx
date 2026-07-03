@@ -336,6 +336,14 @@ export default function App() {
     }
   }, [sidebarWidth]);
 
+  // Restore session runtime when entering a session
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    import('./lib/api').then(({ restoreSessionRuntime }) => {
+      restoreSessionRuntime(selectedSessionId).catch(() => {});
+    });
+  }, [selectedSessionId]);
+
   const queryClient = useQueryClient();
   const treeQuery = useTree();
   const refetchTree = treeQuery.refetch;
@@ -615,6 +623,10 @@ export default function App() {
           }
           if (message.kind === 'event' && (message.type === 'tree.changed' || message.type === 'project.created' || message.type === 'session.created' || message.type === 'session.archived')) {
             treeQuery.refetch();
+          }
+          if (message.kind === 'event' && message.type === 'runtime.restored') {
+            queryClient.invalidateQueries({ queryKey: ['session', 'commands', selectedSessionId] });
+            queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] });
           }
           if (message.kind === 'event' && (message.type === 'session.compaction_end' || message.type === 'session.compacted')) {
             const eventSessionId = (message.payload as Record<string, unknown>)?.session_id ?? selectedSessionId;

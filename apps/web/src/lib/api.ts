@@ -226,6 +226,12 @@ export function getSessionCommands(sessionId: string) {
   return request<{ commands: CommandInfo[] }>(`/api/v1/sessions/${sessionId}/commands`);
 }
 
+export function restoreSessionRuntime(sessionId: string) {
+  return request<{ session_id: string; accepted: boolean }>(`/api/v1/sessions/${sessionId}/restore-runtime`, {
+    method: 'POST',
+  });
+}
+
 export type GitActionResult = {
   session_id: string;
   cwd: string;

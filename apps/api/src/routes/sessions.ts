@@ -1245,6 +1245,25 @@ export function registerSessionRoutes(app: Hono) {
     return c.json({ session_id: sessionId, accepted: true }, 202);
   });
 
+  app.post('/api/v1/sessions/:sessionId/restore-runtime', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath })
+      .from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+    const locator = parseLocator(session.piSessionLocatorJson);
+    piClient.restoreRuntime(sessionId, locator, project.projectPath).then(() => {
+      log.info('runtime restored on demand', { sessionId });
+      socketHub.sendToSession(sessionId, createEvent('runtime.restored', {}, { project_id: session.projectId, session_id: sessionId }));
+    }).catch((err) => {
+      log.warn('runtime restore on demand failed', { sessionId, error: String(err) });
+    });
+    return c.json({ session_id: sessionId, accepted: true }, 202);
+  });
+
   /**
    * @swagger
    * /api/v1/sessions/{sessionId}/commands:
