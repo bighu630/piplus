@@ -25,6 +25,7 @@ import {
   getSessionFileTree,
   getSessionFileContent,
   saveSessionFileContent,
+  deleteSessionFile,
   gitPull,
   gitPush,
   gitCommit,
@@ -194,6 +195,20 @@ export function useSaveSessionFileContentMutation(sessionId: string | null) {
       // Invalidate the specific file content query
       queryClient.invalidateQueries({ queryKey: ['session', 'files', 'content', sessionId, variables.path] });
       // Also invalidate the file tree (size may have changed)
+      queryClient.invalidateQueries({ queryKey: ['session', 'files', 'tree', sessionId] });
+    },
+  });
+}
+
+export function useDeleteSessionFileMutation(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path }: { path: string }) =>
+      deleteSessionFile(sessionId!, path),
+    onSuccess: (_data, variables) => {
+      // Invalidate the specific file content query so the preview clears
+      queryClient.invalidateQueries({ queryKey: ['session', 'files', 'content', sessionId, variables.path] });
+      // Invalidate the file tree so the deleted file disappears
       queryClient.invalidateQueries({ queryKey: ['session', 'files', 'tree', sessionId] });
     },
   });

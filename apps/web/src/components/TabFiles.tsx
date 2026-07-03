@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import hljs from 'highlight.js';
-import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw, Save, X } from 'lucide-react';
+import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import MermaidBlock from './MermaidBlock';
 
 interface TabFilesProps {
@@ -25,6 +25,16 @@ interface TabFilesProps {
   emptyMessage?: string;
   /** Label to display in the panel header (defaults to 'Files') */
   panelTitle?: string;
+  /** Controlled expanded state (keyed by node path). When omitted, internal state is used. */
+  expandedPaths?: Record<string, boolean>;
+  /** Called when a directory node is toggled with the new isOpen state (only used with expandedPaths) */
+  onToggleExpanded?: (path: string, newIsOpen: boolean) => void;
+  /** Default expansion for nodes not in expandedPaths. Defaults to depth < 1 when unset. */
+  defaultExpanded?: boolean;
+  /** Called when user confirms deletion of a file. Path is the full relative path. */
+  onDeleteFile?: (path: string) => void;
+  /** Whether a delete operation is in progress */
+  deleting?: boolean;
 }
 
 function isMarkdownFile(filePath: string | null): boolean {
@@ -167,6 +177,9 @@ function FileTreeNode({
   onToggle,
   selectedPath,
   onSelectPath,
+  defaultExpanded,
+  onDeleteFile,
+  deleting,
 }: {
   node: SessionFileTreeNodeDTO;
   depth: number;
@@ -174,42 +187,66 @@ function FileTreeNode({
   onToggle: (path: string) => void;
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
+  defaultExpanded?: boolean;
+  onDeleteFile?: (path: string) => void;
+  deleting?: boolean;
 }) {
   const isDirectory = node.kind === 'directory';
-  const isOpen = expanded[node.path] ?? depth < 1;
+  const isOpen = expanded[node.path] ?? defaultExpanded ?? (depth < 1);
   const isSelected = selectedPath === node.path;
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => {
-          if (isDirectory) {
-            onToggle(node.path);
-            return;
-          }
-          onSelectPath(node.path);
-        }}
-        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition cursor-pointer ${
+      <div
+        className={`group/tree-row flex items-center rounded-lg text-left text-xs transition cursor-pointer ${
           isSelected
             ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300'
             : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
         }`}
         style={{ paddingLeft: `${depth * 14 + 8}px` }}
       >
-        {isDirectory ? (
-          <>
-            <ChevronRight className={`w-3.5 h-3.5 shrink-0 transition ${isOpen ? 'rotate-90' : ''}`} />
-            {isOpen ? <FolderOpen className="w-4 h-4 shrink-0 text-amber-500" /> : <Folder className="w-4 h-4 shrink-0 text-amber-500" />}
-          </>
-        ) : (
-          <>
-            <span className="w-3.5 h-3.5 shrink-0" />
-            <FileText className="w-4 h-4 shrink-0 text-slate-400" />
-          </>
+        <button
+          type="button"
+          onClick={() => {
+            if (isDirectory) {
+              onToggle(node.path);
+              return;
+            }
+            onSelectPath(node.path);
+          }}
+          className="flex items-center gap-2 py-1.5 pr-1 flex-1 min-w-0 text-left"
+        >
+          {isDirectory ? (
+            <>
+              <ChevronRight className={`w-3.5 h-3.5 shrink-0 transition ${isOpen ? 'rotate-90' : ''}`} />
+              {isOpen ? <FolderOpen className="w-4 h-4 shrink-0 text-amber-500" /> : <Folder className="w-4 h-4 shrink-0 text-amber-500" />}
+            </>
+          ) : (
+            <>
+              <span className="w-3.5 h-3.5 shrink-0" />
+              <FileText className="w-4 h-4 shrink-0 text-slate-400" />
+            </>
+          )}
+          <span className="truncate">{node.name}</span>
+        </button>
+        {!isDirectory && onDeleteFile && (
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (confirm(`确定要删除 ${node.name} 吗？此操作不可撤销。`)) {
+                onDeleteFile(node.path);
+              }
+            }}
+            className="shrink-0 p-1 mr-1 rounded opacity-0 group-hover/tree-row:opacity-100 hover:bg-red-50 dark:hover:bg-red-950/30 text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition disabled:opacity-50 cursor-pointer"
+            title="删除文件"
+            aria-label={`删除 ${node.name}`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
         )}
-        <span className="truncate">{node.name}</span>
-      </button>
+      </div>
 
       {isDirectory && isOpen && node.children?.length ? (
         <div className="mt-0.5 space-y-0.5">
@@ -222,6 +259,9 @@ function FileTreeNode({
               onToggle={onToggle}
               selectedPath={selectedPath}
               onSelectPath={onSelectPath}
+              defaultExpanded={defaultExpanded}
+              onDeleteFile={onDeleteFile}
+              deleting={deleting}
             />
           ))}
         </div>
@@ -396,6 +436,11 @@ export default function TabFiles({
   rootPathFilter,
   emptyMessage,
   panelTitle,
+  expandedPaths,
+  onToggleExpanded,
+  defaultExpanded,
+  onDeleteFile,
+  deleting,
 }: TabFilesProps) {
   // Filter tree if rootPathFilter is specified (case-insensitive match)
   const filteredTreeNodes = useMemo(() => {
@@ -411,7 +456,9 @@ export default function TabFiles({
   const isEmptyByFilter = rootPathFilter && rootPathFilter.length > 0 && treeResponse && !treeLoading && treeResponse.tree.length > 0 && filteredTreeNodes.length === 0;
   const defaultEmptyMessage = rootPathFilter && rootPathFilter.length > 0 ? '当前项目没有文档目录' : undefined;
 
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [internalExpanded, setInternalExpanded] = useState<Record<string, boolean>>({});
+  const isControlled = expandedPaths !== undefined;
+  const expanded = isControlled ? expandedPaths : internalExpanded;
   const [refreshSpinning, setRefreshSpinning] = useState(false);
   const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
   const [editingPath, setEditingPath] = useState<string | null>(null);
@@ -469,7 +516,12 @@ export default function TabFiles({
   }, [selectedPath, firstFilePath, onSelectPath]);
 
   const toggleExpanded = (pathValue: string) => {
-    setExpanded((prev) => ({ ...prev, [pathValue]: !(prev[pathValue] ?? true) }));
+    const currentIsOpen = expanded[pathValue] ?? defaultExpanded ?? true;
+    if (isControlled && onToggleExpanded) {
+      onToggleExpanded(pathValue, !currentIsOpen);
+    } else {
+      setInternalExpanded((prev) => ({ ...prev, [pathValue]: !currentIsOpen }));
+    }
   };
 
   return (
@@ -532,6 +584,9 @@ export default function TabFiles({
                     onToggle={toggleExpanded}
                     selectedPath={selectedPath}
                     onSelectPath={onSelectPath}
+                    defaultExpanded={defaultExpanded}
+                    onDeleteFile={onDeleteFile}
+                    deleting={deleting}
                   />
                 ))}
               </div>

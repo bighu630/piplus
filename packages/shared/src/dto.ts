@@ -151,6 +151,12 @@ export type SessionFileSaveResponseDTO = {
   size: number;
 };
 
+export type SessionFileDeleteResponseDTO = {
+  session_id: string;
+  path: string;
+  result: 'deleted';
+};
+
 export type SessionContextUsageDTO = {
   session_id: string;
   tokens: number | null;

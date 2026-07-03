@@ -12,7 +12,7 @@ import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
 import { createAuditService, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
-import { readdir, readFile, appendFile, access, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, appendFile, access, stat, writeFile, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -843,6 +843,47 @@ export function registerSessionRoutes(app: Hono) {
 
     await writeFile(absolutePath, content, 'utf8');
     return c.json({ session_id: sessionId, path: relativePath, size: contentBytes.byteLength });
+  });
+
+  /**
+   * DELETE /api/v1/sessions/{sessionId}/files/content
+   * Deletes a file. Request body: { path: string }
+   */
+  app.delete('/api/v1/sessions/:sessionId/files/content', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const relativePath = String((body as { path?: string }).path ?? '').trim();
+
+    if (!relativePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'File path is required' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    const absolutePath = resolveSafeFilePath(cwd, relativePath);
+    if (!absolutePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Path is outside project root' } }, 400);
+    }
+
+    const pathSegments = absolutePath.replace(cwd, '').split(/[/\\]/).filter(Boolean);
+    const hasIgnoredSegment = pathSegments.some((seg) => IGNORED_ENTRY_NAMES.has(seg));
+    if (hasIgnoredSegment) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Cannot delete from ignored directories (.git, node_modules, etc.)' } }, 400);
+    }
+
+    const fileStat = await stat(absolutePath).catch(() => null);
+    if (!fileStat) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'File not found' } }, 404);
+    }
+    if (fileStat.isDirectory()) {
+      return c.json({ error: { code: 'IS_DIRECTORY', message: 'Cannot delete a directory' } }, 400);
+    }
+
+    await unlink(absolutePath);
+    return c.json({ session_id: sessionId, path: relativePath, result: 'deleted' });
   });
 
   app.get('/api/v1/sessions/:sessionId/git-diff', async (c) => {

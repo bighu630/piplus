@@ -54,6 +54,7 @@ import {
   useSetNativeProviderApiKeyMutation,
   useUpdateSessionTitleMutation,
   useSaveSessionFileContentMutation,
+  useDeleteSessionFileMutation,
   useProjectRoleModels,
   useSetProjectRoleModelsMutation,
   usePackages,
@@ -339,6 +340,8 @@ export default function App() {
   const gitDiffQuery = useSessionGitDiff(activeTab === 'diff' ? selectedSessionId : null);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [selectedDocePath, setSelectedDocePath] = useState<string | null>(null);
+  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
+  const [expandedDoce, setExpandedDoce] = useState<Record<string, boolean>>({});
   const isFileOrDoce = activeTab === 'files' || activeTab === 'doce';
   const fileTreeQuery = useSessionFileTree(isFileOrDoce ? selectedSessionId : null);
   const fileContentQuery = useSessionFileContent(activeTab === 'files' ? selectedSessionId : null, activeTab === 'files' ? selectedFilePath : null);
@@ -394,6 +397,8 @@ export default function App() {
     // per-session state survives session switches and is keyed by sessionId.
     setSelectedFilePath(null);
     setSelectedDocePath(null);
+    setExpandedFiles({});
+    setExpandedDoce({});
     setEditingTitle(false);
     setEditTitleValue('');
   }, [selectedSessionId]);
@@ -842,6 +847,20 @@ export default function App() {
   const updateTitleMut = useUpdateSessionTitleMutation();
   const saveFileContentMut = useSaveSessionFileContentMutation(isFileOrDoce ? selectedSessionId : null);
   const savingFile = saveFileContentMut.isPending;
+  const deleteFileMut = useDeleteSessionFileMutation(isFileOrDoce ? selectedSessionId : null);
+  const deletingFile = deleteFileMut.isPending;
+  
+  const handleDeleteFile = useCallback(async (path: string) => {
+    if (!selectedSessionId) return;
+    // If the deleted file is currently selected in either tab, clear the selection
+    if (selectedFilePath === path) setSelectedFilePath(null);
+    if (selectedDocePath === path) setSelectedDocePath(null);
+    try {
+      await deleteFileMut.mutateAsync({ path });
+    } catch {
+      // Error is surfaced via the mutation state; no need to alert here
+    }
+  }, [selectedSessionId, selectedFilePath, selectedDocePath, deleteFileMut]);
   
   const handleSaveFileContent = useCallback(async (path: string, content: string) => {
     if (!selectedSessionId) return;
@@ -1384,6 +1403,10 @@ export default function App() {
                   onRefresh={() => { void fileTreeQuery.refetch(); }}
                   onSaveContent={handleSaveFileContent}
                   saving={savingFile}
+                  expandedPaths={expandedFiles}
+                  onToggleExpanded={(path, isOpen) => setExpandedFiles(prev => ({ ...prev, [path]: isOpen }))}
+                  onDeleteFile={handleDeleteFile}
+                  deleting={deletingFile}
                 />
               )}
               {activeTab === 'doce' && (
@@ -1401,6 +1424,11 @@ export default function App() {
                   saving={savingFile}
                   rootPathFilter={['doce', 'docs', 'doc']}
                   panelTitle="Doce"
+                  expandedPaths={expandedDoce}
+                  onToggleExpanded={(path, isOpen) => setExpandedDoce(prev => ({ ...prev, [path]: isOpen }))}
+                  defaultExpanded={true}
+                  onDeleteFile={handleDeleteFile}
+                  deleting={deletingFile}
                 />
               )}
             </>

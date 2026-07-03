@@ -8,6 +8,7 @@ import type {
   SessionFileTreeResponseDTO,
   SessionFileContentResponseDTO,
   SessionFileSaveResponseDTO,
+  SessionFileDeleteResponseDTO,
   ProjectTodoDTO,
 } from '@piplus/shared';
 
@@ -205,6 +206,13 @@ export function saveSessionFileContent(sessionId: string, path: string, content:
   return request<SessionFileSaveResponseDTO>(`/api/v1/sessions/${sessionId}/files/content`, {
     method: 'PUT',
     body: JSON.stringify({ path, content }),
+  });
+}
+
+export function deleteSessionFile(sessionId: string, path: string) {
+  return request<SessionFileDeleteResponseDTO>(`/api/v1/sessions/${sessionId}/files/content`, {
+    method: 'DELETE',
+    body: JSON.stringify({ path }),
   });
 }
 
