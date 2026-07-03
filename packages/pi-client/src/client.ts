@@ -100,6 +100,86 @@ const BUILTIN_COMMANDS: PiSlashCommandInfo[] = [
   { name: 'active-tools', description: '显示当前激活的工具', source: 'extension' },
 ];
 
+/** Check if a message should be treated as a slash command */
+function isSlashCommandMessage(content: string): boolean {
+  return /^\s*\//.test(content);
+}
+
+function parseSlashCommand(content: string): { name: string; args: string } {
+  const match = content.trim().match(/^\/(\S+)(?:\s+(.*))?$/);
+  if (!match) return { name: '', args: '' };
+  return { name: match[1], args: (match[2] || '').trim() };
+}
+
+/** Execute a builtin slash command and return the response text */
+async function executeBuiltinCommand(
+  name: string,
+  args: string,
+  sessionId: string,
+  session: ReturnType<typeof runtimeRegistry.get>,
+): Promise<string | null> {
+  const info = session;
+  switch (name) {
+    case 'help': {
+      const cmds = info?.commands.length ? info.commands : BUILTIN_COMMANDS;
+      const lines = cmds.map((c) => `  /${c.name} — ${c.description || ''}`);
+      return `可用命令：\n${lines.join('\n')}`;
+    }
+    case 'model': {
+      if (info?.model) {
+        let text = `当前模型：${info.model.label} (${info.model.provider}/${info.model.id})`;
+        if (info.agentSession) {
+          const thinking = info.agentSession.thinkingLevel;
+          text += `\n思考层级：${thinking}`;
+          const ctx = info.agentSession.getContextUsage();
+          if (ctx) text += `\n上下文用量：${ctx.tokens ?? '?'} / ${ctx.contextWindow} (${ctx.percent ?? '?'}%)`;
+        }
+        return text;
+      }
+      return '未设置模型。';
+    }
+    case 'session':
+      return `会话 ID：${sessionId}`;
+    case 'stats': {
+      if (info?.agentSession) {
+        try {
+          const stats = info.agentSession.getSessionStats();
+          return [
+            `消息数：${stats.totalMessages}`,
+            `  - 用户消息：${stats.userMessages}`,
+            `  - 助手消息：${stats.assistantMessages}`,
+            `  - 工具调用：${stats.toolCalls}`,
+            `  - 工具结果：${stats.toolResults}`,
+            `Token 用量：${stats.tokens.total.toLocaleString()}`,
+            `  - 输入：${stats.tokens.input.toLocaleString()}`,
+            `  - 输出：${stats.tokens.output.toLocaleString()}`,
+            `费用：$${stats.cost.toFixed(4)}`,
+            stats.contextUsage
+              ? `上下文：${stats.contextUsage.tokens ?? '?'} / ${stats.contextUsage.contextWindow} (${stats.contextUsage.percent ?? '?'}%)`
+              : '',
+          ].filter(Boolean).join('\n');
+        } catch {
+          return '获取统计信息失败。';
+        }
+      }
+      return '会话统计暂不可用（runtime 未连接）。';
+    }
+    case 'compact': {
+      if (info?.agentSession) {
+        try {
+          await info.agentSession.compact();
+          return '上下文已压缩。';
+        } catch {
+          return '压缩失败，请稍后重试。';
+        }
+      }
+      return '无法压缩（runtime 未连接）。';
+    }
+    default:
+      return null; // Unknown command — let agentSession handle it
+  }
+}
+
 function collectCommands(agentSession: any): PiSlashCommandInfo[] {
   const commands: PiSlashCommandInfo[] = [...BUILTIN_COMMANDS];
 
@@ -331,6 +411,25 @@ export function createPiClient(): PiClient {
     async sendMessage(sessionId, content, options): Promise<PiRunAccepted> {
       const session = getOrCreateSession(sessionId);
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
+
+      // Intercept slash commands — execute locally, don't send to LLM
+      if (content && isSlashCommandMessage(content)) {
+        const { name, args } = parseSlashCommand(content);
+        if (name) {
+          const result = await executeBuiltinCommand(name, args, sessionId, session);
+          if (result !== null) {
+            console.log('[pi-client] sendMessage → slash command executed', { sessionId, command: name });
+            for (const listener of session.listeners) {
+              await listener({ type: 'message_start', sessionId, runId });
+              await listener({ type: 'text_delta', sessionId, runId, delta: result });
+              await listener({ type: 'message_end', sessionId, runId });
+            }
+            return { sessionId, runId };
+          }
+          // Unknown builtin command — let agentSession handle it (may be extension command)
+          console.log('[pi-client] sendMessage → unknown command, passing to agentSession', { sessionId, command: name });
+        }
+      }
 
       if (session.agentSession) {
         if (session.prompt && !session.promptSent) {
