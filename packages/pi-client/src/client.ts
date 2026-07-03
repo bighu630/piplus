@@ -321,7 +321,12 @@ export function createPiClient(): PiClient {
       return { sessionId: session.sessionId, locator, model: active.model };
     },
     async restoreRuntime(sessionId, locator, cwd) {
-      const runtimeCwd = cwd ?? runtimeRegistry.get(sessionId)?.cwd ?? process.cwd();
+      const existing = runtimeRegistry.get(sessionId);
+      if (existing?.agentSession) {
+        console.log('[pi-client] restoreRuntime skipped — runtime already alive', { sessionId });
+        return;
+      }
+      const runtimeCwd = cwd ?? existing?.cwd ?? process.cwd();
       console.log('[pi-client] restoreRuntime start', { sessionId, locatorFile: locator.sessionFile, cwd: runtimeCwd });
       const sessionDir = dirname(locator.sessionFile);
       const expectedSessionDir = SessionManager.create(runtimeCwd).getSessionDir();
