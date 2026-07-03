@@ -534,6 +534,7 @@ export default function App() {
               setPendingUserMessages([]);
               Promise.all([
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
+                queryClient.invalidateQueries({ queryKey: ['session', 'commands', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['tree'] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', selectedSessionId] }),
