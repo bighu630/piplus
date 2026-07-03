@@ -95,7 +95,14 @@ export async function markSessionIdle(db: RoleManagerDb, sessionId: string, time
 
 export async function startSessionRun(input: StartSessionRunInput) {
   const startedAt = input.startedAt ?? new Date();
-  const safetyTimeoutMs = input.safetyTimeoutMs ?? 10 * 60 * 1000;
+  const safetyTimeoutMs = input.safetyTimeoutMs ?? (() => {
+    const raw = typeof process !== 'undefined' ? process.env.PIPLUS_SESSION_TIMEOUT_MS?.trim() : undefined;
+    if (raw !== undefined && raw !== '') {
+      const n = Number(raw);
+      if (Number.isFinite(n)) return n;
+    }
+    return 10 * 60 * 1000;
+  })();
 
   // Cancel any pending idle cleanup timer for this session
   clearIdleRuntimeCleanup(input.sessionId);
@@ -236,11 +243,6 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
   const resetTimeout = () => {
     if (!timeoutHandle || cleanupDone) return;
-    // Only reset if less than 5 minutes remain on the countdown.
-    // During active streaming this avoids excessive
-    // clearTimeout/setTimeout calls while still extending near-expiry.
-    const remaining = safetyTimeoutMs - (Date.now() - (timeoutStartedAt ?? Date.now()));
-    if (remaining > 5 * 60_000) return;
     clearTimeout(timeoutHandle);
     timeoutStartedAt = Date.now();
     timeoutHandle = setTimeout(() => {
