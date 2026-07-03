@@ -515,11 +515,38 @@ export function registerSessionRoutes(app: Hono) {
 
         return c.json({ accepted: true, session_id: sessionId, run_id: `cmd_${crypto.randomUUID().slice(0, 8)}`, message_id: assistantMsgId }, 202);
       }
-      // Unknown command — fall through to normal agent handling, but mark as slash_command
+      // Unknown command — return direct response, don't send to agent
+      const fallbackResult = `未知命令：/${content.trim().replace(/^\//, '')}\n输入 /help 查看可用命令。`;
+      const now2 = nextMessageTime();
+      const userMsgId2 = randomId('message');
+      const assistantMsgId2 = randomId('message');
+
+      await db.insert(messages).values({
+        id: userMsgId2, sessionId, piMessageId: null, messageKind: 'slash_command',
+        sourceSessionId: null, role: 'user', contentText: content,
+        contentBlocksJson: null, contentVersion: 1, createdAt: now2,
+      } as any);
+
+      const responseNow2 = nextMessageTime();
+      await db.insert(messages).values({
+        id: assistantMsgId2, sessionId, piMessageId: null, messageKind: 'slash_command',
+        sourceSessionId: null, role: 'assistant', contentText: fallbackResult,
+        contentBlocksJson: null, contentVersion: 1, createdAt: responseNow2,
+      } as any);
+
+      log.info('unknown slash command, returned fallback', { sessionId, content });
+      await createAuditService(db).record(userId, "message.sent", "session", sessionId, { message_id: userMsgId2 });
+
+      socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, phase: 'start' }));
+      socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, delta: fallbackResult, phase: 'delta' }));
+      socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, phase: 'complete' }));
+
+      socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
+      socketHub.broadcast(createEvent('tree.changed', { project_id: session.projectId }, { project_id: session.projectId }));
+
+      return c.json({ accepted: true, session_id: sessionId, run_id: `cmd_${crypto.randomUUID().slice(0, 8)}`, message_id: assistantMsgId2 }, 202);
     }
 
-    const isSlashCommand = content && /^\s*\//.test(content);
-    let streamResponseText = ''; // accumulate agent response for slash commands
     const currentModel = await resolveSessionModelWithCapabilities(piClient, session);
     if (attachmentParse.images.length > 0 && !modelSupportsImageInput(currentModel)) {
       return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
@@ -536,7 +563,7 @@ export function registerSessionRoutes(app: Hono) {
       id: messageId,
       sessionId,
       piMessageId: null,
-      messageKind: isSlashCommand ? 'slash_command' : 'normal',
+      messageKind: 'normal',
       sourceSessionId: null,
       role: 'user',
       contentText: content,
@@ -567,23 +594,6 @@ export function registerSessionRoutes(app: Hono) {
       images: attachmentParse.images,
       startedAt: now,
       onStreamEvent: async (event) => {
-        // Capture assistant response for slash commands to save to DB
-        if (isSlashCommand) {
-          if (event.type === 'text_delta') {
-            streamResponseText += event.delta;
-          } else if (event.type === 'message_end') {
-            const finalText = streamResponseText.trim();
-            if (finalText) {
-              const responseMsgId = randomId('message');
-              await db.insert(messages).values({
-                id: responseMsgId, sessionId, piMessageId: null, messageKind: 'slash_command',
-                sourceSessionId: null, role: 'assistant', contentText: finalText,
-                contentBlocksJson: null, contentVersion: 1, createdAt: nextMessageTime(),
-              } as any);
-            }
-            streamResponseText = '';
-          }
-        }
         for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
           socketHub.sendToSession(sessionId, frame);
         }
