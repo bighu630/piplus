@@ -216,6 +216,16 @@ export function deleteSessionFile(sessionId: string, path: string) {
   });
 }
 
+export type CommandInfo = {
+  name: string;
+  description?: string;
+  source: 'extension' | 'prompt' | 'skill';
+};
+
+export function getSessionCommands(sessionId: string) {
+  return request<{ commands: CommandInfo[] }>(`/api/v1/sessions/${sessionId}/commands`);
+}
+
 export type GitActionResult = {
   session_id: string;
   cwd: string;

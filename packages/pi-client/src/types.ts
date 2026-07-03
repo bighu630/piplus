@@ -2,6 +2,12 @@ import type { PiSessionLocator } from './locator';
 
 export type PiMessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
+export type PiSlashCommandInfo = {
+  name: string;
+  description?: string;
+  source: 'extension' | 'prompt' | 'skill';
+};
+
 export type PiToolDef = {
   name: string;
   description: string;
@@ -127,6 +133,7 @@ export type PiClient = {
   ): Promise<void>;
   getContextUsage(sessionId: string, locator: PiSessionLocator): Promise<PiContextUsage | null>;
   compactSession(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<void>;
+  getCommands(sessionId: string): Promise<PiSlashCommandInfo[]>;
   registerTools?(tools: PiToolDef[]): Promise<void>;
 
   /**

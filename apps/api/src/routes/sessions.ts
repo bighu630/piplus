@@ -1180,6 +1180,36 @@ export function registerSessionRoutes(app: Hono) {
     return c.json({ session_id: sessionId, accepted: true }, 202);
   });
 
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/commands:
+   *   get:
+   *     summary: 获取会话可用的 slash commands
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 返回当前会话可用的 slash commands，包括扩展命令、prompt templates 和 skills。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/commands', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const commands = await piClient.getCommands(sessionId);
+    return c.json({ commands });
+  });
+
   registerWebSocketRoutes(app);
 }
 
@@ -1268,4 +1298,5 @@ export function registerSessionMutationRoutes(app: Hono) {
       pinned_at: updatedPinnedAt ? new Date(updatedPinnedAt).toISOString() : null,
     });
   });
+
 }

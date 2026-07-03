@@ -87,6 +87,9 @@ function makeRecordingPiClient() {
     async compactSession() {
       return;
     },
+    async getCommands() {
+      return [];
+    },
   };
 }
 
