@@ -490,7 +490,7 @@ export function registerSessionRoutes(app: Hono) {
         const assistantMsgId = randomId('message');
 
         await db.insert(messages).values({
-          id: userMsgId, sessionId, piMessageId: null, messageKind: 'normal',
+          id: userMsgId, sessionId, piMessageId: null, messageKind: 'slash_command',
           sourceSessionId: null, role: 'user', contentText: content,
           contentBlocksJson: null, contentVersion: 1, createdAt: now,
         } as any);
