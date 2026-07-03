@@ -13,3 +13,4 @@ pi.db
 /piplus.sqlite-shm
 /piplus.sqlite-wal
 .worktrees
+tsconfig.tsbuildinfo
