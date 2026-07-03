@@ -515,9 +515,11 @@ export function registerSessionRoutes(app: Hono) {
 
         return c.json({ accepted: true, session_id: sessionId, run_id: `cmd_${crypto.randomUUID().slice(0, 8)}`, message_id: assistantMsgId }, 202);
       }
-      // Unknown command — fall through to normal agent handling
+      // Unknown command — fall through to normal agent handling, but mark as slash_command
     }
 
+    const isSlashCommand = content && /^\s*\//.test(content);
+    let streamResponseText = ''; // accumulate agent response for slash commands
     const currentModel = await resolveSessionModelWithCapabilities(piClient, session);
     if (attachmentParse.images.length > 0 && !modelSupportsImageInput(currentModel)) {
       return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
@@ -534,7 +536,7 @@ export function registerSessionRoutes(app: Hono) {
       id: messageId,
       sessionId,
       piMessageId: null,
-      messageKind: 'normal',
+      messageKind: isSlashCommand ? 'slash_command' : 'normal',
       sourceSessionId: null,
       role: 'user',
       contentText: content,
@@ -565,6 +567,23 @@ export function registerSessionRoutes(app: Hono) {
       images: attachmentParse.images,
       startedAt: now,
       onStreamEvent: async (event) => {
+        // Capture assistant response for slash commands to save to DB
+        if (isSlashCommand) {
+          if (event.type === 'text_delta') {
+            streamResponseText += event.delta;
+          } else if (event.type === 'message_end') {
+            const finalText = streamResponseText.trim();
+            if (finalText) {
+              const responseMsgId = randomId('message');
+              await db.insert(messages).values({
+                id: responseMsgId, sessionId, piMessageId: null, messageKind: 'slash_command',
+                sourceSessionId: null, role: 'assistant', contentText: finalText,
+                contentBlocksJson: null, contentVersion: 1, createdAt: nextMessageTime(),
+              } as any);
+            }
+            streamResponseText = '';
+          }
+        }
         for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
           socketHub.sendToSession(sessionId, frame);
         }
