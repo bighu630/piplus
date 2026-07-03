@@ -1226,10 +1226,17 @@ export default function TabChat({
               </div>
             )}
             {/* Slash command dropdown */}
-            {showCommands && filteredCommands.length > 0 && (
+            {showCommands && (
               <div className="relative">
                 <div className="absolute bottom-full left-0 right-0 mb-1 z-50 max-h-48 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg">
-                  {filteredCommands.map((cmd, idx) => (
+                  {commandsQuery.isLoading ? (
+                    <div className="px-3 py-2 text-sm text-slate-400 dark:text-slate-500">加载命令…</div>
+                  ) : commandsQuery.isError ? (
+                    <div className="px-3 py-2 text-sm text-red-500">命令加载失败</div>
+                  ) : filteredCommands.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-slate-400 dark:text-slate-500">无匹配命令</div>
+                  ) : (
+                    filteredCommands.map((cmd, idx) => (
                     <button
                       key={cmd.name}
                       type="button"
@@ -1263,7 +1270,8 @@ export default function TabChat({
                         {cmd.source}
                       </span>
                     </button>
-                  ))}
+                  ))
+                  )}
                 </div>
               </div>
             )}
