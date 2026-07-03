@@ -117,17 +117,12 @@ async function executeBuiltinCommand(
   args: string,
   sessionId: string,
   session: ReturnType<typeof runtimeRegistry.get>,
+  allCommands: PiSlashCommandInfo[],
 ): Promise<string | null> {
   const info = session;
   switch (name) {
     case 'help': {
-      const dynamic = info?.commands ?? [];
-      const seen = new Set<string>();
-      const all: PiSlashCommandInfo[] = [];
-      for (const cmd of [...BUILTIN_COMMANDS, ...dynamic]) {
-        if (!seen.has(cmd.name)) { seen.add(cmd.name); all.push(cmd); }
-      }
-      const lines = all.map((c) => `  /${c.name} — ${c.description || ''}`);
+      const lines = allCommands.map((c) => `  /${c.name} — ${c.description || ''}`);
       return `可用命令：\n${lines.join('\n')}`;
     }
     case 'model': {
@@ -839,7 +834,14 @@ export function createPiClient(): PiClient {
       const session = runtimeRegistry.get(sessionId) ?? null;
       const { name, args } = parseSlashCommand(content);
       if (!name) return null;
-      return executeBuiltinCommand(name, args, sessionId, session as any);
+      // Merge builtins + dynamic for /help display
+      const dynamic = session?.commands ?? [];
+      const seen = new Set<string>();
+      const allCommands: PiSlashCommandInfo[] = [];
+      for (const cmd of [...BUILTIN_COMMANDS, ...dynamic]) {
+        if (!seen.has(cmd.name)) { seen.add(cmd.name); allCommands.push(cmd); }
+      }
+      return executeBuiltinCommand(name, args, sessionId, session as any, allCommands);
     },
 
     async registerTools(_tools: PiToolDef[]) {

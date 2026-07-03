@@ -585,6 +585,6 @@ export function useSessionCommands(sessionId: string | null) {
       return res.commands;
     },
     enabled: Boolean(sessionId),
-    staleTime: 60_000,
+    staleTime: 0,
   });
 }
