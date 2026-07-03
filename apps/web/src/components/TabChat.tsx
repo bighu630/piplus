@@ -1278,8 +1278,8 @@ export default function TabChat({
                 const textarea = e.target;
                 const cursorPos = textarea.selectionStart;
                 const textBeforeCursor = value.slice(0, cursorPos);
-                // Only show commands when / is the first character and no other text before cursor
-                if (textBeforeCursor.startsWith('/') && !textBeforeCursor.includes('\n')) {
+                // Only show commands when / is the first character and no newlines in current line
+                if (textBeforeCursor.startsWith('/') && !/\n/.test(textBeforeCursor)) {
                   const filter = textBeforeCursor.slice(1);
                   setCommandFilter(filter);
                   setShowCommands(true);

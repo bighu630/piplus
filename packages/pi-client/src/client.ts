@@ -89,8 +89,19 @@ function normalizeImages(images: PiImageInput[] | undefined) {
   }));
 }
 
+const BUILTIN_COMMANDS: PiSlashCommandInfo[] = [
+  { name: 'help', description: '显示帮助信息', source: 'extension' },
+  { name: 'model', description: '显示 / 切换模型', source: 'extension' },
+  { name: 'compact', description: '压缩上下文', source: 'extension' },
+  { name: 'session', description: '查看会话信息', source: 'extension' },
+  { name: 'stats', description: '查看会话统计', source: 'extension' },
+  { name: 'thinking', description: '显示 / 切换思考层级', source: 'extension' },
+  { name: 'reload', description: '重新加载扩展', source: 'extension' },
+  { name: 'active-tools', description: '显示当前激活的工具', source: 'extension' },
+];
+
 function collectCommands(agentSession: any): PiSlashCommandInfo[] {
-  const commands: PiSlashCommandInfo[] = [];
+  const commands: PiSlashCommandInfo[] = [...BUILTIN_COMMANDS];
 
   // Extension commands
   try {
@@ -717,7 +728,8 @@ export function createPiClient(): PiClient {
 
     async getCommands(sessionId) {
       const session = runtimeRegistry.get(sessionId);
-      return session?.commands ?? [];
+      const cmds = session?.commands ?? [];
+      return cmds.length > 0 ? cmds : BUILTIN_COMMANDS;
     },
 
     async registerTools(_tools: PiToolDef[]) {
