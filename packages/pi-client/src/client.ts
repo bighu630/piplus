@@ -419,6 +419,28 @@ export function createPiClient(): PiClient {
           const result = await executeBuiltinCommand(name, args, sessionId, session);
           if (result !== null) {
             console.log('[pi-client] sendMessage → slash command executed', { sessionId, command: name });
+            // Persist user command + assistant response to session file
+            try {
+              const mgr = SessionManager.open(session.locator.sessionFile);
+              mgr.appendMessage({
+                role: 'user',
+                content: content.trim(),
+                timestamp: Date.now(),
+              });
+              mgr.appendMessage({
+                role: 'assistant',
+                content: [{ type: 'text', text: result }],
+                api: 'slash_command',
+                provider: 'slash_command',
+                model: 'slash_command',
+                usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+                stopReason: 'stop',
+                timestamp: Date.now(),
+              });
+            } catch (persistErr) {
+              console.warn('[pi-client] sendMessage → failed to persist command response', { sessionId, error: String(persistErr) });
+            }
+            // Emit to stream listeners for real-time UI update
             for (const listener of session.listeners) {
               await listener({ type: 'message_start', sessionId, runId });
               await listener({ type: 'text_delta', sessionId, runId, delta: result });
