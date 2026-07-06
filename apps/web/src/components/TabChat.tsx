@@ -1075,7 +1075,7 @@ export default function TabChat({
             </div>
           )}
           {thinkingLevelOptions && thinkingLevelOptions.length > 0 && onThinkingLevelSelect && (
-            <div className="relative" style={{ minWidth: 110 }}>
+            <div className="relative" style={{ minWidth: 65 }}>
               <Select
                 value={thinkingLevelValue ?? ''}
                 onChange={onThinkingLevelSelect}
@@ -1092,7 +1092,7 @@ export default function TabChat({
                 }))}
                 placeholder="思考层级"
                 dropdownMaxHeight="max-h-56"
-                dropdownMinWidth="140px"
+                dropdownMinWidth="85px"
                 className="w-full"
                 searchable={false}
               />
