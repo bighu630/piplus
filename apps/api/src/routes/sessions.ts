@@ -481,7 +481,7 @@ export function registerSessionRoutes(app: Hono) {
       return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
     }
 
-    // Intercept slash commands — execute locally, don't call agent
+    // Intercept slash commands — execute locally if recognized, otherwise send to agent
     if (content && /^\s*\//.test(content)) {
       const commandResult = await piClient.executeCommand(sessionId, content);
       if (commandResult !== null) {
@@ -515,36 +515,8 @@ export function registerSessionRoutes(app: Hono) {
 
         return c.json({ accepted: true, session_id: sessionId, run_id: `cmd_${crypto.randomUUID().slice(0, 8)}`, message_id: assistantMsgId }, 202);
       }
-      // Unknown command — return direct response, don't send to agent
-      const fallbackResult = `未知命令：/${content.trim().replace(/^\//, '')}\n输入 /help 查看可用命令。`;
-      const now2 = nextMessageTime();
-      const userMsgId2 = randomId('message');
-      const assistantMsgId2 = randomId('message');
-
-      await db.insert(messages).values({
-        id: userMsgId2, sessionId, piMessageId: null, messageKind: 'slash_command',
-        sourceSessionId: null, role: 'user', contentText: content,
-        contentBlocksJson: null, contentVersion: 1, createdAt: now2,
-      } as any);
-
-      const responseNow2 = nextMessageTime();
-      await db.insert(messages).values({
-        id: assistantMsgId2, sessionId, piMessageId: null, messageKind: 'slash_command',
-        sourceSessionId: null, role: 'assistant', contentText: fallbackResult,
-        contentBlocksJson: null, contentVersion: 1, createdAt: responseNow2,
-      } as any);
-
-      log.info('unknown slash command, returned fallback', { sessionId, content });
-      await createAuditService(db).record(userId, "message.sent", "session", sessionId, { message_id: userMsgId2 });
-
-      socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, phase: 'start' }));
-      socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, delta: fallbackResult, phase: 'delta' }));
-      socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, phase: 'complete' }));
-
-      socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
-      socketHub.broadcast(createEvent('tree.changed', { project_id: session.projectId }, { project_id: session.projectId }));
-
-      return c.json({ accepted: true, session_id: sessionId, run_id: `cmd_${crypto.randomUUID().slice(0, 8)}`, message_id: assistantMsgId2 }, 202);
+      // Unknown command — fall through, send to agent for processing
+      log.info('unknown slash command, forwarding to agent', { sessionId, content });
     }
 
     const currentModel = await resolveSessionModelWithCapabilities(piClient, session);
