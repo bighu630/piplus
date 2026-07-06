@@ -698,6 +698,8 @@ export function createPiClient(): PiClient {
         provider: m.provider,
         id: m.id,
         label: m.name ?? m.id,
+        input: m.input as string[] | undefined,
+        thinkingLevelMap: m.thinkingLevelMap as Record<string, string | null> | undefined,
       }));
     },
 

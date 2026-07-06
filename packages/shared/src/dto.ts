@@ -12,7 +12,7 @@ export type ProjectDTO = {
   last_activity_at: string;
   created_at: string;
   sessions: SessionTreeNodeDTO[];
-  role_default_models: Record<string, { provider: string; id: string } | null>;
+  role_default_models: Record<string, { provider: string; id: string; thinkingLevel?: string | null } | null>;
 };
 
 export type SessionTreeNodeDTO = {

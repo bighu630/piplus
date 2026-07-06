@@ -430,7 +430,7 @@ export function useProjectRoleModels(projectId: string | null) {
 export function useSetProjectRoleModelsMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ projectId, models }: { projectId: string; models: Record<string, { provider: string; id: string } | null> }) =>
+    mutationFn: ({ projectId, models }: { projectId: string; models: Record<string, import('./api').RoleModelEntry | null> }) =>
       setProjectRoleModels(projectId, models),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['project', 'role-models', variables.projectId] });

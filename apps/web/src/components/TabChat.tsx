@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import type { ChangeEvent, ClipboardEvent } from 'react';
 import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO } from '@piplus/shared';
 import type { SessionMessageImageAttachment } from '../lib/api';
 import ReactMarkdown from 'react-markdown';
@@ -9,7 +8,6 @@ import rehypeHighlight from 'rehype-highlight';
 import {
   Copy,
   Check,
-  ArrowUp,
   ScrollText,
   LoaderCircle,
   OctagonX,
@@ -19,15 +17,12 @@ import {
   Terminal,
   Archive,
   GitMerge,
-  ImagePlus,
-  X,
 } from 'lucide-react';
 import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
 import Select from './Select';
-import { useSessionContextUsage, useSessionCommands } from '../lib/hooks';
-import { fuzzyScore } from '../lib/fuzzy';
-import { loadSessionDraft, saveSessionDraft } from '../lib/session-drafts';
+import { useSessionContextUsage } from '../lib/hooks';
+import ChatInput from './ChatInput';
 
 interface ModelOption {
   provider: string;
@@ -142,39 +137,9 @@ export default function TabChat({
   runtimeErrors,
   isMobile,
 }: TabChatProps) {
-  const [draft, setDraft] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
-  const [attachments, setAttachments] = useState<SessionMessageImageAttachment[]>([]);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<ChatImageContentBlockDTO | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // Slash command completion state
-  const [showCommands, setShowCommands] = useState(false);
-  const [commandFilter, setCommandFilter] = useState('');
-  const [selectedCommandIdx, setSelectedCommandIdx] = useState(0);
-  const commandsQuery = useSessionCommands(selectedSessionId ?? null);
-  const availableCommands = commandsQuery.data ?? [];
-
-  // Filtered and scored command list
-  const filteredCommands = (() => {
-    if (!commandFilter) return availableCommands;
-    const q = commandFilter.toLowerCase();
-    return availableCommands
-      .map((cmd) => ({ cmd, score: fuzzyScore(q, cmd.name) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .map((item) => item.cmd);
-  })();
-
-  const closeCommands = () => {
-    setShowCommands(false);
-    setCommandFilter('');
-    setSelectedCommandIdx(0);
-  };
-  const commandJustSelectedRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -183,7 +148,6 @@ export default function TabChat({
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
   const sessionJustSwitchedRef = useRef(false);
   const prevSessionIdRef = useRef<string | null>(null);
-  const draftRef = useRef(draft);
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
 
@@ -197,62 +161,9 @@ export default function TabChat({
     isNearBottomRef.current = true;
   };
 
-  const canSendImages = currentModelSupportsImages !== false;
-  const allowedImageMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-
   const imageBlockToDataUrl = (block: ChatImageContentBlockDTO) => {
     if (!block.data_base64 || !block.mime_type) return block.uri;
     return `data:${block.mime_type};base64,${block.data_base64}`;
-  };
-
-  const fileToAttachment = (file: File): Promise<SessionMessageImageAttachment> => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`读取图片失败：${file.name}`));
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const base64 = result.includes(',') ? result.split(',')[1] : result;
-      if (!base64) {
-        reject(new Error(`读取图片失败：${file.name}`));
-        return;
-      }
-      resolve({
-        type: 'image',
-        mime_type: file.type,
-        data_base64: base64,
-        filename: file.name,
-      });
-    };
-    reader.readAsDataURL(file);
-  });
-
-  const addImageFiles = async (fileList: FileList | File[]) => {
-    const files = Array.from(fileList);
-    if (!files.length) return;
-    if (!canSendImages) {
-      setAttachmentError('当前模型不支持图片输入，请先切换到支持图片的模型。');
-      return;
-    }
-    const imageFiles = files.filter((file) => allowedImageMimeTypes.has(file.type));
-    if (imageFiles.length !== files.length) {
-      setAttachmentError('仅支持 PNG、JPEG、WebP、GIF 图片。');
-      return;
-    }
-    if (attachments.length + imageFiles.length > 4) {
-      setAttachmentError('最多只能添加 4 张图片。');
-      return;
-    }
-    try {
-      const nextAttachments = await Promise.all(imageFiles.map(fileToAttachment));
-      setAttachments((prev) => [...prev, ...nextAttachments]);
-      setAttachmentError(null);
-    } catch (error) {
-      setAttachmentError(error instanceof Error ? error.message : '读取图片失败');
-    }
-  };
-
-  const removeAttachment = (index: number) => {
-    setAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index));
-    setAttachmentError(null);
   };
 
   const imageBlocks = (msg: ChatMessageDTO): ChatImageContentBlockDTO[] =>
@@ -421,33 +332,6 @@ export default function TabChat({
     }
   }, [displayMessages, streamingContent, selectedSessionId]);
 
-  const handleSubmit = async () => {
-    const content = draft.trim();
-    if ((!content && attachments.length === 0) || sending) return;
-    const nextAttachments = attachments;
-    try {
-      await onSend(content, nextAttachments);
-      setDraft('');
-      setAttachments([]);
-      setAttachmentError(null);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      if (/does not support image input/i.test(message)) {
-        setAttachmentError('当前模型不支持图片输入，请切换到支持图片的模型。');
-        return;
-      }
-      if (/unsupported image mime type/i.test(message)) {
-        setAttachmentError('仅支持 PNG、JPEG、WebP、GIF 图片。');
-        return;
-      }
-      if (/at most 4 images are allowed/i.test(message)) {
-        setAttachmentError('最多只能添加 4 张图片。');
-        return;
-      }
-      setAttachmentError(message || '发送失败，请重试。');
-    }
-  };
-
   const handleCopyCode = async (text: string, id: string) => {
     try {
       if (navigator.clipboard?.writeText) {
@@ -469,54 +353,6 @@ export default function TabChat({
       setCopiedId(null);
     }
   };
-
-  // Keep draftRef in sync for cleanup (unmount) and session-switch effects
-  useEffect(() => {
-    draftRef.current = draft;
-  });
-
-  // On session switch: save old draft, load new one, clear attachments
-  useEffect(() => {
-    // Save current draft to old session before switching
-    if (prevSessionIdRef.current && prevSessionIdRef.current !== selectedSessionId) {
-      saveSessionDraft(prevSessionIdRef.current, draftRef.current);
-    }
-
-    // Load saved draft for the new session
-    if (selectedSessionId) {
-      const savedDraft = loadSessionDraft(selectedSessionId);
-      setDraft(savedDraft);
-      // Sync ref immediately (before re-render) so the cleanup effect
-      // on StrictMode unmount doesn't overwrite with the stale '' value.
-      draftRef.current = savedDraft;
-    }
-
-    prevSessionIdRef.current = selectedSessionId;
-
-    // Clear attachments and errors on session switch (existing behavior)
-    setAttachments([]);
-    setAttachmentError(null);
-    setPreviewImage(null);
-  }, [selectedSessionId]);
-
-  // Debounce-save draft to localStorage when it changes
-  useEffect(() => {
-    if (!selectedSessionId) return;
-    const timer = setTimeout(() => {
-      saveSessionDraft(selectedSessionId, draft);
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [draft, selectedSessionId]);
-
-  // Save draft on unmount (e.g. tab switch) — captures latest via refs
-  useEffect(() => {
-    return () => {
-      const sid = prevSessionIdRef.current;
-      if (sid) {
-        saveSessionDraft(sid, draftRef.current);
-      }
-    };
-  }, []);
 
   // 滚动监听：同步更新按钮状态和跟随标记（两者共用同一 clientHeight/3 阈值）
   useEffect(() => {
@@ -1302,267 +1138,18 @@ export default function TabChat({
         </div>
       </div>
 
-      {/* Input area */}
-      <div className="shrink-0 px-4 py-2 md:px-5 bg-slate-50 dark:bg-slate-900">
-        <div className="mx-auto max-w-[900px]">
-          <div className="flex flex-col gap-2">
-            {attachments.length > 0 && (
-              <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/60 p-2">
-                {attachments.map((attachment, index) => (
-                  <div key={`${attachment.filename ?? 'attachment'}-${index}`} className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewImage({
-                        type: 'image',
-                        mime_type: attachment.mime_type,
-                        media_type: attachment.mime_type,
-                        filename: attachment.filename ?? null,
-                        uri: null,
-                        data_base64: attachment.data_base64,
-                      })}
-                      className="block overflow-hidden rounded-lg border border-slate-300 dark:border-slate-600"
-                    >
-                      <img
-                        src={`data:${attachment.mime_type};base64,${attachment.data_base64}`}
-                        alt={attachment.filename ?? `attachment-${index + 1}`}
-                        className="h-16 w-16 object-cover"
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(index)}
-                      className="absolute -right-1.5 -top-1.5 rounded-full bg-slate-900/80 p-1 text-white hover:bg-slate-900 cursor-pointer"
-                      title="移除图片"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* Slash command dropdown */}
-            {showCommands && (
-              <div className="relative">
-                <div className="absolute bottom-full left-0 right-0 mb-1 z-50 max-h-48 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-lg">
-                  {commandsQuery.isLoading ? (
-                    <div className="px-3 py-2 text-sm text-slate-400 dark:text-slate-500">加载命令…</div>
-                  ) : commandsQuery.isError ? (
-                    <div className="px-3 py-2 text-sm text-red-500">命令加载失败</div>
-                  ) : filteredCommands.length === 0 ? (
-                    <div className="px-3 py-2 text-sm text-slate-400 dark:text-slate-500">无匹配命令</div>
-                  ) : (
-                    filteredCommands.map((cmd, idx) => (
-                    <button
-                      key={cmd.name}
-                      type="button"
-                      className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors ${
-                        idx === selectedCommandIdx
-                          ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
-                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                      }`}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        commandJustSelectedRef.current = true;
-                        setDraft(`/${cmd.name} `);
-                        closeCommands();
-                        requestAnimationFrame(() => {
-                          const ta = textareaRef.current;
-                          if (ta) {
-                            ta.focus();
-                            ta.selectionStart = ta.selectionEnd = ta.value.length;
-                          }
-                        });
-                      }}
-                    >
-                      <span className="font-mono font-semibold text-blue-600 dark:text-blue-400 shrink-0">/{cmd.name}</span>
-                      {cmd.description && (
-                        <span className="truncate text-xs text-slate-400 dark:text-slate-500">{cmd.description}</span>
-                      )}
-                      <span className={`ml-auto shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                        cmd.source === 'extension' ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400' :
-                        cmd.source === 'prompt' ? 'bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400' :
-                        'bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400'
-                      }`}>
-                        {cmd.source}
-                      </span>
-                    </button>
-                  ))
-                  )}
-                </div>
-              </div>
-            )}
-            <textarea
-              className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition"
-              disabled={isRunning || sending}
-              ref={textareaRef}
-              onChange={(e) => {
-                const value = e.target.value;
-                setDraft(value);
-                // Skip slash detection if command was just selected
-                if (commandJustSelectedRef.current) {
-                  commandJustSelectedRef.current = false;
-                  return;
-                }
-                // Detect slash command: cursor at start or value starts with /
-                const textarea = e.target;
-                const cursorPos = textarea.selectionStart;
-                const textBeforeCursor = value.slice(0, cursorPos);
-                // Only show commands when / is the first character and no newlines in current line
-                if (textBeforeCursor.startsWith('/') && !/\n/.test(textBeforeCursor)) {
-                  const filter = textBeforeCursor.slice(1);
-                  setCommandFilter(filter);
-                  setShowCommands(true);
-                  setSelectedCommandIdx(0);
-                } else {
-                  closeCommands();
-                }
-              }}
-              onPaste={async (e: ClipboardEvent<HTMLTextAreaElement>) => {
-                const files = Array.from(e.clipboardData.files ?? []);
-                if (!files.some((file) => allowedImageMimeTypes.has(file.type))) return;
-                e.preventDefault();
-                await addImageFiles(files.filter((file) => allowedImageMimeTypes.has(file.type)));
-              }}
-              onKeyDown={(e) => {
-                // Command dropdown keyboard navigation
-                if (showCommands && filteredCommands.length > 0) {
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    setSelectedCommandIdx((prev) => Math.min(prev + 1, filteredCommands.length - 1));
-                    return;
-                  }
-                  if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    setSelectedCommandIdx((prev) => Math.max(prev - 1, 0));
-                    return;
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    closeCommands();
-                    return;
-                  }
-                  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-                    e.preventDefault();
-                    const cmd = filteredCommands[selectedCommandIdx];
-                    if (cmd) {
-                      commandJustSelectedRef.current = true;
-                      setDraft(`/${cmd.name} `);
-                      closeCommands();
-                      // Focus back and move cursor to end
-                      requestAnimationFrame(() => {
-                        const ta = textareaRef.current;
-                        if (ta) {
-                          ta.focus();
-                          ta.selectionStart = ta.selectionEnd = ta.value.length;
-                        }
-                      });
-                    }
-                    return;
-                  }
-                }
-
-                if (e.key !== 'Enter') return;
-
-                if (sendShortcutMode === 'mod_enter') {
-                  // Ctrl/Cmd+Enter 发送，Enter 换行
-                  if (e.metaKey || e.ctrlKey) {
-                    e.preventDefault();
-                    void handleSubmit();
-                    return;
-                  }
-                  // 回车（无修饰键）→ 换行
-                } else {
-                  // Enter 发送，Ctrl/Cmd+Enter 换行（默认）
-                  if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-                    e.preventDefault();
-                    void handleSubmit();
-                    return;
-                  }
-                  // Shift+Enter / Ctrl+Enter → 换行
-                }
-
-                // 在光标处插入换行（跨浏览器可靠方案）
-                e.preventDefault();
-                const textarea = e.target as HTMLTextAreaElement;
-                const start = textarea.selectionStart;
-                const end = textarea.selectionEnd;
-                setDraft((prev) => prev.slice(0, start) + '\n' + prev.slice(end));
-                requestAnimationFrame(() => {
-                  textarea.selectionStart = textarea.selectionEnd = start + 1;
-                });
-              }}
-              placeholder="向当前会话发送消息…"
-              value={draft}
-            />
-            <div className="flex items-center gap-2.5 px-1 flex-wrap">
-              {/* WS connection indicator */}
-              <div className="flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500' : 'bg-red-400'}`} />
-                <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
-                  {wsConnected ? 'WS' : 'WS 离线'}
-                </span>
-              </div>
-              <>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp"
-                  multiple
-                  className="hidden"
-                  onChange={async (e: ChangeEvent<HTMLInputElement>) => {
-                    const files = e.target.files;
-                    if (files) await addImageFiles(files);
-                    e.target.value = '';
-                  }}
-                />
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isRunning || !canSendImages || attachments.length >= 4}
-                    className="flex items-center space-x-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
-                    title={isRunning ? '对话进行中，暂时不能添加图片' : canSendImages ? '添加图片' : '当前模型不支持图片输入'}
-                  >
-                    <ImagePlus className="w-3.5 h-3.5" />
-                    <span>图片</span>
-                  </button>
-                  {(attachmentError || currentModelSupportsImages === false) && (
-                    <span className="text-[10px] text-red-500 dark:text-red-400 font-medium whitespace-nowrap">
-                      {attachmentError ?? '当前模型不支持图片输入'}
-                    </span>
-                  )}
-                </div>
-              </>
-              {!isRunning && (
-                <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">
-                  {isMobile
-                    ? '支持粘贴图片，最多 4 张'
-                    : sendShortcutMode === 'mod_enter'
-                      ? 'Ctrl/Cmd+Enter 发送 · 支持粘贴图片，最多 4 张'
-                      : 'Enter 发送 · Ctrl/Cmd+Enter 换行 · 支持粘贴图片，最多 4 张'}
-                </span>
-              )}
-              {isRunning && (
-                <button
-                  className="flex items-center space-x-1.5 px-3 py-1.5 ml-auto bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-xl text-red-600 dark:text-red-400 font-semibold hover:bg-red-100 dark:hover:bg-red-900/50 text-xs transition cursor-pointer"
-                  onClick={onStop}
-                >
-                  <OctagonX className="w-3.5 h-3.5" />
-                  <span>停止</span>
-                </button>
-              )}
-              <button
-                className="flex items-center space-x-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
-                disabled={isRunning || sending || (draft.trim().length === 0 && attachments.length === 0)}
-                onClick={() => { void handleSubmit(); }}
-              >
-                <span>{sending ? '发送中…' : '发送'}</span>
-                <ArrowUp className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+      <ChatInput
+        onSend={onSend}
+        onStop={onStop}
+        sending={sending}
+        isRunning={isRunning}
+        sendShortcutMode={sendShortcutMode}
+        currentModelSupportsImages={currentModelSupportsImages}
+        wsConnected={wsConnected}
+        selectedSessionId={selectedSessionId ?? null}
+        isMobile={isMobile}
+        onPreviewImage={setPreviewImage}
+      />
 
       <Modal
         isOpen={Boolean(previewImage)}

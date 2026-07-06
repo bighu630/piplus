@@ -81,6 +81,8 @@ export type PiModelInfo = {
   provider: string;
   id: string;
   label: string;
+  input?: string[];
+  thinkingLevelMap?: Record<string, string | null>;
 };
 
 export type PiSessionStreamEvent =
