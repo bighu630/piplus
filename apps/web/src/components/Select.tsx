@@ -84,9 +84,7 @@ export default function Select({
     setDropdownStyle({
       position: 'fixed',
       left: `${rect.left}px`,
-      width: 'max-content',
-      minWidth: `${rect.width}px`,
-      maxWidth: 'min(calc(100vw - 20px), 300px)',
+      width: `${rect.width}px`,
       top: above ? undefined : `${rect.bottom}px`,
       bottom: above ? `${window.innerHeight - rect.top}px` : undefined,
     });

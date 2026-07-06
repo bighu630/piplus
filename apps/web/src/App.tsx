@@ -1594,7 +1594,7 @@ export default function App() {
                 const levels = getModelThinkingLevels(createProjectModelKey);
                 if (!levels.length) return null;
                 return (
-                  <div className="w-36 shrink-0">
+                  <div className="shrink-0">
                     <Select
                       value={createPlannerThinkingLevel}
                       onChange={setCreatePlannerThinkingLevel}
@@ -1636,7 +1636,7 @@ export default function App() {
                       />
                     </div>
                     {levels.length > 0 && (
-                      <div className="w-28 shrink-0">
+                      <div className="shrink-0">
                         <Select
                           value={roleDefaultThinkingLevels[role.key] ?? ''}
                           onChange={(v) => handleCreateProjectRoleThinkingLevelChange(role.key, v)}
@@ -1931,7 +1931,7 @@ export default function App() {
                     />
                   </div>
                   {levels.length > 0 && (
-                    <div className="w-28 shrink-0">
+                    <div className="shrink-0">
                       <Select
                         value={editRoleThinkingLevels[role.key] ?? ''}
                         onChange={(v) => handleRoleThinkingLevelChange(role.key, v)}
