@@ -29,8 +29,6 @@
 ### 前置要求
 
 1. 安装 **Bun**（Linux 必需 / Windows 免装）：<https://bun.sh>
-2. 安装 **Pi Coding Agent**：<https://pi.dev>
-3. 确保 Pi 已配置至少一个可用模型
 
 ---
 
