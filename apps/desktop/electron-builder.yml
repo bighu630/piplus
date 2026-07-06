@@ -22,7 +22,6 @@ extraResources:
 linux:
   category: Development
   executableName: piplus
-  desktopName: piplus
   syncDesktopName: true
   target:
     - AppImage
