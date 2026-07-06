@@ -107,8 +107,15 @@ case "$TARGET" in
     ;;
   win)
     bunx electron-builder --win
+    # Rename to avoid spaces in filename (GitHub upload issue)
+    if [ -f "dist/piplus Setup 0.2.1.exe" ]; then
+      mv "dist/piplus Setup 0.2.1.exe" "dist/piplus-0.2.1.exe"
+    fi
+    if [ -f "dist/piplus Setup 0.2.1.exe.blockmap" ]; then
+      mv "dist/piplus Setup 0.2.1.exe.blockmap" "dist/piplus-0.2.1.exe.blockmap"
+    fi
     echo ""
-    echo "  ✅ exe: apps/desktop/dist/piplus Setup 0.2.1.exe"
+    echo "  ✅ exe: apps/desktop/dist/piplus-0.2.1.exe"
     ;;
   *)
     echo "Usage: $0 [linux|mac|win]"
