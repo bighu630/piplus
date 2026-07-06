@@ -7,6 +7,7 @@ import { loadSessionDraft, saveSessionDraft } from '../lib/session-drafts';
 import { fuzzyScore } from '../lib/fuzzy';
 import {
   ImagePlus,
+  ImageOff,
   X,
   ArrowUp,
   OctagonX,
@@ -415,14 +416,13 @@ export default function ChatInput({
                 className="flex items-center space-x-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
                 title={isRunning ? '对话进行中，暂时不能添加图片' : canSendImages ? '添加图片' : '当前模型不支持图片输入'}
               >
-                <ImagePlus className="w-3.5 h-3.5" />
+                {canSendImages ? (
+                  <ImagePlus className="w-3.5 h-3.5" />
+                ) : (
+                  <ImageOff className="w-3.5 h-3.5" />
+                )}
                 <span>图片</span>
               </button>
-              {(attachmentError || currentModelSupportsImages === false) && (
-                <span className="text-[10px] text-red-500 dark:text-red-400 font-medium whitespace-nowrap">
-                  {attachmentError ?? '当前模型不支持图片输入'}
-                </span>
-              )}
             </div>
 
             {/* Shortcut hint */}
