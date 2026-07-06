@@ -67,6 +67,8 @@ import {
   useCreateProjectTodoMutation,
   useUpdateProjectTodoMutation,
   useDeleteProjectTodoMutation,
+  useSessionThinkingLevel,
+  useSetSessionThinkingLevelMutation,
 } from './lib/hooks';
 import {
   Settings,
@@ -361,6 +363,8 @@ export default function App() {
   const doceContentQuery = useSessionFileContent(activeTab === 'doce' ? selectedSessionId : null, activeTab === 'doce' ? selectedDocePath : null);
   const modelsQuery = useModels();
   const setModelMut = useSetSessionModelMutation();
+  const thinkingLevelQuery = useSessionThinkingLevel(selectedSessionId);
+  const setThinkingLevelMut = useSetSessionThinkingLevelMutation(selectedSessionId);
   const testProviderMut = useTestModelProviderMutation();
   const createProviderMut = useCreateModelProviderMutation();
   const nativeProvidersQuery = useNativeModelProviders();

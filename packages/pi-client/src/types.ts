@@ -156,6 +156,9 @@ export type PiClient = {
     modelRef: { provider: string; id: string },
     cwd?: string,
   ): Promise<PiModelInfo>;
+  getThinkingLevel(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<string | null>;
+  getAvailableThinkingLevels(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<string[]>;
+  setThinkingLevel(sessionId: string, locator: PiSessionLocator, level: string, cwd?: string): Promise<string>;
   /** @deprecated Use ensureRuntime instead. */
   bindToolRuntime(
     sessionId: string,

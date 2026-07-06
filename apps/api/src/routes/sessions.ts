@@ -644,6 +644,93 @@ export function registerSessionRoutes(app: Hono) {
 
   /**
    * @swagger
+   * /api/v1/sessions/{sessionId}/thinking-level:
+   *   get:
+   *     summary: 获取会话当前 thinking level 及可用 levels
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/thinking-level', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const locator = parseLocator(session.piSessionLocatorJson);
+    const currentLevel = await piClient.getThinkingLevel(sessionId, locator, project.projectPath);
+    const availableLevels = await piClient.getAvailableThinkingLevels(sessionId, locator, project.projectPath);
+
+    return c.json({
+      session_id: sessionId,
+      current_level: currentLevel,
+      available_levels: availableLevels,
+    });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/thinking-level:
+   *   put:
+   *     summary: 设置会话 thinking level
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 仅允许在会话 idle 时切换 thinking level。
+   *     responses:
+   *       200:
+   *         description: 设置成功。
+   *       400:
+   *         description: level 参数缺失。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   *       409:
+   *         description: 会话繁忙。
+   */
+  app.put('/api/v1/sessions/:sessionId/thinking-level', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const level = String((body as { level?: string }).level ?? '');
+
+    if (!level) return c.json({ error: { code: 'INVALID_LEVEL', message: 'Thinking level is required' } }, 400);
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    if (session.runtimeStatus === 'running') {
+      return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+    }
+
+    const locator = parseLocator(session.piSessionLocatorJson);
+    try {
+      const currentLevel = await piClient.setThinkingLevel(sessionId, locator, level, project.projectPath);
+      return c.json({ session_id: sessionId, current_level: currentLevel });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown';
+      if (message === 'pi_session_busy') {
+        return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+      }
+      return c.json({ error: { code: 'SET_THINKING_LEVEL_FAILED', message } }, 500);
+    }
+  });
+
+  /**
+   * @swagger
    * /api/v1/sessions/{sessionId}/stop:
    *   post:
    *     summary: 停止会话运行

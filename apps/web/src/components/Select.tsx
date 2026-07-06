@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { ChevronDown, Search } from 'lucide-react';
+import { fuzzyScore } from '../lib/fuzzy';
 
 interface SelectOption {
   value: string;
@@ -40,13 +41,23 @@ export default function Select({
   const selectedOption = options.find((o) => o.value === value);
 
   const filteredOptions = useMemo(() => {
-    if (!search.trim()) return options;
-    const q = search.toLowerCase();
-    return options.filter(
-      (o) =>
-        o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q),
-    );
-  }, [options, search]);
+    if (!searchable) return options;
+    const q = search.trim();
+    if (!q) return options;
+    return options
+      .map((option, index) => {
+        const labelScore = fuzzyScore(q, option.label);
+        const valueScore = fuzzyScore(q, option.value);
+        return {
+          option,
+          index,
+          score: Math.max(labelScore, valueScore),
+        };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map((item) => item.option);
+  }, [options, search, searchable]);
 
   // Reset search when dropdown closes
   useEffect(() => {

@@ -21,11 +21,12 @@ import {
   GitMerge,
   ImagePlus,
   X,
+  Brain,
 } from 'lucide-react';
 import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
 import Select from './Select';
-import { useSessionContextUsage, useSessionCommands } from '../lib/hooks';
+import { useSessionContextUsage, useSessionCommands, useSessionThinkingLevel, useSetSessionThinkingLevelMutation } from '../lib/hooks';
 import { fuzzyScore } from '../lib/fuzzy';
 import { loadSessionDraft, saveSessionDraft } from '../lib/session-drafts';
 
@@ -63,6 +64,10 @@ interface TabChatProps {
   onSendPlannerRolePrompt?: () => void;
   plannerRolePromptPending?: boolean;
   showPlannerRolePromptButton?: boolean;
+  thinkingLevelValue?: string | null;
+  thinkingLevelOptions?: string[];
+  onThinkingLevelSelect?: (level: string) => void;
+  setThinkingLevelPending?: boolean;
   runtimeErrors?: Array<{runId: string; error: string}>;
   isMobile?: boolean;
 }
@@ -133,6 +138,10 @@ export default function TabChat({
   onSendPlannerRolePrompt,
   plannerRolePromptPending,
   showPlannerRolePromptButton,
+  thinkingLevelValue,
+  thinkingLevelOptions,
+  onThinkingLevelSelect,
+  setThinkingLevelPending,
   runtimeErrors,
   isMobile,
 }: TabChatProps) {
@@ -660,6 +669,21 @@ export default function TabChat({
               ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
               : '(empty result)';
 
+            // spawn_session / writeback_to_parent 结果中提取 summary 字段用于 Markdown 渲染
+            let spawnSummary: string | null = null;
+            let spawnStatus: string | null = null;
+            if (toolName === 'spawn_session' && msg.content_text && !isError) {
+              try {
+                const parsed = JSON.parse(msg.content_text);
+                if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
+                  spawnSummary = parsed.summary.trim();
+                  spawnStatus = typeof parsed.status === 'string' ? parsed.status : null;
+                }
+              } catch {
+                // 不是 JSON，保持 compact 渲染
+              }
+            }
+
             const colorScheme = isError
               ? {
                   bg: 'bg-red-50 dark:bg-red-950/30',
@@ -670,15 +694,25 @@ export default function TabChat({
                   text: 'text-red-900 dark:text-red-200',
                   suffix: 'text-red-600/60 dark:text-red-400/60',
                 }
-              : {
-                  bg: 'bg-emerald-50 dark:bg-emerald-950/30',
-                  border: 'border-emerald-200 dark:border-emerald-800',
-                  borderT: 'border-emerald-200 dark:border-emerald-800',
-                  icon: 'text-emerald-600 dark:text-emerald-400',
-                  label: 'text-emerald-800 dark:text-emerald-300',
-                  text: 'text-emerald-900 dark:text-emerald-200',
-                  suffix: 'text-emerald-600/60 dark:text-emerald-400/60',
-                };
+              : spawnSummary
+                ? {
+                    bg: 'bg-indigo-50 dark:bg-indigo-950/30',
+                    border: 'border-indigo-200 dark:border-indigo-800',
+                    borderT: 'border-indigo-200 dark:border-indigo-800',
+                    icon: 'text-indigo-600 dark:text-indigo-400',
+                    label: 'text-indigo-800 dark:text-indigo-300',
+                    text: 'text-indigo-900 dark:text-indigo-200',
+                    suffix: 'text-indigo-600/60 dark:text-indigo-400/60',
+                  }
+                : {
+                    bg: 'bg-emerald-50 dark:bg-emerald-950/30',
+                    border: 'border-emerald-200 dark:border-emerald-800',
+                    borderT: 'border-emerald-200 dark:border-emerald-800',
+                    icon: 'text-emerald-600 dark:text-emerald-400',
+                    label: 'text-emerald-800 dark:text-emerald-300',
+                    text: 'text-emerald-900 dark:text-emerald-200',
+                    suffix: 'text-emerald-600/60 dark:text-emerald-400/60',
+                  };
 
             return (
               <div key={msg.id} className="flex justify-start items-start w-full">
@@ -689,17 +723,76 @@ export default function TabChat({
                       <span className={`text-xs font-semibold ${colorScheme.label} font-mono`}>
                         {toolName}
                       </span>
-                      <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
-                        {isError ? '错误' : '结果'}
-                      </span>
+                      {spawnSummary && spawnStatus && (
+                        <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
+                          {spawnStatus === 'completed' ? '完成' : spawnStatus}
+                        </span>
+                      )}
+                      {!spawnSummary && (
+                        <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
+                          {isError ? '错误' : '结果'}
+                        </span>
+                      )}
                     </div>
-                    {msg.content_text && (
+                    {spawnSummary ? (
+                      <div className={`border-t ${colorScheme.borderT} px-4 py-3`}>
+                        <div className="text-slate-800 dark:text-slate-200 w-full">
+                          <div className="markdown-body">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              rehypePlugins={[[rehypeHighlight, { detect: false }]]}
+                              components={{
+                                p({ children }) {
+                                  return <p className="text-slate-700 dark:text-slate-300 leading-relaxed my-1.5 text-[13px]">{children}</p>;
+                                },
+                                ul({ children }) {
+                                  return <ul className="list-disc pl-5 my-1.5 text-xs text-slate-700 dark:text-slate-300 space-y-0.5">{children}</ul>;
+                                },
+                                ol({ children }) {
+                                  return <ol className="list-decimal pl-5 my-1.5 text-xs text-slate-700 dark:text-slate-300 space-y-0.5">{children}</ol>;
+                                },
+                                code({ className, children, ...codeProps }: any) {
+                                  const isInline = !className;
+                                  if (isInline) {
+                                    return <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold" {...codeProps}>{children}</code>;
+                                  }
+                                  return <code className={className} {...codeProps}>{children}</code>;
+                                },
+                                pre({ children }) {
+                                  return <pre className="code-block my-2">{children}</pre>;
+                                },
+                                blockquote({ children }) {
+                                  return <blockquote className="border-l-3 border-indigo-300 dark:border-indigo-700 pl-3 py-1 my-2 text-slate-600 dark:text-slate-400 text-xs">{children}</blockquote>;
+                                },
+                                h1({ children }) {
+                                  return <h1 className="text-base font-bold my-2 text-slate-800 dark:text-slate-200">{children}</h1>;
+                                },
+                                h2({ children }) {
+                                  return <h2 className="text-sm font-bold my-1.5 text-slate-800 dark:text-slate-200">{children}</h2>;
+                                },
+                                h3({ children }) {
+                                  return <h3 className="text-sm font-semibold my-1 text-slate-800 dark:text-slate-200">{children}</h3>;
+                                },
+                                a({ children, href, ...aProps }: any) {
+                                  return <a href={href} className="underline underline-offset-2 text-indigo-600 dark:text-indigo-400" target="_blank" rel="noopener noreferrer" {...aProps}>{children}</a>;
+                                },
+                                hr() {
+                                  return <hr className="border-slate-200 dark:border-slate-700 my-2" />;
+                                },
+                              }}
+                            >
+                              {spawnSummary}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      </div>
+                    ) : msg.content_text ? (
                       <div className={`border-t ${colorScheme.borderT} px-3 py-2`}>
                         <div className={`text-[11px] ${colorScheme.text} font-mono whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto`}>
                           {summary}
                         </div>
                       </div>
-                    )}
+                    ) : null}
                   </div>
                   <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
                     {new Date(msg.created_at).toLocaleTimeString()}
@@ -1145,6 +1238,30 @@ export default function TabChat({
                 dropdownMaxHeight="max-h-72"
                 dropdownMinWidth="260px"
                 className="w-full"
+              />
+            </div>
+          )}
+          {thinkingLevelOptions && thinkingLevelOptions.length > 0 && onThinkingLevelSelect && (
+            <div className="relative" style={{ minWidth: 110 }}>
+              <Select
+                value={thinkingLevelValue ?? ''}
+                onChange={onThinkingLevelSelect}
+                options={thinkingLevelOptions.map((level) => ({
+                  value: level,
+                  label: ({
+                    off: '思考：关',
+                    minimal: '思考：最低',
+                    low: '思考：低',
+                    medium: '思考：中',
+                    high: '思考：高',
+                    xhigh: '思考：最高',
+                  })[level] ?? level,
+                }))}
+                placeholder="思考层级"
+                dropdownMaxHeight="max-h-56"
+                dropdownMinWidth="140px"
+                className="w-full"
+                searchable={false}
               />
             </div>
           )}

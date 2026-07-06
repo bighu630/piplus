@@ -52,6 +52,8 @@ import {
   updateProjectTodo,
   deleteProjectTodo,
   getSessionCommands,
+  getSessionThinkingLevel,
+  setSessionThinkingLevel,
 } from './api';
 
 export function useAuthSession() {
@@ -130,6 +132,25 @@ export function useSetSessionModelMutation() {
   return useMutation({
     mutationFn: ({ sessionId, provider, id }: { sessionId: string; provider: string; id: string }) =>
       setSessionModel(sessionId, { provider, id }),
+  });
+}
+
+export function useSessionThinkingLevel(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'thinking-level', sessionId],
+    queryFn: () => getSessionThinkingLevel(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
+export function useSetSessionThinkingLevelMutation(sessionId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (level: string) => setSessionThinkingLevel(sessionId!, level),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['session', 'thinking-level', sessionId] });
+    },
   });
 }
 

@@ -126,6 +126,23 @@ export function setSessionModel(sessionId: string, model: { provider: string; id
   });
 }
 
+export type ThinkingLevelResponse = {
+  session_id: string;
+  current_level: string | null;
+  available_levels: string[];
+};
+
+export function getSessionThinkingLevel(sessionId: string) {
+  return request<ThinkingLevelResponse>(`/api/v1/sessions/${sessionId}/thinking-level`);
+}
+
+export function setSessionThinkingLevel(sessionId: string, level: string) {
+  return request<{ session_id: string; current_level: string }>(
+    `/api/v1/sessions/${sessionId}/thinking-level`,
+    { method: 'PUT', body: JSON.stringify({ level }) },
+  );
+}
+
 export function getTree() {
   return request<TreeResponse>('/api/v1/tree');
 }

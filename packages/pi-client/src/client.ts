@@ -757,6 +757,48 @@ export function createPiClient(): PiClient {
       return session.model;
     },
 
+    async getThinkingLevel(sessionId, locator, cwd) {
+      let session = runtimeRegistry.get(sessionId);
+      if (!session?.agentSession) {
+        await this.restoreRuntime(sessionId, locator, cwd);
+        session = runtimeRegistry.get(sessionId);
+      }
+      if (session?.agentSession) {
+        return session.agentSession.thinkingLevel as string;
+      }
+      return null;
+    },
+
+    async getAvailableThinkingLevels(sessionId, locator, cwd) {
+      let session = runtimeRegistry.get(sessionId);
+      if (!session?.agentSession) {
+        await this.restoreRuntime(sessionId, locator, cwd);
+        session = runtimeRegistry.get(sessionId);
+      }
+      if (session?.agentSession) {
+        const levels = session.agentSession.getAvailableThinkingLevels();
+        console.log('[pi-client] getAvailableThinkingLevels', { sessionId, levels });
+        return levels.map((l: any) => String(l));
+      }
+      return [];
+    },
+
+    async setThinkingLevel(sessionId, locator, level, cwd) {
+      let session = runtimeRegistry.get(sessionId);
+      if (!session?.agentSession) {
+        await this.restoreRuntime(sessionId, locator, cwd);
+        session = runtimeRegistry.get(sessionId);
+      }
+      if (!session?.agentSession) {
+        throw new Error('pi_session_runtime_unavailable');
+      }
+      if (session.agentSession.isStreaming) {
+        throw new Error('pi_session_busy');
+      }
+      session.agentSession.setThinkingLevel(level as any);
+      return session.agentSession.thinkingLevel as string;
+    },
+
     async bindToolRuntime(sessionId, tools, handler, cwd) {
       const session = runtimeRegistry.ensure(sessionId, undefined, cwd);
       session.toolDefs = tools;
