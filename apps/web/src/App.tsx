@@ -856,6 +856,7 @@ export default function App() {
     if (!selectedSessionId) return;
     await setModelMut.mutateAsync({ sessionId: selectedSessionId, provider, id });
     queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] });
+    queryClient.invalidateQueries({ queryKey: ['session', 'thinking-level', selectedSessionId] });
   }, [selectedSessionId, setModelMut, queryClient]);
 
   const handleRefreshDiff = useCallback(() => {
@@ -1375,6 +1376,9 @@ export default function App() {
                   currentModelValue={sessionInfo?.session.current_model ? `${sessionInfo.session.current_model.provider}/${sessionInfo.session.current_model.id}` : ''}
                   currentModelSupportsImages={currentModelSupportsImages}
                   onModelSelect={handleModelSelect}
+                  thinkingLevelValue={thinkingLevelQuery.data?.current_level ?? null}
+                  thinkingLevelOptions={thinkingLevelQuery.data?.available_levels}
+                  onThinkingLevelSelect={(level: string) => setThinkingLevelMut.mutate(level)}
                   onArchiveSession={handleArchiveSession}
                   archivePending={archiveSessionMut.isPending}
                   showArchiveButton={!isPlannerRoot}

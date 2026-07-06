@@ -98,6 +98,15 @@ function makePiClient(options?: { sendError?: Error }) {
     async bindToolRuntime(sessionId, tools, _handler, cwd) {
       state.bound.push({ sessionId, cwd, tools });
     },
+    async getThinkingLevel() {
+      return null;
+    },
+    async getAvailableThinkingLevels() {
+      return [];
+    },
+    async setThinkingLevel() {
+      return 'medium';
+    },
   };
 
   return { client, state };

@@ -21,12 +21,11 @@ import {
   GitMerge,
   ImagePlus,
   X,
-  Brain,
 } from 'lucide-react';
 import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
 import Select from './Select';
-import { useSessionContextUsage, useSessionCommands, useSessionThinkingLevel, useSetSessionThinkingLevelMutation } from '../lib/hooks';
+import { useSessionContextUsage, useSessionCommands } from '../lib/hooks';
 import { fuzzyScore } from '../lib/fuzzy';
 import { loadSessionDraft, saveSessionDraft } from '../lib/session-drafts';
 
@@ -67,7 +66,6 @@ interface TabChatProps {
   thinkingLevelValue?: string | null;
   thinkingLevelOptions?: string[];
   onThinkingLevelSelect?: (level: string) => void;
-  setThinkingLevelPending?: boolean;
   runtimeErrors?: Array<{runId: string; error: string}>;
   isMobile?: boolean;
 }
@@ -141,7 +139,6 @@ export default function TabChat({
   thinkingLevelValue,
   thinkingLevelOptions,
   onThinkingLevelSelect,
-  setThinkingLevelPending,
   runtimeErrors,
   isMobile,
 }: TabChatProps) {
@@ -672,7 +669,7 @@ export default function TabChat({
             // spawn_session / writeback_to_parent 结果中提取 summary 字段用于 Markdown 渲染
             let spawnSummary: string | null = null;
             let spawnStatus: string | null = null;
-            if (toolName === 'spawn_session' && msg.content_text && !isError) {
+            if ((toolName === 'spawn_session' || toolName === 'send_message_to_session') && msg.content_text && !isError) {
               try {
                 const parsed = JSON.parse(msg.content_text);
                 if (typeof parsed.summary === 'string' && parsed.summary.trim()) {

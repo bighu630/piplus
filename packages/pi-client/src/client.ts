@@ -777,7 +777,6 @@ export function createPiClient(): PiClient {
       }
       if (session?.agentSession) {
         const levels = session.agentSession.getAvailableThinkingLevels();
-        console.log('[pi-client] getAvailableThinkingLevels', { sessionId, levels });
         return levels.map((l: any) => String(l));
       }
       return [];

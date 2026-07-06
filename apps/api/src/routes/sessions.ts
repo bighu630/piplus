@@ -668,8 +668,14 @@ export function registerSessionRoutes(app: Hono) {
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
     const locator = parseLocator(session.piSessionLocatorJson);
-    const currentLevel = await piClient.getThinkingLevel(sessionId, locator, project.projectPath);
-    const availableLevels = await piClient.getAvailableThinkingLevels(sessionId, locator, project.projectPath);
+    let currentLevel: string | null = null;
+    let availableLevels: string[] = [];
+    try {
+      currentLevel = await piClient.getThinkingLevel(sessionId, locator, project.projectPath);
+      availableLevels = await piClient.getAvailableThinkingLevels(sessionId, locator, project.projectPath);
+    } catch (err) {
+      log.warn('thinking-level get failed, returning defaults', { sessionId, error: String(err) });
+    }
 
     return c.json({
       session_id: sessionId,

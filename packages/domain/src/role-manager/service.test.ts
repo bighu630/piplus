@@ -105,6 +105,15 @@ function makeRecordingPiClient() {
     async executeCommand() {
       return null;
     },
+    async getThinkingLevel() {
+      return null;
+    },
+    async getAvailableThinkingLevels() {
+      return [];
+    },
+    async setThinkingLevel() {
+      return 'medium';
+    },
   };
 }
 
