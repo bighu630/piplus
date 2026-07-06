@@ -1075,7 +1075,7 @@ export default function TabChat({
             </div>
           )}
           {thinkingLevelOptions && thinkingLevelOptions.length > 0 && onThinkingLevelSelect && (
-            <div className="relative min-w-0 shrink-0" style={{ width: 88 }}>
+            <div className="relative shrink-0">
               <Select
                 value={thinkingLevelValue ?? ''}
                 onChange={onThinkingLevelSelect}
