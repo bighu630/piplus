@@ -142,7 +142,6 @@ export async function startSessionRun(input: StartSessionRunInput) {
   // Check first-conversation state from session file BEFORE ensureRuntime,
   // so we can merge the role prompt with user content in a single turn.
   const isFirst = input.piClient.isFirstConversation(input.sessionId);
-  const runtimeState = input.piClient.getRuntimeState(input.sessionId);
 
   console.log('[session-runtime] ensureRuntime start', {
     sessionId: input.sessionId,
@@ -166,6 +165,11 @@ export async function startSessionRun(input: StartSessionRunInput) {
       });
     },
   });
+
+  // Get runtimeState AFTER ensureRuntime — the prompt is stored under piSessionId,
+  // and ensureRuntime's restoreRuntime migrates it to the domain sessionId.
+  // Reading it before ensureRuntime would return null for spawn_session cases.
+  const runtimeState = input.piClient.getRuntimeState(input.sessionId);
 
   // Merge role prompt with user content for first conversation.
   // Replaces the old injectPromptIfNeeded approach which sent the prompt

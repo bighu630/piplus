@@ -42,6 +42,18 @@ function makeRecordingPiClient() {
     async restoreRuntime() {
       return;
     },
+    async ensureRuntime() {
+      return;
+    },
+    async injectPromptIfNeeded() {
+      return;
+    },
+    isFirstConversation() {
+      return true;
+    },
+    getRuntimeState() {
+      return null;
+    },
     async subscribeSession() {
       return () => {};
     },
