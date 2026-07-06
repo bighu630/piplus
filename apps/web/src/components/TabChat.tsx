@@ -1075,24 +1075,24 @@ export default function TabChat({
             </div>
           )}
           {thinkingLevelOptions && thinkingLevelOptions.length > 0 && onThinkingLevelSelect && (
-            <div className="relative" style={{ minWidth: 65 }}>
+            <div className="relative min-w-0 shrink-0" style={{ width: 88 }}>
               <Select
                 value={thinkingLevelValue ?? ''}
                 onChange={onThinkingLevelSelect}
                 options={thinkingLevelOptions.map((level) => ({
                   value: level,
                   label: ({
-                    off: '思考：关',
-                    minimal: '思考：最低',
-                    low: '思考：低',
-                    medium: '思考：中',
-                    high: '思考：高',
-                    xhigh: '思考：最高',
+                    off: '关',
+                    minimal: '最低',
+                    low: '低',
+                    medium: '中',
+                    high: '高',
+                    xhigh: '最高',
                   })[level] ?? level,
                 }))}
                 placeholder="思考层级"
                 dropdownMaxHeight="max-h-56"
-                dropdownMinWidth="85px"
+                dropdownMinWidth="100px"
                 className="w-full"
                 searchable={false}
               />
