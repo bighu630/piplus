@@ -278,6 +278,7 @@ async function waitForChildWriteback(
   const pollIntervalMs = 2000;
   const deadline = Date.now() + timeoutMs;
   let lastReminderAt = Date.now();
+  let reminderCount = 0;
 
   while (Date.now() < deadline) {
     const [parent] = await ctx.db
@@ -358,12 +359,25 @@ async function waitForChildWriteback(
       .where(eq(sessions.id, childSessionId))
       .limit(1);
 
+    // Check if child has produced ANY output (assistant messages)
+    const [anyOutput] = await ctx.db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.sessionId, childSessionId),
+          eq(messages.role, 'assistant'),
+        ),
+      )
+      .limit(1);
+    const hasNoOutput = !anyOutput;
+
     const now = Date.now();
 
-    // If child failed (idle + error), try candidate models before returning to parent.
+    // If child failed (idle + explicit error), try candidates or return failure.
     if (child?.runtimeStatus === 'idle' && child?.lastRuntimeError) {
       let remainingCandidates: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
-      if (child.modelFallbacksJson) {
+      if (child?.modelFallbacksJson) {
         try {
           const parsed = JSON.parse(child.modelFallbacksJson);
           if (Array.isArray(parsed) && parsed.length > 0) {
@@ -383,6 +397,7 @@ async function waitForChildWriteback(
           from: `${child.currentModelProvider}/${child.currentModelId}`,
           to: `${nextCandidate.provider}/${nextCandidate.id}`,
           remaining: rest.length,
+          reason: 'error',
         });
 
         // Switch child's model to the candidate
@@ -418,8 +433,25 @@ async function waitForChildWriteback(
       };
     }
 
+    // Child is idle with no writeback. If we've already sent a reminder
+    // and the child still has zero output, stop spamming — the model
+    // is fundamentally broken.
+    if (child?.runtimeStatus === 'idle' && hasNoOutput && reminderCount > 0) {
+      console.log('[role-manager-tools] waitForChildWriteback child failed (no output after reminder)', {
+        childSessionId,
+        requestId,
+      });
+      return {
+        status: 'failed',
+        session_id: childSessionId,
+        message: '子会话执行失败：模型未产生任何输出',
+        error: '模型未产生任何输出',
+      };
+    }
+
     if (child?.runtimeStatus === 'idle' && now - lastReminderAt >= WRITEBACK_REMINDER_INTERVAL_MS) {
       lastReminderAt = now;
+      reminderCount++;
       const reminder = 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.';
       console.log('[role-manager-tools] waitForChildWriteback reminder', {
         childSessionId,
