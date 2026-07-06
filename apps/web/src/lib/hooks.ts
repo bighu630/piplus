@@ -144,12 +144,13 @@ export function useSessionThinkingLevel(sessionId: string | null) {
   });
 }
 
-export function useSetSessionThinkingLevelMutation(sessionId: string | null) {
+export function useSetSessionThinkingLevelMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (level: string) => setSessionThinkingLevel(sessionId!, level),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['session', 'thinking-level', sessionId] });
+    mutationFn: ({ sessionId, level }: { sessionId: string; level: string }) =>
+      setSessionThinkingLevel(sessionId, level),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['session', 'thinking-level', variables.sessionId] });
     },
   });
 }

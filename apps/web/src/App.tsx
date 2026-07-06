@@ -367,7 +367,7 @@ export default function App() {
   const modelsQuery = useModels();
   const setModelMut = useSetSessionModelMutation();
   const thinkingLevelQuery = useSessionThinkingLevel(selectedSessionId);
-  const setThinkingLevelMut = useSetSessionThinkingLevelMutation(selectedSessionId);
+  const setThinkingLevelMut = useSetSessionThinkingLevelMutation();
   const testProviderMut = useTestModelProviderMutation();
   const createProviderMut = useCreateModelProviderMutation();
   const nativeProvidersQuery = useNativeModelProviders();
@@ -1446,7 +1446,11 @@ export default function App() {
                   onModelSelect={handleModelSelect}
                   thinkingLevelValue={thinkingLevelQuery.data?.current_level ?? null}
                   thinkingLevelOptions={thinkingLevelQuery.data?.available_levels}
-                  onThinkingLevelSelect={(level: string) => setThinkingLevelMut.mutate(level)}
+                  onThinkingLevelSelect={(level: string) => {
+                    if (selectedSessionId) {
+                      setThinkingLevelMut.mutate({ sessionId: selectedSessionId, level });
+                    }
+                  }}
                   onArchiveSession={handleArchiveSession}
                   archivePending={archiveSessionMut.isPending}
                   showArchiveButton={!isPlannerRoot}
