@@ -433,13 +433,53 @@ async function waitForChildWriteback(
       };
     }
 
-    // Child is idle with no writeback. If we've already sent a reminder
-    // and the child still has zero output, stop spamming — the model
-    // is fundamentally broken.
-    if (child?.runtimeStatus === 'idle' && hasNoOutput && reminderCount > 0) {
-      console.log('[role-manager-tools] waitForChildWriteback child failed (no output after reminder)', {
+    // Child is idle with no writeback and no output — try remaining
+    // candidates before giving up. The model may have produced no output
+    // without throwing (silent failure).
+    if (child?.runtimeStatus === 'idle' && hasNoOutput) {
+      let remainingCandidates: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
+      if (child?.modelFallbacksJson) {
+        try {
+          const parsed = JSON.parse(child.modelFallbacksJson);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            remainingCandidates = parsed;
+          }
+        } catch { /* ignore */ }
+      }
+
+      if (remainingCandidates.length > 0) {
+        const [nextCandidate, ...rest] = remainingCandidates;
+        const updatedFallbacks = rest.length > 0 ? JSON.stringify(rest) : null;
+
+        console.log('[role-manager-tools] waitForChildWriteback switching to candidate model (no output)', {
+          childSessionId,
+          requestId,
+          from: `${child.currentModelProvider}/${child.currentModelId}`,
+          to: `${nextCandidate.provider}/${nextCandidate.id}`,
+          remaining: rest.length,
+          reminderCount,
+        });
+
+        await ctx.db.update(sessions)
+          .set({
+            currentModelProvider: nextCandidate.provider,
+            currentModelId: nextCandidate.id,
+            modelFallbacksJson: updatedFallbacks ?? '',
+            lastRuntimeError: '',
+          })
+          .where(eq(sessions.id, childSessionId));
+
+        const retryContent = child.compiledPrompt || '原始执行未产生输出，请重新完成任务。';
+        await startChildSessionRun(ctx, childSessionId, retryContent, requestId, ctx.onSessionCreated);
+
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        continue;
+      }
+
+      console.log('[role-manager-tools] waitForChildWriteback child failed (no output, no candidates)', {
         childSessionId,
         requestId,
+        reminderCount,
       });
       return {
         status: 'failed',
