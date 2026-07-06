@@ -346,12 +346,32 @@ async function waitForChildWriteback(
     }
 
     const [child] = await ctx.db
-      .select({ runtimeStatus: sessions.runtimeStatus })
+      .select({
+        runtimeStatus: sessions.runtimeStatus,
+        lastRuntimeError: sessions.lastRuntimeError,
+      })
       .from(sessions)
       .where(eq(sessions.id, childSessionId))
       .limit(1);
 
     const now = Date.now();
+
+    // If child failed (idle + error), stop waiting immediately — don't spam reminders.
+    // The child can't recover on its own when the model is broken.
+    if (child?.runtimeStatus === 'idle' && child?.lastRuntimeError) {
+      console.log('[role-manager-tools] waitForChildWriteback child failed', {
+        childSessionId,
+        requestId,
+        error: child.lastRuntimeError,
+      });
+      return {
+        status: 'failed',
+        session_id: childSessionId,
+        message: `子会话执行失败：${child.lastRuntimeError}`,
+        error: child.lastRuntimeError,
+      };
+    }
+
     if (child?.runtimeStatus === 'idle' && now - lastReminderAt >= WRITEBACK_REMINDER_INTERVAL_MS) {
       lastReminderAt = now;
       const reminder = 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.';
