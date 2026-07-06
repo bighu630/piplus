@@ -26,6 +26,9 @@ cd apps/desktop
 bun run build
 cd "$OLDPWD"
 
+VERSION=$(jq -r '.version' apps/desktop/package.json)
+echo "  → Version: $VERSION"
+
 TARGET="${1:-linux}"
 
 # ── 4. Prepare bundled bun ──────────────────────────────────
@@ -80,6 +83,19 @@ if [ "$TARGET" = "win" ]; then
       rm -rf apps/desktop/bun-bin
     fi
   fi
+elif [ "$TARGET" = "mac" ] || [ "$TARGET" = "linux" ]; then
+  # For mac/linux we bundle the bun binary from the current build machine.
+  # (Cross-arch builds should set PIPLUS_BUN_SOURCE to an explicit path.)
+  BUN_SOURCE="${PIPLUS_BUN_SOURCE:-$(command -v bun || true)}"
+  if [ -z "$BUN_SOURCE" ] || [ ! -f "$BUN_SOURCE" ]; then
+    echo "  ❌ Could not locate a bun executable to bundle."
+    echo "     Ensure 'bun' is on PATH, or set PIPLUS_BUN_SOURCE=/path/to/bun"
+    exit 1
+  fi
+  mkdir -p apps/desktop/bun-bin
+  cp "$BUN_SOURCE" apps/desktop/bun-bin/bun
+  chmod +x apps/desktop/bun-bin/bun
+  echo "  → bun bundled from $BUN_SOURCE"
 fi
 
 # ── 5. Package ──────────────────────────────────────────────
@@ -97,25 +113,25 @@ case "$TARGET" in
   linux)
     bunx electron-builder --linux
     echo ""
-    echo "  ✅ AppImage: apps/desktop/dist/piplus-0.2.1.AppImage"
-    echo "  ✅ deb:      apps/desktop/dist/piplus_0.2.1_amd64.deb"
+    echo "  ✅ AppImage: apps/desktop/dist/piplus-${VERSION}.AppImage"
+    echo "  ✅ deb:      apps/desktop/dist/piplus_${VERSION}_amd64.deb"
     ;;
   mac)
     bunx electron-builder --mac
     echo ""
-    echo "  ✅ dmg: apps/desktop/dist/piplus-0.2.1.dmg"
+    echo "  ✅ dmg: apps/desktop/dist/piplus-${VERSION}.dmg"
     ;;
   win)
     bunx electron-builder --win
     # Rename to avoid spaces in filename (GitHub upload issue)
-    if [ -f "dist/piplus Setup 0.2.1.exe" ]; then
-      mv "dist/piplus Setup 0.2.1.exe" "dist/piplus-0.2.1.exe"
+    if [ -f "dist/piplus Setup ${VERSION}.exe" ]; then
+      mv "dist/piplus Setup ${VERSION}.exe" "dist/piplus-${VERSION}.exe"
     fi
-    if [ -f "dist/piplus Setup 0.2.1.exe.blockmap" ]; then
-      mv "dist/piplus Setup 0.2.1.exe.blockmap" "dist/piplus-0.2.1.exe.blockmap"
+    if [ -f "dist/piplus Setup ${VERSION}.exe.blockmap" ]; then
+      mv "dist/piplus Setup ${VERSION}.exe.blockmap" "dist/piplus-${VERSION}.exe.blockmap"
     fi
     echo ""
-    echo "  ✅ exe: apps/desktop/dist/piplus-0.2.1.exe"
+    echo "  ✅ exe: apps/desktop/dist/piplus-${VERSION}.exe"
     ;;
   *)
     echo "Usage: $0 [linux|mac|win]"
