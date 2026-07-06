@@ -133,10 +133,11 @@ export async function startSessionRun(input: StartSessionRunInput) {
   const roleKey = roleTmpl?.key ?? null;
 
   let toolDefs = await buildAllToolDefs(input.db);
-  // Planner is a root node — it coordinates children via spawn_session and send_message_to_session,
-  // but does not call writeback_to_parent itself (it reports directly to the user).
+  // Planner is a root node — it coordinates children via spawn_session only.
+  // It does NOT call writeback_to_parent (reports directly to user) and
+  // does NOT call send_message_to_session (feature_lead/bugfix_lead interact independently).
   if (roleKey === 'planner') {
-    toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent');
+    toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent' && t.name !== 'send_message_to_session');
   }
 
   // Check first-conversation state from session file BEFORE ensureRuntime,

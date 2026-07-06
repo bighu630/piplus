@@ -16,6 +16,7 @@ export type ActiveSessionRuntime = {
   messages: PiMessage[];
   stopped: boolean;
   prompt: string;
+  promptSent: boolean;
   title: string | null;
   listeners: Set<SessionListener>;
   idleCleanupTimer?: ReturnType<typeof setTimeout>;
@@ -46,6 +47,7 @@ export class RuntimeRegistry {
       stopped: false,
       commands: [],
       prompt: '',
+      promptSent: false,
       title: null,
       listeners: new Set(),
     };

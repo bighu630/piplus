@@ -487,6 +487,19 @@ export function createPiClient(): PiClient {
         session.toolDefs = tools;
         session.toolHandler = toolHandler;
 
+        // Migrate prompt from piSessionId entry (stored by createSession)
+        const piSessionId = locator.piSessionId;
+        if (piSessionId && piSessionId !== sessionId && !session.prompt) {
+          const createdEntry = runtimeRegistry.get(piSessionId);
+          if (createdEntry?.prompt) {
+            session.prompt = createdEntry.prompt;
+            session.promptSent = createdEntry.promptSent;
+            console.log('[pi-client] ensureRuntime migrated prompt from piSessionId', {
+              sessionId, piSessionId, promptLen: session.prompt.length,
+            });
+          }
+        }
+
         // Collect slash commands
         try {
           session.commands = collectCommands(agentSession);
