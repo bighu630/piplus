@@ -1090,6 +1090,14 @@ export default function TabChat({
                     xhigh: '最高',
                   })[level] ?? level,
                 }))}
+                getDisplayValue={(opt) => ({
+                  off: '思考：关',
+                  minimal: '思考：最低',
+                  low: '思考：低',
+                  medium: '思考：中',
+                  high: '思考：高',
+                  xhigh: '思考：最高',
+                })[opt.value] ?? opt.label}
                 placeholder="思考层级"
                 dropdownMaxHeight="max-h-56"
                 dropdownMinWidth="100px"
