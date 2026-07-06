@@ -16,6 +16,7 @@ export type CreateProjectInput = {
   plannerModel?: {
     provider: string;
     id: string;
+    thinkingLevel?: string | null;
   } | null;
 };
 
@@ -111,6 +112,7 @@ async function insertSession(db: RoleManagerDb, input: {
   compiledPrompt: string;
   currentModelProvider?: string | null;
   currentModelId?: string | null;
+  modelFallbacksJson?: string;
 }) {
   const timestamp = now();
   await db.insert(sessions).values({
@@ -129,6 +131,7 @@ async function insertSession(db: RoleManagerDb, input: {
     runtimeStatus: 'idle',
     currentModelProvider: input.currentModelProvider ?? null,
     currentModelId: input.currentModelId ?? null,
+    modelFallbacksJson: input.modelFallbacksJson ?? '[]',
     lastActivityAt: timestamp,
     lastRunAt: null,
     lastStopAt: null,
@@ -150,7 +153,12 @@ async function touchProject(db: RoleManagerDb, projectId: string) {
   await db.update(projects).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(projects.id, projectId));
 }
 
-async function findRoleDefaultModel(db: RoleManagerDb, projectId: string, roleKey: string): Promise<{ provider: string; id: string } | null> {
+async function findRoleDefaultModel(db: RoleManagerDb, projectId: string, roleKey: string): Promise<{
+  provider: string;
+  id: string;
+  thinkingLevel?: string | null;
+  candidateModels?: Array<{ provider: string; id: string; thinkingLevel?: string | null }>;
+} | null> {
   const [project] = await db
     .select({ roleDefaultModels: projects.roleDefaultModels })
     .from(projects)
@@ -158,10 +166,18 @@ async function findRoleDefaultModel(db: RoleManagerDb, projectId: string, roleKe
     .limit(1);
   if (!project?.roleDefaultModels) return null;
   try {
-    const parsed = JSON.parse(project.roleDefaultModels) as Record<string, { provider: string; id: string } | null>;
+    const parsed = JSON.parse(project.roleDefaultModels) as Record<string, any>;
     const entry = parsed[roleKey];
     if (entry && entry.provider && entry.id) {
-      return { provider: entry.provider, id: entry.id };
+      const result: any = {
+        provider: entry.provider,
+        id: entry.id,
+      };
+      if (entry.thinkingLevel) result.thinkingLevel = entry.thinkingLevel;
+      if (Array.isArray(entry.candidateModels) && entry.candidateModels.length > 0) {
+        result.candidateModels = entry.candidateModels;
+      }
+      return result;
     }
     return null;
   } catch {
@@ -224,8 +240,15 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       } as any);
 
       if (input.plannerModel?.provider && input.plannerModel?.id) {
-        const roleDefaults: Record<string, { provider: string; id: string } | null> = {};
-        roleDefaults.planner = { provider: input.plannerModel.provider, id: input.plannerModel.id };
+        const roleDefaults: Record<string, { provider: string; id: string; thinkingLevel?: string | null } | null> = {};
+        const entry: { provider: string; id: string; thinkingLevel?: string } = {
+          provider: input.plannerModel.provider,
+          id: input.plannerModel.id,
+        };
+        if (input.plannerModel.thinkingLevel && typeof input.plannerModel.thinkingLevel === 'string') {
+          entry.thinkingLevel = input.plannerModel.thinkingLevel;
+        }
+        roleDefaults.planner = entry;
         await db.update(projects)
           .set({ roleDefaultModels: JSON.stringify(roleDefaults) })
           .where(eq(projects.id, projectId));
@@ -243,7 +266,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       return { projectId, sessionId, piSessionId };
     },
 
-    async createTopLevelPlannerSession(input: { projectId: string; projectName: string; projectPath: string; createdBy: string; plannerTemplate?: SessionTemplateRow; model?: { provider: string; id: string } | null }) {
+    async createTopLevelPlannerSession(input: { projectId: string; projectName: string; projectPath: string; createdBy: string; plannerTemplate?: SessionTemplateRow; model?: { provider: string; id: string; thinkingLevel?: string | null } | null }) {
       const plannerTemplate = input.plannerTemplate ?? await findRoleTemplate(db, 'planner');
       const sessionId = id('session');
       const title = `${input.projectName} · 负责人`;
@@ -254,9 +277,21 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         title,
         prompt: compiledPrompt,
         cwd: input.projectPath,
-        model: input.model ?? undefined,
+        model: input.model ? { provider: input.model.provider, id: input.model.id } : undefined,
       });
       const piSessionId = piSession.locator.piSessionId ?? piSession.sessionId;
+
+      // Apply thinking level after session creation if set
+      const thinkingLevel = input.model?.thinkingLevel;
+      if (thinkingLevel && typeof thinkingLevel === 'string') {
+        await piClient.setThinkingLevel(piSessionId, piSession.locator, thinkingLevel, input.projectPath).catch((err: Error) => {
+          console.warn('[role-manager] Failed to set thinking level for planner session', { piSessionId, error: err.message });
+        });
+      }
+
+      // 获取完整的 roleDefaultModel，如果有 candidateModels 则传入
+      const plannerRoleDefaults = await findRoleDefaultModel(db, input.projectId, 'planner');
+      const plannerFallbacks = plannerRoleDefaults?.candidateModels ?? [];
 
       await insertSession(db, {
         id: sessionId,
@@ -275,6 +310,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         compiledPrompt,
         currentModelProvider: piSession.model?.provider ?? null,
         currentModelId: piSession.model?.id ?? null,
+        modelFallbacksJson: JSON.stringify(plannerFallbacks),
       });
 
       await touchProject(db, input.projectId);
@@ -296,10 +332,20 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         title,
         prompt: compiledPrompt,
         cwd,
-        model: inheritedModel ?? undefined,
+        model: inheritedModel ? { provider: inheritedModel.provider, id: inheritedModel.id } : undefined,
       });
       const piSessionId = piSession.locator.piSessionId ?? piSession.sessionId;
+
+      // Apply thinking level from role default model if set
+      const thinkingLevel = roleDefaultModel?.thinkingLevel;
+      if (thinkingLevel && typeof thinkingLevel === 'string') {
+        await piClient.setThinkingLevel(piSessionId, piSession.locator, thinkingLevel, cwd).catch((err: Error) => {
+          console.warn('[role-manager] Failed to set thinking level for blank session', { piSessionId, error: err.message });
+        });
+      }
+
       const currentModel = await piClient.getCurrentModel(piSessionId);
+      const blankFallbacks = roleDefaultModel?.candidateModels ?? [];
 
       await insertSession(db, {
         id: sessionId,
@@ -318,6 +364,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         compiledPrompt,
         currentModelProvider: currentModel?.provider ?? piSession.model?.provider ?? null,
         currentModelId: currentModel?.id ?? piSession.model?.id ?? null,
+        modelFallbacksJson: JSON.stringify(blankFallbacks),
       });
 
       await touchProject(db, input.projectId);
@@ -357,13 +404,22 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         title,
         prompt: compiledPrompt,
         cwd,
-        model: inheritedModel ?? undefined,
+        model: inheritedModel ? { provider: inheritedModel.provider, id: inheritedModel.id } : undefined,
       });
       const piSessionId = piSession.locator.piSessionId ?? piSession.sessionId;
+
+      // Apply thinking level from role default model if set
+      const thinkingLevel = roleDefaultModel?.thinkingLevel;
+      if (thinkingLevel && typeof thinkingLevel === 'string') {
+        await piClient.setThinkingLevel(piSessionId, piSession.locator, thinkingLevel, cwd).catch((err: Error) => {
+          console.warn('[role-manager] Failed to set thinking level for spawned session', { piSessionId, role: input.role, error: err.message });
+        });
+      }
 
       const currentModel = await piClient.getCurrentModel(piSessionId);
 
       const sessionId = id('session');
+      const spawnFallbacks = roleDefaultModel?.candidateModels ?? [];
       await insertSession(db, {
         id: sessionId,
         projectId: input.projectId,
@@ -381,6 +437,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         compiledPrompt,
         currentModelProvider: currentModel?.provider ?? piSession.model?.provider ?? null,
         currentModelId: currentModel?.id ?? piSession.model?.id ?? null,
+        modelFallbacksJson: JSON.stringify(spawnFallbacks),
       });
 
       await touchProject(db, input.projectId);

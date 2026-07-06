@@ -12,7 +12,7 @@ import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
 import { createAuditService, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
-import { readdir, readFile, appendFile, access, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, appendFile, access, stat, writeFile, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -386,11 +386,32 @@ export function registerSessionRoutes(app: Hono) {
     const piPage = await piClient.getHistory(sessionId, parseLocator(session.piSessionLocatorJson), cursor ?? null, limit);
     const pageRows = piPage.messages;
 
+    // Merge slash_command messages from DB (not in Pi session file)
+    let dbCommandMessages: Array<typeof pageRows[number]> = [];
+    if (!cursor || cursor === '0') {
+      const dbRows = await db.select().from(messages)
+        .where(and(eq(messages.sessionId, sessionId), eq(messages.messageKind, 'slash_command')))
+        .orderBy(desc(messages.createdAt))
+        .limit(20);
+      dbCommandMessages = dbRows.map((row) => ({
+        id: row.id,
+        role: row.role as 'user' | 'assistant',
+        text: row.contentText,
+        messageKind: row.messageKind as any,
+        createdAt: new Date(row.createdAt).toISOString(),
+        toolName: undefined,
+        toolArgs: undefined,
+        contentBlocks: undefined,
+      }));
+    }
+
+    const allMessages = [...dbCommandMessages.reverse(), ...pageRows];
+
     return c.json({
       session_id: sessionId,
       cursor: cursor ?? null,
       next_cursor: piPage.nextCursor,
-      messages: pageRows.map((row: typeof pageRows[number]) => ({
+      messages: allMessages.map((row: typeof pageRows[number]) => ({
         id: row.id,
         role: row.role,
         message_kind: row.messageKind ?? 'normal',
@@ -460,6 +481,44 @@ export function registerSessionRoutes(app: Hono) {
       return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
     }
 
+    // Intercept slash commands — execute locally if recognized, otherwise send to agent
+    if (content && /^\s*\//.test(content)) {
+      const commandResult = await piClient.executeCommand(sessionId, content);
+      if (commandResult !== null) {
+        const now = nextMessageTime();
+        const userMsgId = randomId('message');
+        const assistantMsgId = randomId('message');
+
+        await db.insert(messages).values({
+          id: userMsgId, sessionId, piMessageId: null, messageKind: 'slash_command',
+          sourceSessionId: null, role: 'user', contentText: content,
+          contentBlocksJson: null, contentVersion: 1, createdAt: now,
+        } as any);
+
+        const responseNow = nextMessageTime();
+        await db.insert(messages).values({
+          id: assistantMsgId, sessionId, piMessageId: null, messageKind: 'slash_command',
+          sourceSessionId: null, role: 'assistant', contentText: commandResult,
+          contentBlocksJson: null, contentVersion: 1, createdAt: responseNow,
+        } as any);
+
+        log.info('slash command executed', { sessionId, content });
+        await createAuditService(db).record(userId, "message.sent", "session", sessionId, { message_id: userMsgId });
+
+        // Push via WebSocket for real-time UI
+        socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, phase: 'start' }));
+        socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, delta: commandResult, phase: 'delta' }));
+        socketHub.sendToSession(sessionId, createEvent('chat_stream', { session_id: sessionId, phase: 'complete' }));
+
+        socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
+        socketHub.broadcast(createEvent('tree.changed', { project_id: session.projectId }, { project_id: session.projectId }));
+
+        return c.json({ accepted: true, session_id: sessionId, run_id: `cmd_${crypto.randomUUID().slice(0, 8)}`, message_id: assistantMsgId }, 202);
+      }
+      // Unknown command — fall through, send to agent for processing
+      log.info('unknown slash command, forwarding to agent', { sessionId, content });
+    }
+
     const currentModel = await resolveSessionModelWithCapabilities(piClient, session);
     if (attachmentParse.images.length > 0 && !modelSupportsImageInput(currentModel)) {
       return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
@@ -518,6 +577,14 @@ export function registerSessionRoutes(app: Hono) {
         socketHub.broadcast(createEvent('session.created', { session_id: childSessionId }, { project_id: projectId, session_id: childSessionId }));
         socketHub.broadcast(createEvent('tree.changed', { project_id: projectId }, { project_id: projectId }));
       },
+      candidateModels: (() => {
+        try {
+          const parsed = JSON.parse(session.modelFallbacksJson ?? '[]');
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      })(),
     });
 
     socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
@@ -580,6 +647,99 @@ export function registerSessionRoutes(app: Hono) {
         return c.json({ error: { code: 'MODEL_NOT_FOUND', message: 'Model not found' } }, 404);
       }
       throw error;
+    }
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/thinking-level:
+   *   get:
+   *     summary: 获取会话当前 thinking level 及可用 levels
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/thinking-level', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const locator = parseLocator(session.piSessionLocatorJson);
+    let currentLevel: string | null = null;
+    let availableLevels: string[] = [];
+    try {
+      currentLevel = await piClient.getThinkingLevel(sessionId, locator, project.projectPath);
+      availableLevels = await piClient.getAvailableThinkingLevels(sessionId, locator, project.projectPath);
+    } catch (err) {
+      log.warn('thinking-level get failed, returning defaults', { sessionId, error: String(err) });
+    }
+
+    return c.json({
+      session_id: sessionId,
+      current_level: currentLevel,
+      available_levels: availableLevels,
+    });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/thinking-level:
+   *   put:
+   *     summary: 设置会话 thinking level
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 仅允许在会话 idle 时切换 thinking level。
+   *     responses:
+   *       200:
+   *         description: 设置成功。
+   *       400:
+   *         description: level 参数缺失。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   *       409:
+   *         description: 会话繁忙。
+   */
+  app.put('/api/v1/sessions/:sessionId/thinking-level', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const level = String((body as { level?: string }).level ?? '');
+
+    if (!level) return c.json({ error: { code: 'INVALID_LEVEL', message: 'Thinking level is required' } }, 400);
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    if (session.runtimeStatus === 'running') {
+      return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+    }
+
+    const locator = parseLocator(session.piSessionLocatorJson);
+    try {
+      const currentLevel = await piClient.setThinkingLevel(sessionId, locator, level, project.projectPath);
+      return c.json({ session_id: sessionId, current_level: currentLevel });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown';
+      if (message === 'pi_session_busy') {
+        return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+      }
+      return c.json({ error: { code: 'SET_THINKING_LEVEL_FAILED', message } }, 500);
     }
   });
 
@@ -843,6 +1003,47 @@ export function registerSessionRoutes(app: Hono) {
 
     await writeFile(absolutePath, content, 'utf8');
     return c.json({ session_id: sessionId, path: relativePath, size: contentBytes.byteLength });
+  });
+
+  /**
+   * DELETE /api/v1/sessions/{sessionId}/files/content
+   * Deletes a file. Request body: { path: string }
+   */
+  app.delete('/api/v1/sessions/:sessionId/files/content', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const relativePath = String((body as { path?: string }).path ?? '').trim();
+
+    if (!relativePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'File path is required' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    const absolutePath = resolveSafeFilePath(cwd, relativePath);
+    if (!absolutePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Path is outside project root' } }, 400);
+    }
+
+    const pathSegments = absolutePath.replace(cwd, '').split(/[/\\]/).filter(Boolean);
+    const hasIgnoredSegment = pathSegments.some((seg) => IGNORED_ENTRY_NAMES.has(seg));
+    if (hasIgnoredSegment) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Cannot delete from ignored directories (.git, node_modules, etc.)' } }, 400);
+    }
+
+    const fileStat = await stat(absolutePath).catch(() => null);
+    if (!fileStat) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'File not found' } }, 404);
+    }
+    if (fileStat.isDirectory()) {
+      return c.json({ error: { code: 'IS_DIRECTORY', message: 'Cannot delete a directory' } }, 400);
+    }
+
+    await unlink(absolutePath);
+    return c.json({ session_id: sessionId, path: relativePath, result: 'deleted' });
   });
 
   app.get('/api/v1/sessions/:sessionId/git-diff', async (c) => {
@@ -1139,6 +1340,55 @@ export function registerSessionRoutes(app: Hono) {
     return c.json({ session_id: sessionId, accepted: true }, 202);
   });
 
+  app.post('/api/v1/sessions/:sessionId/restore-runtime', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath })
+      .from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+    const locator = parseLocator(session.piSessionLocatorJson);
+    piClient.restoreRuntime(sessionId, locator, project.projectPath).then(() => {
+      log.info('runtime restored on demand', { sessionId });
+      socketHub.sendToSession(sessionId, createEvent('runtime.restored', {}, { project_id: session.projectId, session_id: sessionId }));
+    }).catch((err) => {
+      log.warn('runtime restore on demand failed', { sessionId, error: String(err) });
+    });
+    return c.json({ session_id: sessionId, accepted: true }, 202);
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/commands:
+   *   get:
+   *     summary: 获取会话可用的 slash commands
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 返回当前会话可用的 slash commands，包括扩展命令、prompt templates 和 skills。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/commands', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const commands = await piClient.getCommands(sessionId);
+    return c.json({ commands });
+  });
+
   registerWebSocketRoutes(app);
 }
 
@@ -1227,4 +1477,5 @@ export function registerSessionMutationRoutes(app: Hono) {
       pinned_at: updatedPinnedAt ? new Date(updatedPinnedAt).toISOString() : null,
     });
   });
+
 }

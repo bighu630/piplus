@@ -13,3 +13,5 @@ pi.db
 /piplus.sqlite-shm
 /piplus.sqlite-wal
 .worktrees
+tsconfig.tsbuildinfo
+/apps/desktop/bun-bin/bun.exe

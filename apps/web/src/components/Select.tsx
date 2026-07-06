@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { ChevronDown, Search } from 'lucide-react';
+import { fuzzyScore } from '../lib/fuzzy';
 
 interface SelectOption {
   value: string;
@@ -17,6 +18,8 @@ interface SelectProps {
   dropdownMaxHeight?: string;
   /** Minimum width for the dropdown panel. Defaults to the trigger button width. */
   dropdownMinWidth?: string;
+  /** Optional: custom text to show in the trigger button for the selected option. */
+  getDisplayValue?: (option: SelectOption) => string;
 }
 
 export default function Select({
@@ -28,6 +31,7 @@ export default function Select({
   searchable = false,
   dropdownMaxHeight = 'max-h-60',
   dropdownMinWidth,
+  getDisplayValue,
 }: SelectProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -40,13 +44,23 @@ export default function Select({
   const selectedOption = options.find((o) => o.value === value);
 
   const filteredOptions = useMemo(() => {
-    if (!search.trim()) return options;
-    const q = search.toLowerCase();
-    return options.filter(
-      (o) =>
-        o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q),
-    );
-  }, [options, search]);
+    if (!searchable) return options;
+    const q = search.trim();
+    if (!q) return options;
+    return options
+      .map((option, index) => {
+        const labelScore = fuzzyScore(q, option.label);
+        const valueScore = fuzzyScore(q, option.value);
+        return {
+          option,
+          index,
+          score: Math.max(labelScore, valueScore),
+        };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map((item) => item.option);
+  }, [options, search, searchable]);
 
   // Reset search when dropdown closes
   useEffect(() => {
@@ -70,9 +84,7 @@ export default function Select({
     setDropdownStyle({
       position: 'fixed',
       left: `${rect.left}px`,
-      width: 'max-content',
-      minWidth: `${rect.width}px`,
-      maxWidth: 'min(calc(100vw - 20px), 300px)',
+      width: `${rect.width}px`,
       top: above ? undefined : `${rect.bottom}px`,
       bottom: above ? `${window.innerHeight - rect.top}px` : undefined,
     });
@@ -137,7 +149,9 @@ export default function Select({
         className="w-full flex items-center justify-between px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 cursor-pointer"
       >
         <span className={`truncate ${selectedOption ? '' : 'text-slate-400'}`}>
-          {selectedOption ? selectedOption.label : placeholder ?? '请选择...'}
+          {selectedOption
+            ? (getDisplayValue ? getDisplayValue(selectedOption) : selectedOption.label)
+            : placeholder ?? '请选择...'}
         </span>
         <ChevronDown
           className={`w-3.5 h-3.5 text-slate-500 shrink-0 ml-1 transition-transform ${

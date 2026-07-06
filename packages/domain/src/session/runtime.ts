@@ -36,6 +36,11 @@ export type StartSessionRunInput = {
   userId: string;
   content: string;
   images?: PiImageInput[];
+  candidateModels?: Array<{
+    provider: string;
+    id: string;
+    thinkingLevel?: string | null;
+  }>;
   requestId?: string;
   startedAt?: Date;
   safetyTimeoutMs?: number;
@@ -95,7 +100,14 @@ export async function markSessionIdle(db: RoleManagerDb, sessionId: string, time
 
 export async function startSessionRun(input: StartSessionRunInput) {
   const startedAt = input.startedAt ?? new Date();
-  const safetyTimeoutMs = input.safetyTimeoutMs ?? 10 * 60 * 1000;
+  const safetyTimeoutMs = input.safetyTimeoutMs ?? (() => {
+    const raw = typeof process !== 'undefined' ? process.env.PIPLUS_SESSION_TIMEOUT_MS?.trim() : undefined;
+    if (raw !== undefined && raw !== '') {
+      const n = Number(raw);
+      if (Number.isFinite(n)) return n;
+    }
+    return 10 * 60 * 1000;
+  })();
 
   // Cancel any pending idle cleanup timer for this session
   clearIdleRuntimeCleanup(input.sessionId);
@@ -116,14 +128,68 @@ export async function startSessionRun(input: StartSessionRunInput) {
   }
 
   const locator = parseLocator(session.piSessionLocatorJson);
-  console.log('[session-runtime] restore start', {
+
+  // Load the role template key to determine which tools to expose
+  const [roleTmpl] = await input.db
+    .select({ key: roleTemplates.key })
+    .from(roleTemplates)
+    .where(eq(roleTemplates.id, session.roleTemplateId))
+    .limit(1);
+  const roleKey = roleTmpl?.key ?? null;
+
+  let toolDefs = await buildAllToolDefs(input.db);
+  // Planner is a root node — it coordinates children via spawn_session only.
+  // It does NOT call writeback_to_parent (reports directly to user) and
+  // does NOT call send_message_to_session (feature_lead/bugfix_lead interact independently).
+  if (roleKey === 'planner') {
+    toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent' && t.name !== 'send_message_to_session');
+  }
+
+  // Check first-conversation state from session file BEFORE ensureRuntime,
+  // so we can merge the role prompt with user content in a single turn.
+  const isFirst = input.piClient.isFirstConversation(input.sessionId);
+  let hadOutput = false;
+
+  console.log('[session-runtime] ensureRuntime start', {
     sessionId: input.sessionId,
     projectId: project.id,
     locatorFile: locator.sessionFile,
     dbModelProvider: session.currentModelProvider,
     dbModelId: session.currentModelId,
   });
-  await input.piClient.restoreRuntime(input.sessionId, locator, project.projectPath);
+  await input.piClient.ensureRuntime(input.sessionId, {
+    locator,
+    cwd: project.projectPath,
+    tools: toolDefs,
+    toolHandler: async (toolName, args) => {
+      return invokePlatformTool(toolName, args, {
+        db: input.db,
+        piClient: input.piClient,
+        sessionId: input.sessionId,
+        userId: input.userId,
+        onSessionCreated: input.onToolSessionCreated,
+        onRuntimeStatusChange: input.onRuntimeStatusChange,
+      });
+    },
+  });
+
+  // Get runtimeState AFTER ensureRuntime — the prompt is stored under piSessionId,
+  // and ensureRuntime's restoreRuntime migrates it to the domain sessionId.
+  // Reading it before ensureRuntime would return null for spawn_session cases.
+  const runtimeState = input.piClient.getRuntimeState(input.sessionId);
+
+  // Merge role prompt with user content for first conversation.
+  // Replaces the old injectPromptIfNeeded approach which sent the prompt
+  // as a separate LLM turn, breaking the single-turn merge semantics.
+  let finalContent = input.content;
+  if (isFirst && runtimeState?.prompt && input.content) {
+    finalContent = `${runtimeState.prompt}\n\n请尊重用户的语言习惯，现在用户说：\n\n${input.content}`;
+    console.log('[session-runtime] merged prompt + user message (first conversation)', { sessionId: input.sessionId });
+  } else if (isFirst && runtimeState?.prompt) {
+    // spawn_session: content is empty, just inject prompt
+    finalContent = runtimeState.prompt;
+    console.log('[session-runtime] injecting role prompt only (spawn session)', { sessionId: input.sessionId });
+  }
 
   if (session.currentModelProvider && session.currentModelId) {
     console.log('[session-runtime] enforce model from db', {
@@ -142,39 +208,14 @@ export async function startSessionRun(input: StartSessionRunInput) {
   }
 
   const runtimeModel = await input.piClient.getCurrentModel(input.sessionId);
-  console.log('[session-runtime] runtime model before bind', {
+  console.log('[session-runtime] runtime model after ensureRuntime', {
     sessionId: input.sessionId,
     provider: runtimeModel?.provider ?? null,
     id: runtimeModel?.id ?? null,
   });
 
-  // Load the role template key to determine which tools to expose
-  const [roleTmpl] = await input.db
-    .select({ key: roleTemplates.key })
-    .from(roleTemplates)
-    .where(eq(roleTemplates.id, session.roleTemplateId))
-    .limit(1);
-  const roleKey = roleTmpl?.key ?? null;
-
-  let toolDefs = await buildAllToolDefs(input.db);
-  // Planner is a root node — it coordinates children via spawn_session and send_message_to_session,
-  // but does not call writeback_to_parent itself (it reports directly to the user).
-  if (roleKey === 'planner') {
-    toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent');
-  }
-  await input.piClient.bindToolRuntime(input.sessionId, toolDefs, async (toolName, args) => {
-    return invokePlatformTool(toolName, args, {
-      db: input.db,
-      piClient: input.piClient,
-      sessionId: input.sessionId,
-      userId: input.userId,
-      onSessionCreated: input.onToolSessionCreated,
-      onRuntimeStatusChange: input.onRuntimeStatusChange,
-    });
-  }, project.projectPath);
-
   const boundRuntimeModel = await input.piClient.getCurrentModel(input.sessionId);
-  console.log('[session-runtime] runtime model after bind', {
+  console.log('[session-runtime] runtime model after ensureRuntime', {
     sessionId: input.sessionId,
     provider: boundRuntimeModel?.provider ?? null,
     id: boundRuntimeModel?.id ?? null,
@@ -236,11 +277,6 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
   const resetTimeout = () => {
     if (!timeoutHandle || cleanupDone) return;
-    // Only reset if less than 5 minutes remain on the countdown.
-    // During active streaming this avoids excessive
-    // clearTimeout/setTimeout calls while still extending near-expiry.
-    const remaining = safetyTimeoutMs - (Date.now() - (timeoutStartedAt ?? Date.now()));
-    if (remaining > 5 * 60_000) return;
     clearTimeout(timeoutHandle);
     timeoutStartedAt = Date.now();
     timeoutHandle = setTimeout(() => {
@@ -275,6 +311,10 @@ export async function startSessionRun(input: StartSessionRunInput) {
   const wrappedListener = input.onStreamEvent
     ? (event: PiSessionStreamEvent) => {
         resetTimeout();
+        // Track whether any output has been produced
+        if (event.type === 'message_start' || event.type === 'text_delta') {
+          hadOutput = true;
+        }
         try { void input.onStreamEvent!(event); } catch { /* isolate async handler */ }
       }
     : undefined;
@@ -283,8 +323,60 @@ export async function startSessionRun(input: StartSessionRunInput) {
     ? await input.piClient.subscribeSession(input.sessionId, wrappedListener)
     : () => {};
 
-  const sendPromise = input.piClient.sendMessage(input.sessionId, input.content, input.images?.length ? { images: input.images } : undefined);
-  void sendPromise.then(() => doCleanup()).catch((error) => doCleanup(error));
+  const candidateModels = input.candidateModels ?? [];
+  let currentCandidateIndex = 0;
+
+  const attemptSend = async (): Promise<void> => {
+    // Reset hadOutput for each retry — we only care about output from THIS attempt
+    hadOutput = false;
+    try {
+      await input.piClient.sendMessage(input.sessionId, finalContent, input.images?.length ? { images: input.images } : undefined);
+      // Success — cleanup normally
+      await doCleanup();
+    } catch (error) {
+      if (isFirst && !hadOutput && currentCandidateIndex < candidateModels.length) {
+        // Switch to next candidate model and retry
+        const nextModel = candidateModels[currentCandidateIndex];
+        currentCandidateIndex++;
+        console.log('[session-runtime] fallback: switching to candidate model', {
+          sessionId: input.sessionId,
+          candidateIndex: currentCandidateIndex,
+          provider: nextModel.provider,
+          id: nextModel.id,
+        });
+
+        try {
+          // Set candidate model on the session
+          await input.piClient.setSessionModel(
+            input.sessionId,
+            locator,
+            { provider: nextModel.provider, id: nextModel.id },
+            project.projectPath,
+          );
+
+          // Set thinking level if provided
+          if (nextModel.thinkingLevel && typeof nextModel.thinkingLevel === 'string') {
+            await input.piClient.setThinkingLevel(input.sessionId, locator, nextModel.thinkingLevel, project.projectPath).catch((err: Error) => {
+              console.warn('[session-runtime] fallback: failed to set thinking level', { sessionId: input.sessionId, error: err.message });
+            });
+          }
+        } catch (switchErr) {
+          console.warn('[session-runtime] fallback: failed to switch model, skipping candidate', {
+            sessionId: input.sessionId,
+            error: switchErr instanceof Error ? switchErr.message : String(switchErr),
+          });
+        }
+
+        // Retry with the same content
+        return attemptSend();
+      }
+
+      // Not eligible for fallback — proceed with error cleanup
+      await doCleanup(error);
+    }
+  };
+
+  void attemptSend();
 
   return {
     runId: `run_${crypto.randomUUID().slice(0, 10)}`,

@@ -8,6 +8,7 @@ import type {
   SessionFileTreeResponseDTO,
   SessionFileContentResponseDTO,
   SessionFileSaveResponseDTO,
+  SessionFileDeleteResponseDTO,
   ProjectTodoDTO,
 } from '@piplus/shared';
 
@@ -16,6 +17,7 @@ export type ModelInfo = {
   id: string;
   label: string;
   input?: string[];
+  thinkingLevelMap?: Record<string, string | null>;
 };
 
 export type ProviderFormModel = {
@@ -125,6 +127,23 @@ export function setSessionModel(sessionId: string, model: { provider: string; id
   });
 }
 
+export type ThinkingLevelResponse = {
+  session_id: string;
+  current_level: string | null;
+  available_levels: string[];
+};
+
+export function getSessionThinkingLevel(sessionId: string) {
+  return request<ThinkingLevelResponse>(`/api/v1/sessions/${sessionId}/thinking-level`);
+}
+
+export function setSessionThinkingLevel(sessionId: string, level: string) {
+  return request<{ session_id: string; current_level: string }>(
+    `/api/v1/sessions/${sessionId}/thinking-level`,
+    { method: 'PUT', body: JSON.stringify({ level }) },
+  );
+}
+
 export function getTree() {
   return request<TreeResponse>('/api/v1/tree');
 }
@@ -205,6 +224,29 @@ export function saveSessionFileContent(sessionId: string, path: string, content:
   return request<SessionFileSaveResponseDTO>(`/api/v1/sessions/${sessionId}/files/content`, {
     method: 'PUT',
     body: JSON.stringify({ path, content }),
+  });
+}
+
+export function deleteSessionFile(sessionId: string, path: string) {
+  return request<SessionFileDeleteResponseDTO>(`/api/v1/sessions/${sessionId}/files/content`, {
+    method: 'DELETE',
+    body: JSON.stringify({ path }),
+  });
+}
+
+export type CommandInfo = {
+  name: string;
+  description?: string;
+  source: 'extension' | 'prompt' | 'skill';
+};
+
+export function getSessionCommands(sessionId: string) {
+  return request<{ commands: CommandInfo[] }>(`/api/v1/sessions/${sessionId}/commands`);
+}
+
+export function restoreSessionRuntime(sessionId: string) {
+  return request<{ session_id: string; accepted: boolean }>(`/api/v1/sessions/${sessionId}/restore-runtime`, {
+    method: 'POST',
   });
 }
 
@@ -302,12 +344,23 @@ export function deleteProject(projectId: string) {
   return request<{ project_id: string; status: string }>(`/api/v1/projects/${projectId}`, { method: 'DELETE' });
 }
 
+export type RoleModelEntry = {
+  provider: string;
+  id: string;
+  thinkingLevel?: string | null;
+  candidateModels?: Array<{
+    provider: string;
+    id: string;
+    thinkingLevel?: string | null;
+  }>;
+};
+
 export function getProjectRoleModels(projectId: string) {
-  return request<Record<string, { provider: string; id: string } | null>>(`/api/v1/projects/${projectId}/role-models`);
+  return request<Record<string, RoleModelEntry | null>>(`/api/v1/projects/${projectId}/role-models`);
 }
 
-export function setProjectRoleModels(projectId: string, models: Record<string, { provider: string; id: string } | null>) {
-  return request<{ ok: boolean; role_default_models: Record<string, { provider: string; id: string } | null> }>(`/api/v1/projects/${projectId}/role-models`, {
+export function setProjectRoleModels(projectId: string, models: Record<string, RoleModelEntry | null>) {
+  return request<{ ok: boolean; role_default_models: Record<string, RoleModelEntry | null> }>(`/api/v1/projects/${projectId}/role-models`, {
     method: 'PUT',
     body: JSON.stringify(models),
   });
@@ -330,6 +383,7 @@ export type PiPackageScope = 'user' | 'project';
 export type PiPackageListItem = {
   source: string;
   scope: PiPackageScope;
+  filtered: boolean;
   installedPath?: string;
 };
 
@@ -340,8 +394,9 @@ export type PiPackageUpdate = {
   scope: 'user' | 'project';
 };
 
-export function getPackages() {
-  return request<{ packages: PiPackageListItem[] }>('/api/v1/packages');
+export function getPackages(projectId?: string) {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  return request<{ packages: PiPackageListItem[] }>(`/api/v1/packages${query}`);
 }
 
 export function installPackage(source: string, local?: boolean, projectId?: string) {
@@ -358,15 +413,23 @@ export function removePackage(source: string, local?: boolean, projectId?: strin
   });
 }
 
-export function updatePackages(source?: string) {
+export function updatePackages(source?: string, projectId?: string) {
   return request<{ ok: boolean }>('/api/v1/packages/update', {
     method: 'POST',
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, local: !!projectId, project_id: projectId }),
   });
 }
 
-export function getPackageUpdates() {
-  return request<{ updates: PiPackageUpdate[] }>('/api/v1/packages/updates');
+export function togglePackage(source: string, filtered: boolean, local?: boolean, projectId?: string) {
+  return request<{ ok: boolean }>('/api/v1/packages/toggle', {
+    method: 'POST',
+    body: JSON.stringify({ source, filtered, local, project_id: projectId }),
+  });
+}
+
+export function getPackageUpdates(projectId?: string) {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  return request<{ updates: PiPackageUpdate[] }>(`/api/v1/packages/updates${query}`);
 }
 
 export function getProjectTodos(projectId: string) {

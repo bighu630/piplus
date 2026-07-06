@@ -42,6 +42,18 @@ function makeRecordingPiClient() {
     async restoreRuntime() {
       return;
     },
+    async ensureRuntime() {
+      return;
+    },
+    async injectPromptIfNeeded() {
+      return;
+    },
+    isFirstConversation() {
+      return true;
+    },
+    getRuntimeState() {
+      return null;
+    },
     async subscribeSession() {
       return () => {};
     },
@@ -56,6 +68,9 @@ function makeRecordingPiClient() {
     },
     async closeRuntime() {
       return;
+    },
+    async reloadIdleRuntimes() {
+      return 0;
     },
     async bindToolRuntime() {
       return;
@@ -83,6 +98,21 @@ function makeRecordingPiClient() {
     },
     async compactSession() {
       return;
+    },
+    async getCommands() {
+      return [];
+    },
+    async executeCommand() {
+      return null;
+    },
+    async getThinkingLevel() {
+      return null;
+    },
+    async getAvailableThinkingLevels() {
+      return [];
+    },
+    async setThinkingLevel() {
+      return 'medium';
     },
   };
 }

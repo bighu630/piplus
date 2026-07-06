@@ -236,6 +236,25 @@ async function startChildSessionRun(
   setRequestContext(childSessionId, requestId);
   console.log('[role-manager-tools] startChildSessionRun', { childSessionId, requestId });
 
+  // Query child session to get candidate models for fallback
+  const [childSession] = await ctx.db
+    .select({ modelFallbacksJson: sessions.modelFallbacksJson })
+    .from(sessions)
+    .where(eq(sessions.id, childSessionId))
+    .limit(1);
+
+  let candidateModels: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
+  if (childSession?.modelFallbacksJson) {
+    try {
+      const parsed = JSON.parse(childSession.modelFallbacksJson);
+      if (Array.isArray(parsed)) {
+        candidateModels = parsed;
+      }
+    } catch {
+      // ignore parse error
+    }
+  }
+
   await startSessionRun({
     db: ctx.db,
     piClient: ctx.piClient,
@@ -243,6 +262,7 @@ async function startChildSessionRun(
     userId: ctx.userId,
     content,
     requestId,
+    candidateModels,
     onToolSessionCreated,
     onRuntimeStatusChange: ctx.onRuntimeStatusChange,
   });
@@ -258,6 +278,7 @@ async function waitForChildWriteback(
   const pollIntervalMs = 2000;
   const deadline = Date.now() + timeoutMs;
   let lastReminderAt = Date.now();
+  let reminderCount = 0;
 
   while (Date.now() < deadline) {
     const [parent] = await ctx.db
@@ -326,14 +347,151 @@ async function waitForChildWriteback(
     }
 
     const [child] = await ctx.db
-      .select({ runtimeStatus: sessions.runtimeStatus })
+      .select({
+        runtimeStatus: sessions.runtimeStatus,
+        lastRuntimeError: sessions.lastRuntimeError,
+        modelFallbacksJson: sessions.modelFallbacksJson,
+        compiledPrompt: sessions.compiledPrompt,
+        currentModelProvider: sessions.currentModelProvider,
+        currentModelId: sessions.currentModelId,
+      })
       .from(sessions)
       .where(eq(sessions.id, childSessionId))
       .limit(1);
 
+    // Check if child has produced ANY output (assistant messages)
+    const [anyOutput] = await ctx.db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.sessionId, childSessionId),
+          eq(messages.role, 'assistant'),
+        ),
+      )
+      .limit(1);
+    const hasNoOutput = !anyOutput;
+
     const now = Date.now();
+
+    // If child failed (idle + explicit error), try candidates or return failure.
+    if (child?.runtimeStatus === 'idle' && child?.lastRuntimeError) {
+      let remainingCandidates: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
+      if (child?.modelFallbacksJson) {
+        try {
+          const parsed = JSON.parse(child.modelFallbacksJson);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            remainingCandidates = parsed;
+          }
+        } catch { /* ignore */ }
+      }
+
+      if (remainingCandidates.length > 0) {
+        // Pick next candidate and remove it from the list
+        const [nextCandidate, ...rest] = remainingCandidates;
+        const updatedFallbacks = rest.length > 0 ? JSON.stringify(rest) : null;
+
+        console.log('[role-manager-tools] waitForChildWriteback switching to candidate model', {
+          childSessionId,
+          requestId,
+          from: `${child.currentModelProvider}/${child.currentModelId}`,
+          to: `${nextCandidate.provider}/${nextCandidate.id}`,
+          remaining: rest.length,
+          reason: 'error',
+        });
+
+        // Switch child's model to the candidate
+        await ctx.db.update(sessions)
+          .set({
+            currentModelProvider: nextCandidate.provider,
+            currentModelId: nextCandidate.id,
+            modelFallbacksJson: updatedFallbacks ?? '',
+            lastRuntimeError: '',
+          })
+          .where(eq(sessions.id, childSessionId));
+
+        // Restart child with the new model and the original task
+        const retryContent = child.compiledPrompt || `原始执行因模型故障（${child.lastRuntimeError}）失败，请重新完成任务。`;
+        await startChildSessionRun(ctx, childSessionId, retryContent, requestId, ctx.onSessionCreated);
+
+        // Continue polling — wait for this new attempt to complete
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        continue;
+      }
+
+      // No more candidates — return error to parent
+      console.log('[role-manager-tools] waitForChildWriteback child failed (no candidates left)', {
+        childSessionId,
+        requestId,
+        error: child.lastRuntimeError,
+      });
+      return {
+        status: 'failed',
+        session_id: childSessionId,
+        message: `子会话执行失败：${child.lastRuntimeError}`,
+        error: child.lastRuntimeError,
+      };
+    }
+
+    // Child is idle with no writeback and no output — try remaining
+    // candidates before giving up. The model may have produced no output
+    // without throwing (silent failure).
+    if (child?.runtimeStatus === 'idle' && hasNoOutput) {
+      let remainingCandidates: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
+      if (child?.modelFallbacksJson) {
+        try {
+          const parsed = JSON.parse(child.modelFallbacksJson);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            remainingCandidates = parsed;
+          }
+        } catch { /* ignore */ }
+      }
+
+      if (remainingCandidates.length > 0) {
+        const [nextCandidate, ...rest] = remainingCandidates;
+        const updatedFallbacks = rest.length > 0 ? JSON.stringify(rest) : null;
+
+        console.log('[role-manager-tools] waitForChildWriteback switching to candidate model (no output)', {
+          childSessionId,
+          requestId,
+          from: `${child.currentModelProvider}/${child.currentModelId}`,
+          to: `${nextCandidate.provider}/${nextCandidate.id}`,
+          remaining: rest.length,
+          reminderCount,
+        });
+
+        await ctx.db.update(sessions)
+          .set({
+            currentModelProvider: nextCandidate.provider,
+            currentModelId: nextCandidate.id,
+            modelFallbacksJson: updatedFallbacks ?? '',
+            lastRuntimeError: '',
+          })
+          .where(eq(sessions.id, childSessionId));
+
+        const retryContent = child.compiledPrompt || '原始执行未产生输出，请重新完成任务。';
+        await startChildSessionRun(ctx, childSessionId, retryContent, requestId, ctx.onSessionCreated);
+
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        continue;
+      }
+
+      console.log('[role-manager-tools] waitForChildWriteback child failed (no output, no candidates)', {
+        childSessionId,
+        requestId,
+        reminderCount,
+      });
+      return {
+        status: 'failed',
+        session_id: childSessionId,
+        message: '子会话执行失败：模型未产生任何输出',
+        error: '模型未产生任何输出',
+      };
+    }
+
     if (child?.runtimeStatus === 'idle' && now - lastReminderAt >= WRITEBACK_REMINDER_INTERVAL_MS) {
       lastReminderAt = now;
+      reminderCount++;
       const reminder = 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.';
       console.log('[role-manager-tools] waitForChildWriteback reminder', {
         childSessionId,

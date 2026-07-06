@@ -12,7 +12,7 @@ export type ProjectDTO = {
   last_activity_at: string;
   created_at: string;
   sessions: SessionTreeNodeDTO[];
-  role_default_models: Record<string, { provider: string; id: string } | null>;
+  role_default_models: Record<string, RoleDefaultModelEntryDTO | null>;
 };
 
 export type SessionTreeNodeDTO = {
@@ -151,6 +151,12 @@ export type SessionFileSaveResponseDTO = {
   size: number;
 };
 
+export type SessionFileDeleteResponseDTO = {
+  session_id: string;
+  path: string;
+  result: 'deleted';
+};
+
 export type SessionContextUsageDTO = {
   session_id: string;
   tokens: number | null;
@@ -177,4 +183,14 @@ export type GitCheckoutResponseDTO = {
   stdout?: string;
   stderr?: string;
   branch: string;
+};
+
+export type RoleModelVariantDTO = {
+  provider: string;
+  id: string;
+  thinkingLevel?: string | null;
+};
+
+export type RoleDefaultModelEntryDTO = RoleModelVariantDTO & {
+  candidateModels?: RoleModelVariantDTO[];
 };
