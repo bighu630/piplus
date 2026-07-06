@@ -36,6 +36,11 @@ export type StartSessionRunInput = {
   userId: string;
   content: string;
   images?: PiImageInput[];
+  candidateModels?: Array<{
+    provider: string;
+    id: string;
+    thinkingLevel?: string | null;
+  }>;
   requestId?: string;
   startedAt?: Date;
   safetyTimeoutMs?: number;
@@ -143,6 +148,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
   // Check first-conversation state from session file BEFORE ensureRuntime,
   // so we can merge the role prompt with user content in a single turn.
   const isFirst = input.piClient.isFirstConversation(input.sessionId);
+  let hadOutput = false;
 
   console.log('[session-runtime] ensureRuntime start', {
     sessionId: input.sessionId,
@@ -305,6 +311,10 @@ export async function startSessionRun(input: StartSessionRunInput) {
   const wrappedListener = input.onStreamEvent
     ? (event: PiSessionStreamEvent) => {
         resetTimeout();
+        // Track whether any output has been produced
+        if (event.type === 'message_start' || event.type === 'text_delta') {
+          hadOutput = true;
+        }
         try { void input.onStreamEvent!(event); } catch { /* isolate async handler */ }
       }
     : undefined;
@@ -313,8 +323,60 @@ export async function startSessionRun(input: StartSessionRunInput) {
     ? await input.piClient.subscribeSession(input.sessionId, wrappedListener)
     : () => {};
 
-  const sendPromise = input.piClient.sendMessage(input.sessionId, finalContent, input.images?.length ? { images: input.images } : undefined);
-  void sendPromise.then(() => doCleanup()).catch((error) => doCleanup(error));
+  const candidateModels = input.candidateModels ?? [];
+  let currentCandidateIndex = 0;
+
+  const attemptSend = async (): Promise<void> => {
+    // Reset hadOutput for each retry — we only care about output from THIS attempt
+    hadOutput = false;
+    try {
+      await input.piClient.sendMessage(input.sessionId, finalContent, input.images?.length ? { images: input.images } : undefined);
+      // Success — cleanup normally
+      await doCleanup();
+    } catch (error) {
+      if (isFirst && !hadOutput && currentCandidateIndex < candidateModels.length) {
+        // Switch to next candidate model and retry
+        const nextModel = candidateModels[currentCandidateIndex];
+        currentCandidateIndex++;
+        console.log('[session-runtime] fallback: switching to candidate model', {
+          sessionId: input.sessionId,
+          candidateIndex: currentCandidateIndex,
+          provider: nextModel.provider,
+          id: nextModel.id,
+        });
+
+        try {
+          // Set candidate model on the session
+          await input.piClient.setSessionModel(
+            input.sessionId,
+            locator,
+            { provider: nextModel.provider, id: nextModel.id },
+            project.projectPath,
+          );
+
+          // Set thinking level if provided
+          if (nextModel.thinkingLevel && typeof nextModel.thinkingLevel === 'string') {
+            await input.piClient.setThinkingLevel(input.sessionId, locator, nextModel.thinkingLevel, project.projectPath).catch((err: Error) => {
+              console.warn('[session-runtime] fallback: failed to set thinking level', { sessionId: input.sessionId, error: err.message });
+            });
+          }
+        } catch (switchErr) {
+          console.warn('[session-runtime] fallback: failed to switch model, skipping candidate', {
+            sessionId: input.sessionId,
+            error: switchErr instanceof Error ? switchErr.message : String(switchErr),
+          });
+        }
+
+        // Retry with the same content
+        return attemptSend();
+      }
+
+      // Not eligible for fallback — proceed with error cleanup
+      await doCleanup(error);
+    }
+  };
+
+  void attemptSend();
 
   return {
     runId: `run_${crypto.randomUUID().slice(0, 10)}`,

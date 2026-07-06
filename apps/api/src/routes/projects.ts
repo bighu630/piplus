@@ -261,7 +261,7 @@ export function registerProjectRoutes(app: Hono) {
     if (project.createdBy !== userId) return c.json({ error: { code: 'FORBIDDEN', message: 'Access denied' } }, 403);
 
     // Validate: each value must be null or an object with non-empty string provider and id
-    const validated: Record<string, { provider: string; id: string; thinkingLevel?: string | null } | null> = {};
+    const validated: Record<string, { provider: string; id: string; thinkingLevel?: string | null; candidateModels?: Array<{ provider: string; id: string; thinkingLevel?: string | null }> } | null> = {};
     for (const [key, value] of Object.entries(body)) {
       if (value === null) {
         validated[key] = null;
@@ -270,12 +270,30 @@ export function registerProjectRoutes(app: Hono) {
         if (typeof v.provider !== 'string' || !v.provider || typeof v.id !== 'string' || !v.id) {
           return c.json({ error: { code: 'VALIDATION_ERROR', message: `Invalid entry for role '${key}': provider and id must be non-empty strings` } }, 400);
         }
-        const entry: { provider: string; id: string; thinkingLevel?: string | null } = {
+        const entry: { provider: string; id: string; thinkingLevel?: string | null; candidateModels?: Array<{ provider: string; id: string; thinkingLevel?: string | null }> } = {
           provider: v.provider,
           id: v.id,
         };
         if (v.thinkingLevel !== undefined && v.thinkingLevel !== null && v.thinkingLevel !== '') {
           entry.thinkingLevel = String(v.thinkingLevel);
+        }
+        // 验证并保留 candidateModels
+        if (Array.isArray(v.candidateModels)) {
+          for (const cm of v.candidateModels) {
+            if (typeof cm !== 'object' || cm === null || typeof cm.provider !== 'string' || !cm.provider || typeof cm.id !== 'string' || !cm.id) {
+              return c.json({ error: { code: 'VALIDATION_ERROR', message: `Invalid candidateModel entry: provider and id must be non-empty strings` } }, 400);
+            }
+          }
+          entry.candidateModels = v.candidateModels.map((cm: any) => {
+            const result: { provider: string; id: string; thinkingLevel?: string | null } = {
+              provider: cm.provider,
+              id: cm.id,
+            };
+            if (cm.thinkingLevel !== undefined && cm.thinkingLevel !== null && cm.thinkingLevel !== '') {
+              result.thinkingLevel = String(cm.thinkingLevel);
+            }
+            return result;
+          });
         }
         validated[key] = entry;
       } else {

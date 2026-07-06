@@ -236,6 +236,25 @@ async function startChildSessionRun(
   setRequestContext(childSessionId, requestId);
   console.log('[role-manager-tools] startChildSessionRun', { childSessionId, requestId });
 
+  // Query child session to get candidate models for fallback
+  const [childSession] = await ctx.db
+    .select({ modelFallbacksJson: sessions.modelFallbacksJson })
+    .from(sessions)
+    .where(eq(sessions.id, childSessionId))
+    .limit(1);
+
+  let candidateModels: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
+  if (childSession?.modelFallbacksJson) {
+    try {
+      const parsed = JSON.parse(childSession.modelFallbacksJson);
+      if (Array.isArray(parsed)) {
+        candidateModels = parsed;
+      }
+    } catch {
+      // ignore parse error
+    }
+  }
+
   await startSessionRun({
     db: ctx.db,
     piClient: ctx.piClient,
@@ -243,6 +262,7 @@ async function startChildSessionRun(
     userId: ctx.userId,
     content,
     requestId,
+    candidateModels,
     onToolSessionCreated,
     onRuntimeStatusChange: ctx.onRuntimeStatusChange,
   });
