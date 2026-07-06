@@ -1,3 +1,4 @@
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { PiSessionLocator } from './locator';
 import type { PiMessage, PiSessionStreamEvent, PiSlashCommandInfo, PiToolDef } from './types';
@@ -15,7 +16,6 @@ export type ActiveSessionRuntime = {
   messages: PiMessage[];
   stopped: boolean;
   prompt: string;
-  promptSent: boolean;
   title: string | null;
   listeners: Set<SessionListener>;
   idleCleanupTimer?: ReturnType<typeof setTimeout>;
@@ -46,7 +46,6 @@ export class RuntimeRegistry {
       stopped: false,
       commands: [],
       prompt: '',
-      promptSent: false,
       title: null,
       listeners: new Set(),
     };
@@ -61,6 +60,32 @@ export class RuntimeRegistry {
   /** List all active session runtimes (for iteration). */
   list(): ActiveSessionRuntime[] {
     return Array.from(this.sessions.values());
+  }
+
+  /** Check if a session has history (user/assistant messages). */
+  hasHistory(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session?.locator?.sessionFile) return false;
+    try {
+      const entries = SessionManager.open(session.locator.sessionFile).getEntries();
+      return entries.some((entry: any) => entry?.type === 'message');
+    } catch {
+      return false;
+    }
+  }
+
+  isFirstConversation(sessionId: string): boolean {
+    return !this.hasHistory(sessionId);
+  }
+
+  getRuntimeState(sessionId: string): { ready: boolean; isFirst: boolean; prompt?: string } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    return {
+      ready: !!session.agentSession,
+      isFirst: !this.hasHistory(sessionId),
+      prompt: session.prompt,
+    };
   }
 
   /** Close idle runtimes: dispose runtimes that are not actively running.

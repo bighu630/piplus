@@ -13,14 +13,16 @@ function makeDbPath() {
 
 function makePiClient(options?: { sendError?: Error }) {
   const state: {
-    restored: Array<{ sessionId: string; cwd?: string }>;
+    runtimeEnsured: Array<{ sessionId: string; cwd?: string }>;
+    promptsInjected: string[];
     bound: Array<{ sessionId: string; cwd?: string; tools: PiToolDef[] }>;
     subscribed: string[];
     unsubscribed: string[];
     sent: Array<{ sessionId: string; content: string }>;
     closeRuntimeCalls: string[];
   } = {
-    restored: [],
+    runtimeEnsured: [],
+    promptsInjected: [],
     bound: [],
     subscribed: [],
     unsubscribed: [],
@@ -32,8 +34,20 @@ function makePiClient(options?: { sendError?: Error }) {
     async createSession() {
       throw new Error('not_implemented');
     },
-    async restoreRuntime(sessionId, _locator, cwd) {
-      state.restored.push({ sessionId, cwd });
+    async restoreRuntime(_sessionId, _locator, _cwd) {
+      // restores runtime — called internally by ensureRuntime
+    },
+    async ensureRuntime(sessionId, options) {
+      state.runtimeEnsured.push({ sessionId, cwd: options.cwd });
+    },
+    isFirstConversation() {
+      return false;
+    },
+    getRuntimeState() {
+      return null;
+    },
+    async injectPromptIfNeeded(sessionId) {
+      state.promptsInjected.push(sessionId);
     },
     async subscribeSession(sessionId, listener) {
       state.subscribed.push(sessionId);
@@ -169,9 +183,9 @@ describe('startSessionRun', () => {
     });
 
     expect(run.sessionId).toBe('session_test_runtime');
-    expect(state.restored).toEqual([{ sessionId: 'session_test_runtime', cwd: '/tmp/runtime-project' }]);
-    expect(state.bound).toHaveLength(1);
-    expect(state.bound[0]?.cwd).toBe('/tmp/runtime-project');
+    expect(state.runtimeEnsured).toEqual([{ sessionId: 'session_test_runtime', cwd: '/tmp/runtime-project' }]);
+    // Prompt is now merged with user content at the caller level (not injected separately)
+    // Tool binding is now part of ensureRuntime (not called separately)
     expect(state.sent).toEqual([{ sessionId: 'session_test_runtime', content: 'hello runtime' }]);
     expect(streamEvents).toHaveLength(1);
     expect(statusEvents[0]).toEqual({ runtimeStatus: 'running', error: null });

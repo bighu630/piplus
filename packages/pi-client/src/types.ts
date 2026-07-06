@@ -107,11 +107,42 @@ export type PiStopSessionResult = {
   status: 'stopped';
 };
 
+export type PiRuntimeState = {
+  ready: boolean;
+  isFirst: boolean;
+  prompt?: string;
+};
+
 export type PiClient = {
   createSession(input: PiCreateSessionInput): Promise<PiCreateSessionResult>;
+  /** @deprecated Use ensureRuntime instead. */
   restoreRuntime(sessionId: string, locator: PiSessionLocator, cwd?: string): Promise<void>;
+  /**
+   * Ensure the runtime is ready (create or restore agentSession + bind tools).
+   * Combines what restoreRuntime + bindToolRuntime used to do into one call.
+   * After this call, agentSession is guaranteed to exist with tools bound.
+   */
+  ensureRuntime(
+    sessionId: string,
+    options: {
+      locator: PiSessionLocator;
+      cwd: string;
+      tools: PiToolDef[];
+      toolHandler: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>;
+    },
+  ): Promise<void>;
+  /**
+   * Inject role prompt as a standalone LLM turn (for spawn_session where no user content exists).
+   * Not used by the main startSessionRun flow — prompt is merged with user content there.
+   */
+  injectPromptIfNeeded(sessionId: string): Promise<void>;
+  /** Check if this is the first conversation (session file has no user/assistant messages). */
+  isFirstConversation(sessionId: string): boolean;
+  /** Get current runtime state (ready, isFirst, prompt). */
+  getRuntimeState(sessionId: string): PiRuntimeState | null;
   subscribeSession(sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>): Promise<() => void>;
   getHistory(sessionId: string, locator: PiSessionLocator, cursor?: string | null, limit?: number): Promise<PiHistoryPage>;
+  /** Send a message. Purely sends content — no prompt injection. */
   sendMessage(sessionId: string, content: string, options?: { images?: PiImageInput[] }): Promise<PiRunAccepted>;
   stopSession(sessionId: string): Promise<PiStopSessionResult>;
   closeRuntime(sessionId: string): Promise<void>;
@@ -125,6 +156,7 @@ export type PiClient = {
     modelRef: { provider: string; id: string },
     cwd?: string,
   ): Promise<PiModelInfo>;
+  /** @deprecated Use ensureRuntime instead. */
   bindToolRuntime(
     sessionId: string,
     tools: PiToolDef[],
@@ -139,8 +171,6 @@ export type PiClient = {
 
   /**
    * Dynamically register a custom provider with Pi's model registry.
-   * This makes the provider and its models available for use in sessions
-   * without writing to Pi's models.json file.
    */
   registerProvider?(providerName: string, config: {
     api: string;

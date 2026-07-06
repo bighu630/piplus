@@ -123,14 +123,62 @@ export async function startSessionRun(input: StartSessionRunInput) {
   }
 
   const locator = parseLocator(session.piSessionLocatorJson);
-  console.log('[session-runtime] restore start', {
+
+  // Load the role template key to determine which tools to expose
+  const [roleTmpl] = await input.db
+    .select({ key: roleTemplates.key })
+    .from(roleTemplates)
+    .where(eq(roleTemplates.id, session.roleTemplateId))
+    .limit(1);
+  const roleKey = roleTmpl?.key ?? null;
+
+  let toolDefs = await buildAllToolDefs(input.db);
+  // Planner is a root node — it coordinates children via spawn_session and send_message_to_session,
+  // but does not call writeback_to_parent itself (it reports directly to the user).
+  if (roleKey === 'planner') {
+    toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent');
+  }
+
+  // Check first-conversation state from session file BEFORE ensureRuntime,
+  // so we can merge the role prompt with user content in a single turn.
+  const isFirst = input.piClient.isFirstConversation(input.sessionId);
+  const runtimeState = input.piClient.getRuntimeState(input.sessionId);
+
+  console.log('[session-runtime] ensureRuntime start', {
     sessionId: input.sessionId,
     projectId: project.id,
     locatorFile: locator.sessionFile,
     dbModelProvider: session.currentModelProvider,
     dbModelId: session.currentModelId,
   });
-  await input.piClient.restoreRuntime(input.sessionId, locator, project.projectPath);
+  await input.piClient.ensureRuntime(input.sessionId, {
+    locator,
+    cwd: project.projectPath,
+    tools: toolDefs,
+    toolHandler: async (toolName, args) => {
+      return invokePlatformTool(toolName, args, {
+        db: input.db,
+        piClient: input.piClient,
+        sessionId: input.sessionId,
+        userId: input.userId,
+        onSessionCreated: input.onToolSessionCreated,
+        onRuntimeStatusChange: input.onRuntimeStatusChange,
+      });
+    },
+  });
+
+  // Merge role prompt with user content for first conversation.
+  // Replaces the old injectPromptIfNeeded approach which sent the prompt
+  // as a separate LLM turn, breaking the single-turn merge semantics.
+  let finalContent = input.content;
+  if (isFirst && runtimeState?.prompt && input.content) {
+    finalContent = `${runtimeState.prompt}\n\n请尊重用户的语言习惯，现在用户说：\n\n${input.content}`;
+    console.log('[session-runtime] merged prompt + user message (first conversation)', { sessionId: input.sessionId });
+  } else if (isFirst && runtimeState?.prompt) {
+    // spawn_session: content is empty, just inject prompt
+    finalContent = runtimeState.prompt;
+    console.log('[session-runtime] injecting role prompt only (spawn session)', { sessionId: input.sessionId });
+  }
 
   if (session.currentModelProvider && session.currentModelId) {
     console.log('[session-runtime] enforce model from db', {
@@ -149,39 +197,14 @@ export async function startSessionRun(input: StartSessionRunInput) {
   }
 
   const runtimeModel = await input.piClient.getCurrentModel(input.sessionId);
-  console.log('[session-runtime] runtime model before bind', {
+  console.log('[session-runtime] runtime model after ensureRuntime', {
     sessionId: input.sessionId,
     provider: runtimeModel?.provider ?? null,
     id: runtimeModel?.id ?? null,
   });
 
-  // Load the role template key to determine which tools to expose
-  const [roleTmpl] = await input.db
-    .select({ key: roleTemplates.key })
-    .from(roleTemplates)
-    .where(eq(roleTemplates.id, session.roleTemplateId))
-    .limit(1);
-  const roleKey = roleTmpl?.key ?? null;
-
-  let toolDefs = await buildAllToolDefs(input.db);
-  // Planner is a root node — it coordinates children via spawn_session and send_message_to_session,
-  // but does not call writeback_to_parent itself (it reports directly to the user).
-  if (roleKey === 'planner') {
-    toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent');
-  }
-  await input.piClient.bindToolRuntime(input.sessionId, toolDefs, async (toolName, args) => {
-    return invokePlatformTool(toolName, args, {
-      db: input.db,
-      piClient: input.piClient,
-      sessionId: input.sessionId,
-      userId: input.userId,
-      onSessionCreated: input.onToolSessionCreated,
-      onRuntimeStatusChange: input.onRuntimeStatusChange,
-    });
-  }, project.projectPath);
-
   const boundRuntimeModel = await input.piClient.getCurrentModel(input.sessionId);
-  console.log('[session-runtime] runtime model after bind', {
+  console.log('[session-runtime] runtime model after ensureRuntime', {
     sessionId: input.sessionId,
     provider: boundRuntimeModel?.provider ?? null,
     id: boundRuntimeModel?.id ?? null,
@@ -285,7 +308,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
     ? await input.piClient.subscribeSession(input.sessionId, wrappedListener)
     : () => {};
 
-  const sendPromise = input.piClient.sendMessage(input.sessionId, input.content, input.images?.length ? { images: input.images } : undefined);
+  const sendPromise = input.piClient.sendMessage(input.sessionId, finalContent, input.images?.length ? { images: input.images } : undefined);
   void sendPromise.then(() => doCleanup()).catch((error) => doCleanup(error));
 
   return {

@@ -53,6 +53,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     const state = {
       created: [] as Array<{ sessionId: string; cwd?: string; prompt: string; title?: string; model?: { provider: string; id: string } }>,
       restored: [] as Array<{ sessionId: string; cwd?: string }>,
+      ensureRuntime: [] as Array<{ sessionId: string; cwd?: string }>,
       setModel: [] as Array<{ sessionId: string; provider: string; id: string; cwd?: string }>,
       bound: [] as Array<{ sessionId: string; cwd?: string }>,
       sent: [] as Array<{ sessionId: string; content: string }>,
@@ -82,6 +83,12 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       },
       async stopSession() { return { status: 'stopped' as const }; },
       async closeRuntime() { return; },
+      async ensureRuntime(sessionId: string, options: { locator: unknown; cwd?: string; tools: unknown[]; toolHandler: unknown }) {
+        state.ensureRuntime.push({ sessionId, cwd: options.cwd ?? '' });
+      },
+      async injectPromptIfNeeded() { return; },
+      isFirstConversation() { return false; },
+      getRuntimeState() { return null; },
       async bindToolRuntime(sessionId: string, _tools: unknown[], _handler: unknown, cwd?: string) {
         state.bound.push({ sessionId, cwd: cwd ?? '' });
       },
@@ -168,9 +175,8 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     expect(child).toBeDefined();
 
     // Runtime operations DID happen (all roles auto-start)
-    expect(state.restored[0]?.sessionId).toBe(child!.id);
+    expect(state.ensureRuntime[0]?.sessionId).toBe(child!.id);
     expect(state.setModel[0]?.sessionId).toBe(child!.id);
-    expect(state.bound[0]?.sessionId).toBe(child!.id);
 
     // No extra kickoff message — empty string
     expect(state.sent).toHaveLength(1);
@@ -195,6 +201,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     const state = {
       created: [] as Array<{ sessionId: string; cwd?: string; prompt: string; title?: string; model?: { provider: string; id: string } }>,
       restored: [] as Array<{ sessionId: string; cwd?: string }>,
+      ensureRuntime: [] as Array<{ sessionId: string; cwd?: string }>,
       setModel: [] as Array<{ sessionId: string; provider: string; id: string; cwd?: string }>,
       bound: [] as Array<{ sessionId: string; cwd?: string }>,
       sent: [] as Array<{ sessionId: string; content: string }>,
@@ -243,6 +250,12 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
         }
         return { sessionId, runId: 'run' };
       },
+      async ensureRuntime(sessionId: string, options: { locator: unknown; cwd?: string; tools: unknown[]; toolHandler: unknown }) {
+        state.ensureRuntime.push({ sessionId, cwd: options.cwd ?? '' });
+      },
+      async injectPromptIfNeeded() { return; },
+      isFirstConversation() { return false; },
+      getRuntimeState() { return null; },
       async bindToolRuntime(sessionId: string, _tools: unknown[], _handler: unknown, cwd?: string) {
         state.bound.push({ sessionId, cwd });
       },
@@ -331,9 +344,8 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     });
 
     // Runtime operations happened (auto-started)
-    expect(state.restored[0]?.sessionId).toBe(child!.id);
+    expect(state.ensureRuntime[0]?.sessionId).toBe(child!.id);
     expect(state.setModel[0]?.sessionId).toBe(child!.id);
-    expect(state.bound[0]?.sessionId).toBe(child!.id);
 
     // Content is empty — no extra kickoff message
     expect(state.sent).toHaveLength(1);
@@ -380,6 +392,10 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       async closeRuntime() { return; },
       async listAvailableModels() { return []; },
       async getCurrentModel() { return null; },
+      async ensureRuntime() { return; },
+      async injectPromptIfNeeded() { return; },
+      isFirstConversation() { return false; },
+      getRuntimeState() { return null; },
       async bindToolRuntime() { return; },
       async setSessionModel(_sessionId: string, _locator: unknown, modelRef: { provider: string; id: string }) {
         return { provider: modelRef.provider, id: modelRef.id, label: `${modelRef.provider}/${modelRef.id}` };
@@ -512,6 +528,10 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       async listAvailableModels() { return []; },
       async getCurrentModel() { return null; },
       async sendMessage() { return { sessionId: 'child', runId: 'run' }; },
+      async ensureRuntime() { return; },
+      async injectPromptIfNeeded() { return; },
+      isFirstConversation() { return false; },
+      getRuntimeState() { return null; },
       async bindToolRuntime() { return; },
       async setSessionModel(_sessionId: string, _locator: unknown, modelRef: { provider: string; id: string }) {
         return { provider: modelRef.provider, id: modelRef.id, label: `${modelRef.provider}/${modelRef.id}` };

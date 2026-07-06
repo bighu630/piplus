@@ -373,16 +373,6 @@ export function createPiClient(): PiClient {
 
         const { session: agentSession } = await createAgentSession(options);
         const session = runtimeRegistry.ensure(sessionId, locator, runtimeCwd);
-        // 把 createSession 用 piSessionId 存的 prompt 迁移过来
-        const piSessionId = locator.piSessionId;
-        if (piSessionId && piSessionId !== sessionId) {
-          const createdEntry = runtimeRegistry.get(piSessionId);
-          if (createdEntry?.prompt && !session.prompt) {
-            session.prompt = createdEntry.prompt;
-            session.promptSent = createdEntry.promptSent;
-            console.log('[pi-client] restoreRuntime transferred prompt', { sessionId, piSessionId, promptLen: session.prompt.length });
-          }
-        }
         session.agentSession = agentSession;
 
         // Collect slash commands from restored agent session
@@ -415,6 +405,146 @@ export function createPiClient(): PiClient {
         throw new Error('pi_session_runtime_unavailable');
       }
     },
+    async ensureRuntime(sessionId, options) {
+      const { locator, cwd, tools, toolHandler } = options;
+      const existing = runtimeRegistry.get(sessionId);
+
+      if (existing?.agentSession) {
+        // Check if tools changed — if so, dispose and recreate
+        const toolsChanged = existing.toolDefs?.length !== tools.length ||
+          !tools.every((t, i) => t.name === existing.toolDefs?.[i]?.name);
+        const handlerChanged = existing.toolHandler !== toolHandler;
+        if (toolsChanged || handlerChanged) {
+          existing.agentSession.dispose();
+          existing.agentSession = undefined;
+          console.log('[pi-client] ensureRuntime rebinding — tools changed', { sessionId });
+        } else {
+          existing.toolDefs = tools;
+          existing.toolHandler = toolHandler;
+          console.log('[pi-client] ensureRuntime skipped — runtime already alive, tools unchanged', { sessionId });
+          return;
+        }
+      }
+
+      const runtimeCwd = cwd ?? existing?.cwd ?? process.cwd();
+      console.log('[pi-client] ensureRuntime start', { sessionId, locatorFile: locator.sessionFile, cwd: runtimeCwd });
+
+      const sessionDir = dirname(locator.sessionFile);
+      const expectedSessionDir = SessionManager.create(runtimeCwd).getSessionDir();
+      const isPiSessionPath = sessionDir === expectedSessionDir;
+      if (!existsSync(locator.sessionFile) && (!existsSync(sessionDir) || !isPiSessionPath)) {
+        throw new Error('pi_session_runtime_unavailable');
+      }
+
+      try {
+        const sessionManager = SessionManager.open(locator.sessionFile);
+        const sessionContext = sessionManager.buildSessionContext();
+
+        // Build resource loader with tool extensions
+        const loader = new DefaultResourceLoader({
+          cwd: runtimeCwd,
+          agentDir: getAgentDir(),
+          extensionFactories: [
+            (pi) => {
+              for (const toolDef of tools) {
+                pi.registerTool({
+                  name: toolDef.name,
+                  label: toolDef.name,
+                  description: toolDef.description,
+                  parameters: toolDef.parameters as any,
+                  execute: async (_toolCallId, params) => {
+                    const result = await toolHandler(toolDef.name, params as Record<string, unknown>, { sessionId });
+                    return {
+                      content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }],
+                      details: {},
+                    };
+                  },
+                });
+              }
+            },
+          ],
+        });
+        await loader.reload();
+
+        const options_create: Parameters<typeof createAgentSession>[0] = {
+          cwd: runtimeCwd,
+          resourceLoader: loader,
+          sessionManager,
+          modelRegistry,
+        };
+
+        if (sessionContext.model) {
+          const available = await modelRegistry.getAvailable();
+          const restored = available.find((m) => m.provider === sessionContext.model!.provider && m.id === sessionContext.model!.modelId);
+          options_create.model = restored ?? await ensureModel();
+        } else {
+          options_create.model = await ensureModel();
+        }
+
+        const { session: agentSession } = await createAgentSession(options_create);
+        const session = runtimeRegistry.ensure(sessionId, locator, runtimeCwd);
+        session.agentSession = agentSession;
+        session.toolDefs = tools;
+        session.toolHandler = toolHandler;
+
+        // Collect slash commands
+        try {
+          session.commands = collectCommands(agentSession);
+        } catch (err) {
+          console.warn('[pi-client] ensureRuntime failed to collect commands', { sessionId, error: String(err) });
+        }
+
+        if (agentSession.model) {
+          session.model = {
+            provider: agentSession.model.provider,
+            id: agentSession.model.id,
+            label: agentSession.model.name ?? `${agentSession.model.provider}/${agentSession.model.id}`,
+          };
+        }
+
+        console.log('[pi-client] ensureRuntime done', {
+          sessionId,
+          provider: session.model?.provider ?? null,
+          id: session.model?.id ?? null,
+        });
+
+        // Schedule idle cleanup
+        if (session.idleCleanupTimer) clearTimeout(session.idleCleanupTimer);
+        session.idleCleanupTimer = setTimeout(() => {
+          console.log('[pi-client] ensureRuntime idle cleanup triggered', { sessionId });
+          this.closeRuntime(sessionId).catch(() => {});
+        }, 30 * 60 * 1000);
+      } catch {
+        throw new Error('pi_session_runtime_unavailable');
+      }
+    },
+    async injectPromptIfNeeded(sessionId) {
+      const session = runtimeRegistry.get(sessionId);
+      if (!session) {
+        console.log('[pi-client] injectPromptIfNeeded skipped — no session entry', { sessionId });
+        return;
+      }
+      if (!session.prompt) {
+        console.log('[pi-client] injectPromptIfNeeded skipped — no prompt to inject', { sessionId });
+        return;
+      }
+      if (!session.agentSession) {
+        console.log('[pi-client] injectPromptIfNeeded skipped — no agent session', { sessionId });
+        return;
+      }
+      if (runtimeRegistry.hasHistory(sessionId)) {
+        console.log('[pi-client] injectPromptIfNeeded skipped — session already has history', { sessionId });
+        return;
+      }
+      console.log('[pi-client] injectPromptIfNeeded → injecting role prompt', { sessionId, promptLen: session.prompt.length });
+      try {
+        await session.agentSession.prompt(session.prompt);
+        console.log('[pi-client] injectPromptIfNeeded ← role prompt injected', { sessionId });
+      } catch (err) {
+        console.error('[pi-client] injectPromptIfNeeded failed', { sessionId, error: err instanceof Error ? err.message : String(err) });
+        throw err;
+      }
+    },
     async subscribeSession(sessionId, listener) {
       const session = runtimeRegistry.ensure(sessionId);
       session.listeners.add(listener);
@@ -442,44 +572,8 @@ export function createPiClient(): PiClient {
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
       if (session.agentSession) {
-        if (session.prompt && !session.promptSent) {
-          if (content || options?.images?.length) {
-            // 首次对话且 content 非空：合并角色提示词和用户消息为 1 轮
-            const merged = `${session.prompt}\n\n请尊重用户的语言习惯，现在用户说：\n\n${content}`;
-            console.log('[pi-client] sendMessage → merged prompt + user message', { sessionId, promptLen: session.prompt.length, contentLen: content.length, imageCount: options?.images?.length ?? 0 });
-            try {
-              const images = normalizeImages(options?.images);
-              if (images?.length) {
-                await session.agentSession.prompt(merged, { images });
-              } else {
-                await session.agentSession.prompt(merged);
-              }
-            } catch (err) {
-              const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
-              for (const listener of session.listeners) {
-                await listener(errorEvent);
-              }
-              throw err;
-            }
-            session.promptSent = true;
-            console.log('[pi-client] sendMessage ← merged prompt done', { sessionId });
-          } else {
-            // spawn_session 场景：content 为空，仅注入角色 prompt（1 轮）
-            console.log('[pi-client] sendMessage → injecting role prompt (no user message)', { sessionId, promptLen: session.prompt.length });
-            try {
-              await session.agentSession.prompt(session.prompt);
-            } catch (err) {
-              const errorEvent: PiSessionStreamEvent = { type: 'error', sessionId, runId, error: err instanceof Error ? err.message : String(err) };
-              for (const listener of session.listeners) {
-                await listener(errorEvent);
-              }
-              throw err;
-            }
-            session.promptSent = true;
-            console.log('[pi-client] sendMessage ← role prompt done', { sessionId });
-          }
-        } else if (content || options?.images?.length) {
-          // 后续消息：promptSent 已为 true，仅发送用户消息
+        if (content || options?.images?.length) {
+          // 用户消息
           console.log('[pi-client] sendMessage → agentSession.prompt', {
             sessionId,
             content: content.slice(0, 80),
@@ -562,8 +656,6 @@ export function createPiClient(): PiClient {
       session.toolHandler = undefined;
       session.toolDefs = [];
       session.messages = [];
-      session.prompt = '';
-      session.promptSent = false;
       // Preserve the registry entry (locator, cwd, model) so that
       // bindToolRuntime() and restoreRuntime() can still find the
       // session file and model metadata on subsequent calls.
@@ -912,6 +1004,14 @@ export function createPiClient(): PiClient {
 
     async getProviderAuthStatus(provider) {
       return authStorage.getAuthStatus(provider);
+    },
+
+    isFirstConversation(sessionId) {
+      return runtimeRegistry.isFirstConversation(sessionId);
+    },
+
+    getRuntimeState(sessionId) {
+      return runtimeRegistry.getRuntimeState(sessionId);
     },
   };
 }
