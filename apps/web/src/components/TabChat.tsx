@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO } from '@piplus/shared';
 import type { SessionMessageImageAttachment } from '../lib/api';
 import ReactMarkdown from 'react-markdown';
@@ -23,6 +23,7 @@ import Modal from './Modal';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
 import ChatInput from './ChatInput';
+import { useWebSocket } from '../lib/ws-provider';
 
 interface ModelOption {
   provider: string;
@@ -32,7 +33,6 @@ interface ModelOption {
 
 interface TabChatProps {
   messages: ChatMessageDTO[];
-  pendingUserMessages: ChatMessageDTO[];
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -40,10 +40,7 @@ interface TabChatProps {
   onStop: () => void;
   sending: boolean;
   runtimeStatus: string;
-  streamNote: string;
-  streamingContent: string;
   sessionTitle?: string;
-  wsConnected?: boolean;
   selectedSessionId?: string | null;
   sendShortcutMode?: 'enter' | 'mod_enter';
   models?: ModelOption[];
@@ -61,7 +58,6 @@ interface TabChatProps {
   thinkingLevelValue?: string | null;
   thinkingLevelOptions?: string[];
   onThinkingLevelSelect?: (level: string) => void;
-  runtimeErrors?: Array<{runId: string; error: string}>;
   isMobile?: boolean;
 }
 
@@ -103,9 +99,8 @@ function sanitizeStreamingContent(content: string): string {
   return content;
 }
 
-export default function TabChat({
+function TabChat({
   messages,
-  pendingUserMessages,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -113,10 +108,7 @@ export default function TabChat({
   onStop,
   sending,
   runtimeStatus,
-  streamNote,
-  streamingContent,
   sessionTitle,
-  wsConnected,
   selectedSessionId,
   sendShortcutMode,
   models,
@@ -134,7 +126,6 @@ export default function TabChat({
   thinkingLevelValue,
   thinkingLevelOptions,
   onThinkingLevelSelect,
-  runtimeErrors,
   isMobile,
 }: TabChatProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -148,6 +139,12 @@ export default function TabChat({
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
   const sessionJustSwitchedRef = useRef(false);
   const prevSessionIdRef = useRef<string | null>(null);
+  const [streamNote, setStreamNote] = useState('');
+  const [streamingContent, setStreamingContent] = useState('');
+  const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
+  const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
+  const { subscribeToStream, subscribeToRuntimeErrors, connected: wsConnected } = useWebSocket();
+
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
 
@@ -283,6 +280,16 @@ export default function TabChat({
     }
   }, [runtimeStatus, messages.length]);
 
+  // Clear stream state when runtime transitions from running to idle
+  const prevRuntimeStatus = useRef(runtimeStatus);
+  useEffect(() => {
+    if (runtimeStatus === 'idle' && prevRuntimeStatus.current === 'running') {
+      setStreamNote('');
+      setPendingUserMessages([]);
+    }
+    prevRuntimeStatus.current = runtimeStatus;
+  }, [runtimeStatus]);
+
   // 独立标记：session 切换时设 flag，等真实消息渲染后再跳到底部
   useEffect(() => {
     sessionJustSwitchedRef.current = true;
@@ -331,6 +338,76 @@ export default function TabChat({
       setIsNearBottom(true);
     }
   }, [displayMessages, streamingContent, selectedSessionId]);
+
+  // Subscribe to WS stream events
+  useEffect(() => {
+    return subscribeToStream((message: any) => {
+      const delta = message.payload?.delta ?? '';
+      if (message.phase === 'start') {
+        setStreamingContent('');
+        setRuntimeErrors([]);
+        setStreamNote(`${message.phase}${delta ? ' · streaming' : ''}`);
+      } else if (message.phase === 'delta') {
+        setStreamingContent((prev: string) => prev + delta);
+      } else if (message.phase === 'complete') {
+        setStreamNote('');
+        setPendingUserMessages([]);
+        setStreamingContent('');
+      } else if (message.phase === 'error') {
+        const errorText = message.payload?.error ?? 'Unknown agent loop error';
+        setRuntimeErrors([{ runId: message.payload?.stream_id ?? 'unknown', error: errorText }]);
+        setStreamingContent('');
+      }
+    });
+  }, [subscribeToStream]);
+
+  // Clear streaming state when switching sessions
+  useEffect(() => {
+    setStreamingContent('');
+    setStreamNote('');
+    setPendingUserMessages([]);
+    setRuntimeErrors([]);
+  }, [selectedSessionId]);
+
+  // Subscribe to runtime errors from ws-provider
+  useEffect(() => {
+    return subscribeToRuntimeErrors(({ error }) => {
+      setRuntimeErrors([{ runId: 'runtime-status', error }]);
+    });
+  }, [subscribeToRuntimeErrors]);
+
+  // Internal send handler that manages pending user messages
+  const handleSendInternal = useCallback(async (content: string, attachments: SessionMessageImageAttachment[]) => {
+    setRuntimeErrors([]);
+    const optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const imageBlocks: ChatImageContentBlockDTO[] = attachments.map((attachment) => ({
+      type: 'image',
+      mime_type: attachment.mime_type,
+      media_type: attachment.mime_type,
+      filename: attachment.filename ?? null,
+      uri: null,
+      data_base64: attachment.data_base64,
+    }));
+    const optimisticMessage: ChatMessageDTO = {
+      id: optimisticId,
+      role: 'user',
+      message_kind: 'normal',
+      source_session_id: null,
+      content_text: content,
+      content_blocks: [
+        ...(content ? [{ type: 'text' as const, text: content }] : []),
+        ...imageBlocks,
+      ],
+      created_at: new Date().toISOString(),
+    };
+    setPendingUserMessages((prev) => [...prev, optimisticMessage]);
+    try {
+      await onSend(content, attachments);
+    } catch {
+      setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      throw new Error('send_failed');
+    }
+  }, [onSend]);
 
   const handleCopyCode = async (text: string, id: string) => {
     try {
@@ -1037,13 +1114,13 @@ export default function TabChat({
       {false && allMessages.length > 0 && !isRunning && (
         <div className="px-6 py-2 flex flex-wrap gap-2 select-none shrink-0 bg-white/40 dark:bg-slate-900/60 border-t border-slate-100 dark:border-slate-800/60">
           <button
-            onClick={() => onSend('生成当前会话的 Git Diff', [])}
+            onClick={() => handleSendInternal('生成当前会话的 Git Diff', [])}
             className="text-[11px] bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 text-slate-600 dark:text-slate-300 shadow-3xs cursor-pointer transition-colors"
           >
             📊 生成 Git Diff
           </button>
           <button
-            onClick={() => onSend('分析当前会话状态并总结', [])}
+            onClick={() => handleSendInternal('分析当前会话状态并总结', [])}
             className="text-[11px] bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 text-slate-600 dark:text-slate-300 shadow-3xs cursor-pointer transition-colors"
           >
             🧩 分析会话
@@ -1147,7 +1224,7 @@ export default function TabChat({
       </div>
 
       <ChatInput
-        onSend={onSend}
+        onSend={handleSendInternal}
         onStop={onStop}
         sending={sending}
         isRunning={isRunning}
@@ -1178,3 +1255,5 @@ export default function TabChat({
     </div>
   );
 }
+
+export default React.memo(TabChat);

@@ -8,17 +8,11 @@ import {
   Tag,
   Trash2,
 } from 'lucide-react';
+import { useSessionInfo, useProjectTodos, useCreateProjectTodoMutation, useUpdateProjectTodoMutation, useDeleteProjectTodoMutation } from '../lib/hooks';
 
 interface TabSessionInfoProps {
-  sessionInfo: SessionInfoDTO | null;
-  isLoading: boolean;
-  projectId: string | null;
-  todos: ProjectTodoDTO[];
-  todosLoading: boolean;
-  onCreateTodo: (text: string, onSuccess: () => void) => void;
-  onToggleTodo: (todoId: string, done: boolean) => void;
-  onDeleteTodo: (todoId: string) => void;
-  createTodoPending: boolean;
+  selectedSessionId: string | null;
+  selectedProjectId: string | null;
 }
 
 function runtimeStatusLabel(status: string): string {
@@ -33,8 +27,18 @@ function runtimeStatusLabel(status: string): string {
   }
 }
 
-export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todos, todosLoading, onCreateTodo, onToggleTodo, onDeleteTodo, createTodoPending }: TabSessionInfoProps) {
+function TabSessionInfo({ selectedSessionId, selectedProjectId }: TabSessionInfoProps) {
+  const sessionInfoQuery = useSessionInfo(selectedSessionId);
+  const sessionInfo = sessionInfoQuery.data;
+  const projectTodosQuery = useProjectTodos(selectedSessionId ? selectedProjectId : null);
+  const createTodoMut = useCreateProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
+  const updateTodoMut = useUpdateProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
+  const deleteTodoMut = useDeleteProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
+
   const [todoInput, setTodoInput] = useState('');
+
+  const isLoading = sessionInfoQuery.isLoading;
+
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-slate-900/10">
@@ -143,7 +147,7 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
       </div>
 
       {/* Project Todo */}
-      {projectId && (
+      {selectedProjectId && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-2xs space-y-4">
           <div className="flex items-center space-x-2 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 px-3 py-1 rounded-full text-xs font-semibold select-none w-fit">
             <CheckCircle className="w-3.5 h-3.5" />
@@ -156,7 +160,7 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
               e.preventDefault();
               const text = todoInput.trim();
               if (text) {
-                onCreateTodo(text, () => setTodoInput(''));
+                createTodoMut.mutate(text, { onSuccess: () => setTodoInput('') });
               }
             }}
             className="flex gap-2"
@@ -167,26 +171,26 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
               onChange={(e) => setTodoInput(e.target.value)}
               placeholder="添加新任务…"
               maxLength={500}
-              disabled={createTodoPending}
+              disabled={createTodoMut.isPending}
               className="flex-1 px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400/50 disabled:opacity-50"
             />
             <button
               type="submit"
-              disabled={createTodoPending}
+              disabled={createTodoMut.isPending}
               className="px-3 py-1.5 text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-white rounded-lg disabled:opacity-50 transition-colors"
             >
-              {createTodoPending ? '添加中…' : '添加'}
+              {createTodoMut.isPending ? '添加中…' : '添加'}
             </button>
           </form>
 
           {/* Todo list */}
-          {todosLoading ? (
+          {projectTodosQuery.isLoading ? (
             <div className="text-center py-4 text-xs text-slate-400">加载中…</div>
-          ) : todos.length === 0 ? (
+          ) : (projectTodosQuery.data ?? []).length === 0 ? (
             <div className="text-center py-4 text-xs text-slate-400">暂无任务</div>
           ) : (
             <div className="space-y-1.5 max-h-60 overflow-y-auto">
-              {todos.map((todo) => (
+              {(projectTodosQuery.data ?? []).map((todo) => (
                 <div
                   key={todo.id}
                   className={`flex items-center gap-2.5 px-3 py-2 rounded-lg ${
@@ -198,7 +202,7 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
                   <input
                     type="checkbox"
                     checked={todo.done}
-                    onChange={() => onToggleTodo(todo.id, !todo.done)}
+                    onChange={() => updateTodoMut.mutate({ todoId: todo.id, patch: { done: !todo.done } })}
                     className="w-4 h-4 rounded border-slate-300 text-amber-500 focus:ring-amber-400/50 shrink-0"
                   />
                   <span
@@ -211,7 +215,7 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
                     {todo.text}
                   </span>
                   <button
-                    onClick={() => onDeleteTodo(todo.id)}
+                    onClick={() => deleteTodoMut.mutate(todo.id)}
                     className="text-slate-400 hover:text-red-500 transition-colors shrink-0"
                     title="删除"
                   >
@@ -293,3 +297,5 @@ export default function TabSessionInfo({ sessionInfo, isLoading, projectId, todo
     </div>
   );
 }
+
+export default React.memo(TabSessionInfo);

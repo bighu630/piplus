@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   FileCode,
   Copy,
@@ -18,6 +19,7 @@ import {
   FolderOpen,
   PanelLeft,
 } from 'lucide-react';
+import { useSessionGitDiff, useGitBranches, useGitCommits, useGitShow, useGitPullMutation, useGitPushMutation, useGitCommitMutation, useAddGitignoreMutation, useGitCheckoutMutation } from '../lib/hooks';
 
 interface GitActionResult {
   session_id: string;
@@ -36,25 +38,8 @@ interface GitCommit {
 }
 
 interface TabGitDiffProps {
-  diff: string | null;
-  isLoading: boolean;
-  onRefresh: () => void;
-  onPull: () => Promise<GitActionResult>;
-  onPush: () => Promise<GitActionResult>;
-  onCommit: (message: string) => Promise<GitActionResult>;
-  onAddGitignore: (filePath: string) => Promise<unknown>;
-  isPulling: boolean;
-  isPushing: boolean;
-  isCommitting: boolean;
-  isAddingGitignore: boolean;
-  currentBranch: string | null;
-  branches: Array<{ name: string; is_current: boolean }> | null;
-  onCheckout: (branch: string) => Promise<GitActionResult>;
-  isCheckingOut: boolean;
-  cwd: string | null;
-  commits: GitCommit[] | null;
-  selectedCommitHash: string | null;
-  onSelectCommit: (hash: string | null) => void;
+  selectedSessionId: string | null;
+  activeTab: string;
 }
 
 interface DiffLine {
@@ -232,27 +217,39 @@ function DiffFileTree({
   );
 }
 
-export default function TabGitDiff({
-  diff,
-  isLoading,
-  onRefresh,
-  onPull,
-  onPush,
-  onCommit,
-  onAddGitignore,
-  isPulling,
-  isPushing,
-  isCommitting,
-  isAddingGitignore,
-  currentBranch,
-  branches,
-  onCheckout,
-  isCheckingOut,
-  cwd,
-  commits,
-  selectedCommitHash,
-  onSelectCommit,
+function TabGitDiff({
+  selectedSessionId,
+  activeTab,
 }: TabGitDiffProps) {
+  const queryClient = useQueryClient();
+  const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
+  const gitDiffQuery = useSessionGitDiff(activeTab === 'diff' ? selectedSessionId : null);
+  const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
+  const gitCommitsQuery = useGitCommits(activeTab === 'diff' ? selectedSessionId : null, 50);
+  const gitShowQuery = useGitShow(selectedCommitHash ? selectedSessionId : null, selectedCommitHash);
+  const gitPullMut = useGitPullMutation();
+  const gitPushMut = useGitPushMutation();
+  const gitCommitMut = useGitCommitMutation();
+  const addGitignoreMut = useAddGitignoreMutation();
+  const gitCheckoutMut = useGitCheckoutMutation();
+
+  // Compute which diff to display
+  const displayDiff = selectedCommitHash
+    ? (gitShowQuery.data?.diff ?? null)
+    : (gitDiffQuery.data?.diff ?? null);
+  const isDisplayLoading = selectedCommitHash ? gitShowQuery.isLoading : gitDiffQuery.isLoading;
+
+  // Reset commit selection when session changes or branches change
+  useEffect(() => {
+    setSelectedCommitHash(null);
+  }, [selectedSessionId, gitBranchesQuery.data]);
+
+  const handleRefreshDiff = useCallback(() => {
+    if (!selectedSessionId) return;
+    queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', selectedSessionId] });
+    queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', selectedSessionId] });
+  }, [selectedSessionId, queryClient]);
+
   const [copied, setCopied] = useState(false);
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({});
   const [showCommitInput, setShowCommitInput] = useState(false);
@@ -305,7 +302,7 @@ export default function TabGitDiff({
 
   const handlePull = useCallback(async () => {
     try {
-      const res = await onPull();
+      const res = await gitPullMut.mutateAsync(selectedSessionId!);
       setOpFeedback({
         op: 'pull',
         result: res.result,
@@ -315,11 +312,11 @@ export default function TabGitDiff({
       setOpFeedback({ op: 'pull', result: 'error', message: 'Pull 失败' });
     }
     setTimeout(clearFeedback, 6000);
-  }, [onPull, clearFeedback]);
+  }, [selectedSessionId, gitPullMut, clearFeedback]);
 
   const handlePush = useCallback(async () => {
     try {
-      const res = await onPush();
+      const res = await gitPushMut.mutateAsync(selectedSessionId!);
       setOpFeedback({
         op: 'push',
         result: res.result,
@@ -329,14 +326,14 @@ export default function TabGitDiff({
       setOpFeedback({ op: 'push', result: 'error', message: 'Push 失败' });
     }
     setTimeout(clearFeedback, 6000);
-  }, [onPush, clearFeedback]);
+  }, [selectedSessionId, gitPushMut, clearFeedback]);
 
   const handleCommit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
       if (!commitMessage.trim()) return;
       try {
-        const res = await onCommit(commitMessage.trim());
+        const res = await gitCommitMut.mutateAsync({ sessionId: selectedSessionId!, message: commitMessage.trim() });
         setOpFeedback({
           op: 'commit',
           result: res.result,
@@ -351,20 +348,20 @@ export default function TabGitDiff({
       }
       setTimeout(clearFeedback, 6000);
     },
-    [commitMessage, onCommit, clearFeedback],
+    [commitMessage, selectedSessionId, gitCommitMut, clearFeedback],
   );
 
   const handleCopyText = () => {
-    if (diff) {
-      navigator.clipboard.writeText(diff);
+    if (displayDiff) {
+      navigator.clipboard.writeText(displayDiff);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
   };
 
   const downloadPatch = () => {
-    if (!diff) return;
-    const blob = new Blob([diff], { type: 'text/plain' });
+    if (!displayDiff) return;
+    const blob = new Blob([displayDiff], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -374,8 +371,8 @@ export default function TabGitDiff({
   };
 
   const parsedFiles = useMemo((): DiffFile[] => {
-    if (!diff) return [];
-    const lines = diff.split('\n');
+    if (!displayDiff) return [];
+    const lines = displayDiff.split('\n');
     const files: DiffFile[] = [];
     let current: DiffFile | null = null;
 
@@ -412,7 +409,7 @@ export default function TabGitDiff({
     });
 
     return files;
-  }, [diff]);
+  }, [displayDiff]);
 
   const fileTree = useMemo(() => {
     const filenames = parsedFiles
@@ -425,7 +422,7 @@ export default function TabGitDiff({
   useEffect(() => {
     setSelectedFilePath(null);
     fileRefs.current = new Map();
-  }, [diff]);
+  }, [displayDiff]);
 
   const handleFileSelect = useCallback((path: string) => {
     setSelectedFilePath(path);
@@ -443,7 +440,17 @@ export default function TabGitDiff({
     setCollapsedFiles((prev) => ({ ...prev, [filename]: !prev[filename] }));
   }, []);
 
-  const anyBusy = isPulling || isPushing || isCommitting || isLoading || isCheckingOut || !!selectedCommitHash;
+  const isPulling = gitPullMut.isPending;
+  const isPushing = gitPushMut.isPending;
+  const isCommitting = gitCommitMut.isPending;
+  const isAddingGitignore = addGitignoreMut.isPending;
+  const isCheckingOut = gitCheckoutMut.isPending;
+  const currentBranch = gitBranchesQuery.data?.current_branch ?? null;
+  const branches = gitBranchesQuery.data?.branches ?? null;
+  const cwd = gitDiffQuery.data?.cwd ?? gitBranchesQuery.data?.cwd ?? null;
+  const commits = gitCommitsQuery.data?.commits ?? null;
+
+  const anyBusy = isPulling || isPushing || isCommitting || isDisplayLoading || isCheckingOut || !!selectedCommitHash;
 
   const functionalFiles = useMemo(
     () => parsedFiles.filter((f) => f.lines.some((l) => l.type !== 'header')),
@@ -482,7 +489,7 @@ export default function TabGitDiff({
                           if (!b.is_current) {
                             setBranchDropdownOpen(false);
                             try {
-                              const res = await onCheckout(b.name);
+                              const res = await gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId!, branch: b.name });
                               setOpFeedback({
                                 op: 'checkout',
                                 result: res.result,
@@ -548,7 +555,7 @@ export default function TabGitDiff({
                   <button
                     type="button"
                     onClick={() => {
-                      onSelectCommit(null);
+                      setSelectedCommitHash(null);
                       setCommitDropdownOpen(false);
                     }}
                     className={`w-full flex items-center space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
@@ -578,7 +585,7 @@ export default function TabGitDiff({
                         key={commit.hash}
                         type="button"
                         onClick={() => {
-                          onSelectCommit(commit.hash);
+                          setSelectedCommitHash(commit.hash);
                           setCommitDropdownOpen(false);
                         }}
                         className={`w-full flex items-start space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
@@ -640,12 +647,12 @@ export default function TabGitDiff({
 
         <div className="grid grid-cols-2 md:flex items-center gap-2 w-full md:w-auto">
           <button
-            onClick={onRefresh}
+            onClick={handleRefreshDiff}
             disabled={anyBusy}
             className="flex items-center justify-center space-x-1.5 px-3 py-2 md:py-1.5 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200/50 dark:border-indigo-900 rounded-xl text-indigo-600 dark:text-indigo-400 font-semibold hover:bg-indigo-100/70 dark:hover:bg-indigo-900 disabled:opacity-50 text-xs transition cursor-pointer"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-            <span>{isLoading ? '加载中…' : '刷新'}</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${isDisplayLoading ? 'animate-spin' : ''}`} />
+            <span>{isDisplayLoading ? '加载中…' : '刷新'}</span>
           </button>
 
           <button
@@ -678,7 +685,7 @@ export default function TabGitDiff({
             <span>{isCommitting ? 'Committing…' : 'Commit'}</span>
           </button>
 
-          {diff && (
+          {displayDiff && (
             <>
               <button
                 onClick={handleCopyText}
@@ -760,7 +767,7 @@ export default function TabGitDiff({
       {/* Diff content area */}
       <div className="flex-1 flex overflow-hidden">
         {/* No diff state */}
-        {!diff ? (
+        {!displayDiff ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center space-y-3">
             <GitBranch className="w-10 h-10 text-slate-300 dark:text-slate-600" />
             <p className="text-sm text-slate-400 dark:text-slate-500">暂无变更</p>
@@ -803,7 +810,10 @@ export default function TabGitDiff({
                       onToggle={toggleTreeExpanded}
                       selectedPath={selectedFilePath}
                       onSelect={handleFileSelect}
-                      onAddGitignore={(filePath) => { onAddGitignore(filePath); }}
+                      onAddGitignore={async (filePath) => {
+                        await addGitignoreMut.mutateAsync({ sessionId: selectedSessionId!, path: filePath });
+                        handleRefreshDiff();
+                      }}
                       isAddingGitignore={isAddingGitignore}
                     />
                   )}
@@ -910,3 +920,5 @@ export default function TabGitDiff({
     </div>
   );
 }
+
+export default React.memo(TabGitDiff);

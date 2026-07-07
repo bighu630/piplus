@@ -100,7 +100,7 @@ function runtimeColor(status: string): string | null {
   }
 }
 
-export default function Sidebar({
+function Sidebar({
   projects,
   activeSessionId,
   isSidebarCollapsed,
@@ -692,3 +692,5 @@ export default function Sidebar({
     </div>
   );
 }
+
+export default React.memo(Sidebar);

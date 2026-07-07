@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { ProjectDTO, SessionTreeNodeDTO, ChatMessageDTO, ChatImageContentBlockDTO, ChatStreamMessage, EventMessage, ServerMessage } from '@piplus/shared';
-import type { ProviderFormPayload, SessionMessageImageAttachment } from './lib/api';
+import type { ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
+import { findSessionNode } from './lib/tree-utils';
+import type { SessionMessageImageAttachment } from './lib/api';
 import hljsLight from 'highlight.js/styles/github.css?url';
 import hljsDark from 'highlight.js/styles/github-dark.css?url';
 import {
   getNotificationPermission,
   requestNotificationPermission,
-  sendSystemNotification,
 } from './lib/notification';
 import Sidebar from './components/Sidebar';
 import TabChat from './components/TabChat';
@@ -16,16 +16,16 @@ import TabGitDiff from './components/TabGitDiff';
 import TabFiles from './components/TabFiles';
 import Modal from './components/Modal';
 import Select from './components/Select';
+import CreateProjectModal from './components/CreateProjectModal';
+import ProviderModal from './components/ProviderModal';
+import ProjectSettingsModal from './components/ProjectSettingsModal';
 import { LoginScreen } from './components/LoginScreen';
-import { createWorkspaceSocket } from './lib/ws-client';
+import { WebSocketProvider, useWebSocket } from './lib/ws-provider';
 import {
   useAuthSession,
   useTree,
   useSessionInfo,
   useSessionMessages,
-  useSessionGitDiff,
-  useSessionFileTree,
-  useSessionFileContent,
   useCreateProjectMutation,
   useCreateSessionMutation,
   useSendMessageMutation,
@@ -42,19 +42,11 @@ import {
   useArchiveProjectMutation,
   useSetProjectPinnedMutation,
   useDeleteProjectMutation,
-  useGitPullMutation,
-  useGitPushMutation,
-  useGitCommitMutation,
-  useAddGitignoreMutation,
-  useGitBranches,
-  useGitCheckoutMutation,
   useTestModelProviderMutation,
   useCreateModelProviderMutation,
   useNativeModelProviders,
   useSetNativeProviderApiKeyMutation,
   useUpdateSessionTitleMutation,
-  useSaveSessionFileContentMutation,
-  useDeleteSessionFileMutation,
   useProjectRoleModels,
   useSetProjectRoleModelsMutation,
   usePackages,
@@ -63,14 +55,8 @@ import {
   useUpdatePackagesMutation,
   useTogglePackageMutation,
   usePackageUpdates,
-  useProjectTodos,
-  useCreateProjectTodoMutation,
-  useUpdateProjectTodoMutation,
-  useDeleteProjectTodoMutation,
   useSessionThinkingLevel,
   useSetSessionThinkingLevelMutation,
-  useGitCommits,
-  useGitShow,
 } from './lib/hooks';
 import {
   Settings,
@@ -86,8 +72,6 @@ import {
 
 type Tab = 'chat' | 'info' | 'diff' | 'files' | 'doce';
 type SendShortcutMode = 'enter' | 'mod_enter';
-type ProviderModelForm = ProviderFormPayload['models'][number];
-
 const WORKSPACE_ROOT_PATH = '/workspace';
 
 function getSessionPath(sessionId: string | null): string {
@@ -123,51 +107,6 @@ function findProjectId(projects: ProjectDTO[], sessionId: string): string | null
   return null;
 }
 
-function findSessionNode(projects: ProjectDTO[], sessionId: string): SessionTreeNodeDTO | null {
-  for (const project of projects) {
-    const stack = [...project.sessions];
-    while (stack.length > 0) {
-      const node = stack.shift()!;
-      if (node.id === sessionId) return node;
-      stack.push(...node.children);
-    }
-  }
-  return null;
-}
-
-function createEmptyProviderModel(): ProviderModelForm {
-  return {
-    id: '',
-    name: '',
-    reasoning: false,
-    inputImage: false,
-    input: undefined,
-    api: '',
-    contextWindow: undefined,
-    maxTokens: undefined,
-    cost: undefined,
-    compat: '',
-    thinkingLevelMap: '',
-  };
-}
-
-const ROLE_CONFIG_KEYS = [
-  { key: 'planner', label: '负责人' },
-  { key: 'worker', label: '执行者' },
-  { key: 'reviewer', label: '审查者' },
-  { key: 'feature_lead', label: '需求负责人' },
-  { key: 'bugfix_lead', label: 'Bug负责人' },
-  { key: 'blank', label: '空白' },
-];
-
-const CONFIGURABLE_ROLE_KEYS = ROLE_CONFIG_KEYS.filter((r) => r.key !== 'planner');
-
-const NOTIFIABLE_ROLE_KEYS = new Set(['planner', 'feature_lead', 'bugfix_lead']);
-const NOTIFICATION_ROLE_LABELS: Record<string, string> = {
-  planner: 'Planner',
-  feature_lead: 'Feature Lead',
-  bugfix_lead: 'Bugfix Lead',
-};
 
 function useIsMobile(breakpoint = 768): boolean {
   const getIsMobile = useCallback(() => {
@@ -226,49 +165,13 @@ export default function App() {
   const [showProviderModal, setShowProviderModal] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'general' | 'notifications' | 'models' | 'packages'>('general');
 
-  const [createName, setCreateName] = useState('');
-  const [createMode, setCreateMode] = useState<'existing' | 'git_clone'>('existing');
-  const [createPath, setCreatePath] = useState('');
-  const [createRepoUrl, setCreateRepoUrl] = useState('');
-  const [createProjectModelKey, setCreateProjectModelKey] = useState('');
   const [showProjectSettings, setShowProjectSettings] = useState(false);
-  const [projectSettingsTab, setProjectSettingsTab] = useState<'roles' | 'packages'>('roles');
-  const [editRoleModelsList, setEditRoleModelsList] = useState<Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>>>({});
-  const [createProjectRoleModels, setCreateProjectRoleModels] = useState<Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>>>({});
-  const [createPlannerThinkingLevel, setCreatePlannerThinkingLevel] = useState('');
-
-  const [providerKey, setProviderKey] = useState('');
-  const [providerBaseUrl, setProviderBaseUrl] = useState('');
-  const [providerApiKey, setProviderApiKey] = useState('');
-  const [providerAuthHeader, setProviderAuthHeader] = useState(true);
-  const [supportsDeveloperRole, setSupportsDeveloperRole] = useState(false);
-  const [supportsReasoningEffort, setSupportsReasoningEffort] = useState(false);
-  const [providerApi, setProviderApi] = useState('');
-  const [providerHeaders, setProviderHeaders] = useState('');
-  const [providerCompatJson, setProviderCompatJson] = useState('');
-  const [providerTab, setProviderTab] = useState<'native' | 'custom'>('native');
-  const [nativeProvider, setNativeProvider] = useState('openrouter');
-  const [nativeApiKey, setNativeApiKey] = useState('');
-  const [providerModels, setProviderModels] = useState<ProviderModelForm[]>([createEmptyProviderModel()]);
-  const [providerError, setProviderError] = useState<string | null>(null);
-  const [providerTestResult, setProviderTestResult] = useState<string | null>(null);
-  const [providerTestModels, setProviderTestModels] = useState<Array<{ id: string; name?: string }>>([]);
 
   const [packageSource, setPackageSource] = useState('');
   const [packageError, setPackageError] = useState<string | null>(null);
   const [packageSuccess, setPackageSuccess] = useState<string | null>(null);
-  const [projectPackageSource, setProjectPackageSource] = useState('');
-  const [projectPackageError, setProjectPackageError] = useState<string | null>(null);
-  const [projectPackageSuccess, setProjectPackageSuccess] = useState<string | null>(null);
 
-  const [streamNote, setStreamNote] = useState('');
-  const [streamingContent, setStreamingContent] = useState('');
-  const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
   const [currentModelSupportsImages, setCurrentModelSupportsImages] = useState<boolean | null>(null);
-  const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
-  type RuntimeStatus = 'running' | 'idle';
-  const [localRuntimeStatusBySession, setLocalRuntimeStatusBySession] = useState<Record<string, RuntimeStatus>>({});
-  const [wsConnected, setWsConnected] = useState(false);
 
   const initialUrlSessionId = useMemo(() => getSessionIdFromPath(window.location.pathname), []);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -291,7 +194,6 @@ export default function App() {
     try { return localStorage.getItem('pi-system-notifications') === 'true'; } catch { return false; }
   });
   const [notificationPermissionStatus, setNotificationPermissionStatus] = useState<string | null>(null);
-  const notifiedRef = useRef<Set<string>>(new Set());
   const isMobile = useIsMobile();
   const [showMobileSidebar, setShowMobileSidebar] = useState(() => !(typeof window !== 'undefined' && getSessionIdFromPath(window.location.pathname)));
   const isSidebarVisible = !isMobile || showMobileSidebar;
@@ -351,19 +253,9 @@ export default function App() {
 
   const queryClient = useQueryClient();
   const treeQuery = useTree();
-  const refetchTree = treeQuery.refetch;
   const tree = treeQuery.data?.projects ?? [];
   const sessionInfoQuery = useSessionInfo(selectedSessionId);
   const sessionInfo = sessionInfoQuery.data;
-  const gitDiffQuery = useSessionGitDiff(activeTab === 'diff' ? selectedSessionId : null);
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const [selectedDocePath, setSelectedDocePath] = useState<string | null>(null);
-  const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({});
-  const [expandedDoce, setExpandedDoce] = useState<Record<string, boolean>>({});
-  const isFileOrDoce = activeTab === 'files' || activeTab === 'doce';
-  const fileTreeQuery = useSessionFileTree(isFileOrDoce ? selectedSessionId : null);
-  const fileContentQuery = useSessionFileContent(activeTab === 'files' ? selectedSessionId : null, activeTab === 'files' ? selectedFilePath : null);
-  const doceContentQuery = useSessionFileContent(activeTab === 'doce' ? selectedSessionId : null, activeTab === 'doce' ? selectedDocePath : null);
   const modelsQuery = useModels();
   const setModelMut = useSetSessionModelMutation();
   const thinkingLevelQuery = useSessionThinkingLevel(selectedSessionId);
@@ -374,11 +266,6 @@ export default function App() {
   const setNativeApiKeyMut = useSetNativeProviderApiKeyMutation();
   const setProjectRoleModelsMut = useSetProjectRoleModelsMutation();
   const projectRoleModelsQuery = useProjectRoleModels(showProjectSettings ? selectedProjectId : null);
-  const projectTodosQuery = useProjectTodos(selectedSessionId ? selectedProjectId : null);
-  const createTodoMut = useCreateProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
-  const updateTodoMut = useUpdateProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
-  const deleteTodoMut = useDeleteProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
-
   const packagesQuery = usePackages();
   const projectPackagesQuery = usePackages(showProjectSettings ? selectedProjectId : null);
   const projectPackagesUpdatesQuery = usePackageUpdates(showProjectSettings ? selectedProjectId : null);
@@ -399,6 +286,7 @@ export default function App() {
   const archiveProjectMut = useArchiveProjectMutation();
   const setProjectPinnedMut = useSetProjectPinnedMutation();
   const deleteProjectMut = useDeleteProjectMutation();
+  const { connected: wsConnected, localRuntimeStatusBySession, setSessionContext } = useWebSocket();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
   // localRuntimeStatusBySession is updated immediately from WS runtime_status_changed events,
   // before async query refetches complete. This prevents stale query data from
@@ -407,21 +295,16 @@ export default function App() {
   ? (localRuntimeStatusBySession[selectedSessionId] ?? currentSessionNode?.runtime_status ?? sessionInfo?.session.runtime_status ?? 'idle')
   : 'idle';
   const messagesQuery = useSessionMessages(activeTab === 'chat' ? selectedSessionId : null, 20, runtimeStatus === 'running' ? 1500 : false);
-  const messages = messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [];
+  const messages = useMemo(
+    () => messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [],
+    [messagesQuery.data]
+  );
   const hasMoreMessages = Boolean(messagesQuery.hasNextPage);
   const loadingMoreMessages = messagesQuery.isFetchingNextPage;
 
   useEffect(() => {
-    setPendingUserMessages([]);
-    setStreamingContent('');
-    setStreamNote('');
-    setRuntimeErrors([]);
     // localRuntimeStatusBySession is intentionally NOT cleared here —
     // per-session state survives session switches and is keyed by sessionId.
-    setSelectedFilePath(null);
-    setSelectedDocePath(null);
-    setExpandedFiles({});
-    setExpandedDoce({});
     setEditingTitle(false);
     setEditTitleValue('');
   }, [selectedSessionId]);
@@ -467,222 +350,10 @@ export default function App() {
 
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
-  const selectedProjectIdRef = useRef(selectedProjectId);
-  selectedProjectIdRef.current = selectedProjectId;
-  const systemNotificationsEnabledRef = useRef(systemNotificationsEnabled);
-  systemNotificationsEnabledRef.current = systemNotificationsEnabled;
-  const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
-
-  // ── System notification helpers ──────────────────────────────────
-  // These are defined as local functions so they can be called from the
-  // WebSocket onMessage closure. notifiedRef is a Ref — its .current is
-  // always up-to-date regardless of when the closure was created.
-
-  function notifyChatStreamError(message: ChatStreamMessage) {
-    if (!('scope' in message) || !message.scope?.session_id) return;
-    const sessionId = message.scope.session_id;
-    const errorText = message.payload?.error ?? 'Unknown agent loop error';
-    const treeData = queryClient.getQueryData<{ projects: ProjectDTO[] }>(['tree']);
-    if (!treeData) return;
-    const node = findSessionNode(treeData.projects, sessionId);
-    if (!node || !NOTIFIABLE_ROLE_KEYS.has(node.role_template_key)) return;
-    const errorKey = `error:${sessionId}:${errorText}`;
-    if (notifiedRef.current.has(errorKey)) return;
-    notifiedRef.current.add(errorKey);
-    const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
-    sendSystemNotification(`PiPlus：${label} 出错`, {
-      body: `会话「${node.title}」发生错误：${errorText}`,
-    });
-  }
-
-  function notifyRuntimeStatusChanged(message: EventMessage) {
-    if (!('scope' in message) || !message.scope?.session_id) return;
-    const sessionId = message.scope.session_id;
-    const status = message.payload?.runtime_status as string | undefined;
-    if (status !== 'idle') return;
-    const idleError = message.payload?.error;
-    const hasError = idleError && typeof idleError === 'string' && idleError.length > 0;
-    const treeData = queryClient.getQueryData<{ projects: ProjectDTO[] }>(['tree']);
-    if (!treeData) return;
-    const node = findSessionNode(treeData.projects, sessionId);
-    if (!node || !NOTIFIABLE_ROLE_KEYS.has(node.role_template_key)) return;
-    if (hasError) {
-      const errorText = idleError as string;
-      const errorKey = `error:${sessionId}:${errorText}`;
-      if (notifiedRef.current.has(errorKey)) return;
-      notifiedRef.current.add(errorKey);
-      const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
-      sendSystemNotification(`PiPlus：${label} 出错`, {
-        body: `会话「${node.title}」发生错误：${errorText}`,
-      });
-    } else {
-      // Idle without error → completion notification
-      const doneKey = `done:${sessionId}`;
-      if (notifiedRef.current.has(doneKey)) return;
-      notifiedRef.current.add(doneKey);
-      const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
-      sendSystemNotification(`PiPlus：${label} 已完成`, {
-        body: `会话「${node.title}」已完成。`,
-      });
-    }
-  }
-  // ── End notification helpers ─────────────────────────────────────
 
   useEffect(() => {
-    if (!selectedSessionId) return;
-    const socket = createWorkspaceSocket({
-      onMessage(event) {
-        try {
-          const message = JSON.parse(event.data as string) as ServerMessage;
-          if (message.kind === 'chat_stream' && message.scope?.session_id === selectedSessionId) {
-            if (activeTabRef.current === 'chat') {
-              const delta = message.payload?.delta ?? '';
-              setStreamNote(`${message.phase}${delta ? ' · streaming' : ''}`);
-              if (message.phase === 'start') {
-                setStreamingContent('');
-                setRuntimeErrors([]);  // clear old error
-              }
-              else if (message.phase === 'delta') setStreamingContent((prev) => prev + delta);
-            }
-            if (message.phase === 'complete') {
-              setStreamNote('');
-              setPendingUserMessages([]);
-              Promise.all([
-                queryClient.refetchQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
-                queryClient.invalidateQueries({ queryKey: ['session', 'commands', selectedSessionId] }),
-                queryClient.invalidateQueries({ queryKey: ['tree'] }),
-                queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
-                queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', selectedSessionId] }),
-              ]).then(() => {
-                setStreamingContent('');
-              });
-            }
-            if (message.phase === 'error') {
-              const errorText = message.payload?.error ?? 'Unknown agent loop error';
-              setRuntimeErrors([{ runId: message.payload?.stream_id ?? 'unknown', error: errorText }]);
-              setStreamingContent('');
-              // System notification: chat_stream error
-              if (systemNotificationsEnabledRef.current) {
-                notifyChatStreamError(message);
-              }
-            }
-          }
-          if (message.kind === 'event' && message.type === 'session.runtime_status_changed') {
-            const eventSessionId = message.scope?.session_id as string | undefined;
-            const status = message.payload?.runtime_status as RuntimeStatus | undefined;
-
-            // Always update per-session status map regardless of which session is selected
-            if (eventSessionId && status) {
-              setLocalRuntimeStatusBySession(prev => ({ ...prev, [eventSessionId]: status }));
-            }
-
-            // Always refetch the tree so sidebar badge reflects status for all sessions
-            treeQuery.refetch();
-
-            if (status === 'running') {
-              // Only refetch messages for the currently selected session
-              if (eventSessionId === selectedSessionId) {
-                queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
-              }
-              // Clear completion notification tracking for this session
-              if (eventSessionId) {
-                notifiedRef.current.delete(`done:${eventSessionId}`);
-              }
-            }
-
-            // For idle/idle-error events, only affect the current session's UI state
-            if (status === 'idle') {
-              if (eventSessionId === selectedSessionId) {
-                setStreamNote('');
-                setPendingUserMessages([]);
-                const idleError = message.payload?.error;
-                if (idleError && typeof idleError === 'string' && idleError) {
-                  setRuntimeErrors([{ runId: 'runtime-status', error: idleError }]);
-                }
-                Promise.all([
-                  queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] }),
-                  queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] }),
-                  queryClient.invalidateQueries({ queryKey: ['tree'] }),
-                ]).then(() => {
-                  setStreamingContent('');
-                });
-                // Clear the local override — refetched server data is now authoritative
-                setLocalRuntimeStatusBySession(prev => {
-                  const { [selectedSessionId!]: _, ...rest } = prev;
-                  return rest;
-                });
-              } else {
-                // For other sessions going idle, just invalidate their data silently
-                if (eventSessionId) {
-                  queryClient.invalidateQueries({ queryKey: ['session', 'info', eventSessionId] });
-                  queryClient.invalidateQueries({ queryKey: ['session', 'messages', eventSessionId] });
-                }
-                setLocalRuntimeStatusBySession(prev => {
-                  const { [eventSessionId]: _, ...rest } = prev;
-                  return rest;
-                });
-              }
-              // System notification: session completed or errored (any session, not just current)
-              if (systemNotificationsEnabledRef.current) {
-                notifyRuntimeStatusChanged(message);
-              }
-            }
-          }
-          if (message.kind === 'event' && (message.type === 'tree.changed' || message.type === 'project.created' || message.type === 'session.created' || message.type === 'session.archived')) {
-            treeQuery.refetch();
-          }
-          if (message.kind === 'event' && message.type === 'runtime.restored') {
-            queryClient.invalidateQueries({ queryKey: ['session', 'commands', selectedSessionId] });
-            queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] });
-          }
-          if (message.kind === 'event' && (message.type === 'session.compaction_end' || message.type === 'session.compacted')) {
-            const eventSessionId = (message.payload as Record<string, unknown>)?.session_id ?? selectedSessionId;
-            if (typeof eventSessionId === 'string' && eventSessionId) {
-              queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', eventSessionId] });
-            }
-          }
-        } catch {}
-      },
-      onOpen() {
-        setWsConnected(true);
-        // Reset all local status overrides on reconnect.
-        // Server data, which we refetch immediately below, is authoritative.
-        setLocalRuntimeStatusBySession({});
-        socket.hello();
-        socket.setContext({
-          project_id: selectedProjectIdRef.current ?? undefined,
-          session_id: selectedSessionId,
-          current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' || activeTabRef.current === 'doce' ? 'files' : 'chat',
-        });
-        socket.ping();
-        // Refetch tree and current session info as reconnect safety net.
-        // If we missed runtime_status_changed events while disconnected,
-        // this ensures we recover the correct state on reconnect.
-        treeQuery.refetch();
-        if (selectedSessionId) {
-          queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionId] });
-          queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
-        }
-      },
-      onClose() {
-        setWsConnected(false);
-      },
-    });
-    socketRef.current = socket;
-    return () => {
-      socketRef.current = null;
-      socket.close();
-    };
-  }, [selectedSessionId, queryClient, refetchTree]);
-
-  useEffect(() => {
-    if (!socketRef.current || !selectedSessionId) return;
-    socketRef.current.setContext({
-      project_id: selectedProjectId ?? undefined,
-      session_id: selectedSessionId,
-      current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : activeTab === 'files' || activeTab === 'doce' ? 'files' : 'chat',
-    });
-  }, [activeTab, selectedProjectId, selectedSessionId]);
+    setSessionContext(selectedSessionId, selectedProjectId, activeTab);
+  }, [selectedSessionId, selectedProjectId, activeTab, setSessionContext]);
 
   const handleLogin = useCallback(async (password: string) => {
     try {
@@ -708,65 +379,7 @@ export default function App() {
     }
   }, [isMobile]);
 
-  const handleCreateProject = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!createName.trim()) return;
-    try {
-      const result = await createProjectMut.mutateAsync({
-        name: createName.trim(),
-        mode: createMode,
-        path: createMode === 'existing' ? createPath : undefined,
-        repoUrl: createMode === 'git_clone' ? createRepoUrl : undefined,
-        model: createProjectModelKey ? (() => {
-          const [provider, id] = createProjectModelKey.split('/');
-          return provider && id
-            ? {
-                provider,
-                id,
-                label: createProjectModelKey,
-                ...(createPlannerThinkingLevel ? { thinkingLevel: createPlannerThinkingLevel } : {}),
-              }
-            : null;
-        })() : null,
-      });
-      // Save role default models after project creation
-      const mergedRoleDefaults: Record<string, any> = {};
-      for (const [roleKey, models] of Object.entries(createProjectRoleModels)) {
-        if (models.length > 0 && models[0].provider && models[0].id) {
-          const entry: any = {
-            provider: models[0].provider,
-            id: models[0].id,
-          };
-          if (models[0].thinkingLevel) entry.thinkingLevel = models[0].thinkingLevel;
-          if (models.length > 1) {
-            entry.candidateModels = models.slice(1).map(m => ({
-              provider: m.provider,
-              id: m.id,
-              ...(m.thinkingLevel ? { thinkingLevel: m.thinkingLevel } : {}),
-            }));
-          }
-          mergedRoleDefaults[roleKey] = entry;
-        }
-      }
-      if (Object.keys(mergedRoleDefaults).length > 0) {
-        try {
-          await setProjectRoleModelsMut.mutateAsync({ projectId: result.projectId, models: mergedRoleDefaults });
-        } catch { /* non-critical */ }
-      }
-      setShowCreateProject(false);
-      setCreateName('');
-      setCreatePath('');
-      setCreateRepoUrl('');
-      setCreateProjectModelKey('');
-      setCreatePlannerThinkingLevel('');
-      setCreateProjectRoleModels({});
-      if (result.sessionId) {
-        setSelectedProjectId(result.projectId);
-        setSelectedSessionId(result.sessionId);
-      }
-      await treeQuery.refetch();
-    } catch {}
-  }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, treeQuery, createProjectRoleModels, setProjectRoleModelsMut]);
+
 
   const handleCreateSession = useCallback(async () => {
     if (!selectedProjectId) return;
@@ -779,47 +392,13 @@ export default function App() {
 
   const handleSend = useCallback(async (content: string, attachments: SessionMessageImageAttachment[] = []) => {
     if (!selectedSessionId) return;
-    setRuntimeErrors([]);
-    const optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const imageBlocks: ChatImageContentBlockDTO[] = attachments.map((attachment) => ({
-      type: 'image',
-      mime_type: attachment.mime_type,
-      media_type: attachment.mime_type,
-      filename: attachment.filename ?? null,
-      uri: null,
-      data_base64: attachment.data_base64,
-    }));
-    const optimisticMessage: ChatMessageDTO = {
-      id: optimisticId,
-      role: 'user',
-      message_kind: 'normal',
-      source_session_id: null,
-      content_text: content,
-      content_blocks: [
-        ...(content ? [{ type: 'text' as const, text: content }] : []),
-        ...imageBlocks,
-      ],
-      created_at: new Date().toISOString(),
-    };
-    setPendingUserMessages((prev) => [...prev, optimisticMessage]);
-    try {
-      await sendMessageMut.mutateAsync({ content, attachments });
-      queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
-    } catch (error) {
-      setPendingUserMessages((prev) => prev.filter((message) => message.id !== optimisticId));
-      throw error;
-    }
+    await sendMessageMut.mutateAsync({ content, attachments });
+    queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
   }, [selectedSessionId, sendMessageMut, queryClient]);
 
   const handleStop = useCallback(async () => {
     if (!selectedSessionId) return;
-    setStreamNote('stopping');
-    try {
-      await stopSessionMut.mutateAsync(selectedSessionId);
-    } catch {
-      setStreamNote('');
-      throw new Error('stop_session_failed');
-    }
+    await stopSessionMut.mutateAsync(selectedSessionId);
   }, [selectedSessionId, stopSessionMut]);
 
   const handleCompactSession = useCallback(async () => {
@@ -888,213 +467,12 @@ export default function App() {
     queryClient.invalidateQueries({ queryKey: ['session', 'thinking-level', selectedSessionId] });
   }, [selectedSessionId, setModelMut, queryClient]);
 
-  const gitPullMut = useGitPullMutation();
-  const gitPushMut = useGitPushMutation();
-  const gitCommitMut = useGitCommitMutation();
-  const addGitignoreMut = useAddGitignoreMutation();
-  const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
-  const gitCheckoutMut = useGitCheckoutMutation();
-  const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
-
-  // Reset commit selection when session changes or branches change (e.g., after checkout)
-  useEffect(() => {
-    setSelectedCommitHash(null);
-  }, [selectedSessionId, gitBranchesQuery.data]);
-
-  const handleRefreshDiff = useCallback(() => {
-    if (!selectedSessionId) return;
-    queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', selectedSessionId] });
-    queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', selectedSessionId] });
-  }, [selectedSessionId, queryClient]);
-
-  const gitCommitsQuery = useGitCommits(activeTab === 'diff' ? selectedSessionId : null, 50);
-  const gitShowQuery = useGitShow(
-    selectedCommitHash ? selectedSessionId : null,
-    selectedCommitHash,
-  );
-
-  // Compute which diff to display
-  const displayDiff = selectedCommitHash
-    ? (gitShowQuery.data?.diff ?? null)
-    : (gitDiffQuery.data?.diff ?? null);
-  const isDisplayLoading = selectedCommitHash ? gitShowQuery.isLoading : gitDiffQuery.isLoading;
-
   const updateTitleMut = useUpdateSessionTitleMutation();
-  const saveFileContentMut = useSaveSessionFileContentMutation(isFileOrDoce ? selectedSessionId : null);
-  const savingFile = saveFileContentMut.isPending;
-  const deleteFileMut = useDeleteSessionFileMutation(isFileOrDoce ? selectedSessionId : null);
-  const deletingFile = deleteFileMut.isPending;
-  
-  const handleDeleteFile = useCallback(async (path: string) => {
-    if (!selectedSessionId) return;
-    // If the deleted file is currently selected in either tab, clear the selection
-    if (selectedFilePath === path) setSelectedFilePath(null);
-    if (selectedDocePath === path) setSelectedDocePath(null);
-    try {
-      await deleteFileMut.mutateAsync({ path });
-    } catch {
-      // Error is surfaced via the mutation state; no need to alert here
-    }
-  }, [selectedSessionId, selectedFilePath, selectedDocePath, deleteFileMut]);
-  
-  const handleSaveFileContent = useCallback(async (path: string, content: string) => {
-    if (!selectedSessionId) return;
-    await saveFileContentMut.mutateAsync({ path, content });
-  }, [selectedSessionId, saveFileContentMut]);
-
-  const resetProviderForm = useCallback(() => {
-    setProviderKey('');
-    setProviderBaseUrl('');
-    setProviderApiKey('');
-    setProviderAuthHeader(true);
-    setSupportsDeveloperRole(false);
-    setSupportsReasoningEffort(false);
-    setProviderApi('');
-    setProviderHeaders('');
-    setProviderCompatJson('');
-    setProviderTab('native');
-    setNativeProvider('openrouter');
-    setNativeApiKey('');
-    setProviderModels([createEmptyProviderModel()]);
-    setProviderError(null);
-    setProviderTestResult(null);
-    setProviderTestModels([]);
-  }, []);
 
   const handleOpenProviderModal = useCallback(() => {
     setShowSettings(false);
-    resetProviderForm();
     setShowProviderModal(true);
-  }, [resetProviderForm]);
-
-  const handleCloseProviderModal = useCallback(() => {
-    setShowProviderModal(false);
-    setProviderError(null);
   }, []);
-
-  const updateProviderModel = useCallback((index: number, patch: Partial<ProviderModelForm>) => {
-    setProviderModels((current) => current.map((model, modelIndex) => modelIndex === index ? { ...model, ...patch } : model));
-  }, []);
-
-  const handleAddProviderModel = useCallback(() => {
-    setProviderModels((current) => [...current, createEmptyProviderModel()]);
-  }, []);
-
-  const handleRemoveProviderModel = useCallback((index: number) => {
-    setProviderModels((current) => current.length === 1 ? current : current.filter((_, modelIndex) => modelIndex !== index));
-  }, []);
-
-  const buildProviderPayload = useCallback((): ProviderFormPayload => {
-    // Parse compat JSON: merge explicit checkboxes with extra compat fields
-    const compatObj: Record<string, unknown> = {
-      supportsDeveloperRole,
-      supportsReasoningEffort,
-    };
-    if (providerCompatJson.trim()) {
-      try {
-        const extra = JSON.parse(providerCompatJson.trim());
-        Object.assign(compatObj, extra);
-      } catch { /* invalid JSON, skip */ }
-    }
-
-    // Parse headers JSON
-    let headersObj: Record<string, string> | undefined;
-    if (providerHeaders.trim()) {
-      try {
-        headersObj = JSON.parse(providerHeaders.trim());
-      } catch { /* invalid JSON, skip */ }
-    }
-
-    return {
-      providerKey: providerKey.trim(),
-      baseUrl: providerBaseUrl.trim(),
-      apiKey: providerApiKey,
-      authHeader: providerAuthHeader,
-      api: providerApi.trim() || undefined,
-      headers: headersObj,
-      compat: Object.keys(compatObj).length > 0 ? compatObj : undefined,
-      models: providerModels.map((model) => ({
-        id: model.id.trim(),
-        name: model.name?.trim() || undefined,
-        reasoning: Boolean(model.reasoning),
-        inputImage: Boolean(model.inputImage),
-        input: model.input,
-        api: model.api?.trim() || undefined,
-        contextWindow: model.contextWindow ? Number(model.contextWindow) : undefined,
-        maxTokens: model.maxTokens ? Number(model.maxTokens) : undefined,
-        cost: model.cost
-          ? {
-              ...(model.cost.input !== undefined && !Number.isNaN(Number(model.cost.input)) ? { input: Number(model.cost.input) } : {}),
-              ...(model.cost.output !== undefined && !Number.isNaN(Number(model.cost.output)) ? { output: Number(model.cost.output) } : {}),
-              ...(model.cost.cacheRead !== undefined && !Number.isNaN(Number(model.cost.cacheRead)) ? { cacheRead: Number(model.cost.cacheRead) } : {}),
-              ...(model.cost.cacheWrite !== undefined && !Number.isNaN(Number(model.cost.cacheWrite)) ? { cacheWrite: Number(model.cost.cacheWrite) } : {}),
-            }
-          : undefined,
-        compat: model.compat?.trim()
-          ? (() => { try { const p = JSON.parse(model.compat!.trim()); return p; } catch { return undefined; } })()
-          : undefined,
-        thinkingLevelMap: model.thinkingLevelMap?.trim()
-          ? (() => { try { const p = JSON.parse(model.thinkingLevelMap!.trim()); return p; } catch { return undefined; } })()
-          : undefined,
-      })),
-    };
-  }, [providerKey, providerBaseUrl, providerApiKey, providerAuthHeader, supportsDeveloperRole, supportsReasoningEffort, providerApi, providerHeaders, providerCompatJson, providerModels]);
-
-  const validateProviderPayload = useCallback((payload: ProviderFormPayload) => {
-    if (!payload.providerKey) return '请填写 providerKey';
-    if (!payload.baseUrl) return '请填写 baseUrl';
-    if (payload.models.length === 0) return '请至少添加一个模型';
-    if (payload.models.some((model) => !model.id)) return '请填写所有模型的 id';
-    return null;
-  }, []);
-
-  const handleTestProvider = useCallback(async () => {
-    const payload = buildProviderPayload();
-    const error = validateProviderPayload(payload);
-    if (error) {
-      setProviderError(error);
-      return;
-    }
-    setProviderError(null);
-    setProviderTestResult(null);
-    setProviderTestModels([]);
-    try {
-      const result = await testProviderMut.mutateAsync({
-        providerKey: payload.providerKey,
-        baseUrl: payload.baseUrl,
-        apiKey: payload.apiKey,
-        authHeader: payload.authHeader,
-      });
-      if (!result.ok) {
-        setProviderError(result.error ?? '测试连接失败');
-        return;
-      }
-      setProviderTestModels(result.models ?? []);
-      setProviderTestResult(result.models && result.models.length > 0 ? `测试成功，发现 ${result.models.length} 个模型` : '测试成功');
-    } catch (error) {
-      setProviderError(error instanceof Error ? error.message : '测试连接失败');
-    }
-  }, [buildProviderPayload, validateProviderPayload, testProviderMut]);
-
-  const handleSaveProvider = useCallback(async () => {
-    const payload = buildProviderPayload();
-    const error = validateProviderPayload(payload);
-    if (error) {
-      setProviderError(error);
-      return;
-    }
-    setProviderError(null);
-    try {
-      await createProviderMut.mutateAsync(payload);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['models'] }),
-        queryClient.invalidateQueries({ queryKey: ['models', 'status'] }),
-      ]);
-      setShowProviderModal(false);
-    } catch (saveError) {
-      setProviderError(saveError instanceof Error ? saveError.message : '保存失败');
-    }
-  }, [buildProviderPayload, validateProviderPayload, createProviderMut, queryClient]);
 
   const handleLoadMore = useCallback(() => {
     if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
@@ -1143,154 +521,14 @@ export default function App() {
     deleteProjectMut.mutate(projectId);
   }, [deleteProjectMut]);
 
-  // Populate editRoleModels when the project settings modal opens and data arrives
-  useEffect(() => {
-    if (showProjectSettings && projectRoleModelsQuery.data) {
-      const initial: Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>> = {};
-      for (const role of ROLE_CONFIG_KEYS) {
-        const model = projectRoleModelsQuery.data[role.key];
-        if (model) {
-          const models: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [
-            { provider: model.provider, id: model.id, thinkingLevel: model.thinkingLevel ?? null },
-          ];
-          if (Array.isArray((model as any).candidateModels)) {
-            for (const cm of (model as any).candidateModels) {
-              models.push({ provider: cm.provider, id: cm.id, thinkingLevel: cm.thinkingLevel ?? null });
-            }
-          }
-          initial[role.key] = models;
-        } else {
-          initial[role.key] = [];
-        }
-      }
-      setEditRoleModelsList(initial);
-    }
-  }, [showProjectSettings, projectRoleModelsQuery.data]);
-
   const handleOpenProjectSettings = useCallback((projectId: string) => {
     setSelectedProjectId(projectId);
-    setProjectSettingsTab('roles');
-    setProjectPackageSource('');
-    setProjectPackageError(null);
-    setProjectPackageSuccess(null);
     setShowProjectSettings(true);
   }, []);
 
-  const handleSaveProjectRoleModels = useCallback(async () => {
-    if (!selectedProjectId) return;
-    const models: Record<string, any> = {};
-    for (const [roleKey, modelList] of Object.entries(editRoleModelsList)) {
-      if (modelList.length > 0 && modelList[0].provider && modelList[0].id) {
-        const entry: any = {
-          provider: modelList[0].provider,
-          id: modelList[0].id,
-        };
-        if (modelList[0].thinkingLevel) entry.thinkingLevel = modelList[0].thinkingLevel;
-        if (modelList.length > 1) {
-          entry.candidateModels = modelList.slice(1).map(m => ({
-            provider: m.provider,
-            id: m.id,
-            ...(m.thinkingLevel ? { thinkingLevel: m.thinkingLevel } : {}),
-          }));
-        }
-        models[roleKey] = entry;
-      } else {
-        models[roleKey] = null;
-      }
-    }
-    await setProjectRoleModelsMut.mutateAsync({ projectId: selectedProjectId, models });
-    setShowProjectSettings(false);
-  }, [selectedProjectId, editRoleModelsList, setProjectRoleModelsMut]);
 
-  // Handlers for create project role model changes
-  const handleCreateProjectRoleModelChange = useCallback((roleKey: string, index: number, value: string) => {
-    setCreateProjectRoleModels((prev) => {
-      const models = [...(prev[roleKey] ?? [])];
-      while (models.length <= index) {
-        models.push({ provider: '', id: '', thinkingLevel: null });
-      }
-      if (!value) {
-        models[index] = { ...models[index], provider: '', id: '' };
-      } else {
-        const [provider, id] = value.split('/');
-        models[index] = { ...models[index], provider, id };
-      }
-      return { ...prev, [roleKey]: models };
-    });
-  }, []);
 
-  const handleCreateProjectRoleThinkingLevelChange = useCallback((roleKey: string, index: number, level: string) => {
-    setCreateProjectRoleModels((prev) => {
-      const models = [...(prev[roleKey] ?? [])];
-      if (index < models.length) {
-        models[index] = { ...models[index], thinkingLevel: level || null };
-      }
-      return { ...prev, [roleKey]: models };
-    });
-  }, []);
 
-  const handleCreateProjectAddCandidate = useCallback((roleKey: string) => {
-    setCreateProjectRoleModels((prev) => {
-      const models = [...(prev[roleKey] ?? [])];
-      models.push({ provider: '', id: '', thinkingLevel: null });
-      return { ...prev, [roleKey]: models };
-    });
-  }, []);
-
-  const handleCreateProjectRemoveCandidate = useCallback((roleKey: string, index: number) => {
-    setCreateProjectRoleModels((prev) => {
-      const models = [...(prev[roleKey] ?? [])];
-      if (index > 0 && index < models.length) {
-        models.splice(index, 1);
-      }
-      return { ...prev, [roleKey]: models };
-    });
-  }, []);
-
-  // Handlers for project settings role model changes
-  const handleEditRoleModelChange = useCallback((roleKey: string, index: number, value: string) => {
-    setEditRoleModelsList((prev) => {
-      const models = [...(prev[roleKey] ?? [])];
-      while (models.length <= index) {
-        models.push({ provider: '', id: '', thinkingLevel: null });
-      }
-      if (!value) {
-        models[index] = { ...models[index], provider: '', id: '' };
-      } else {
-        const [provider, id] = value.split('/');
-        models[index] = { ...models[index], provider, id };
-      }
-      return { ...prev, [roleKey]: models };
-    });
-  }, []);
-
-  const handleEditRoleThinkingLevelChange = useCallback((roleKey: string, index: number, level: string) => {
-    setEditRoleModelsList((prev) => {
-      const models = [...(prev[roleKey] ?? [])];
-      if (index < models.length) {
-        models[index] = { ...models[index], thinkingLevel: level || null };
-      }
-      return { ...prev, [roleKey]: models };
-    });
-  }, []);
-
-  const handleEditAddCandidate = useCallback((roleKey: string) => {
-    setEditRoleModelsList((prev) => {
-      const models = [...(prev[roleKey] ?? [])];
-      models.push({ provider: '', id: '', thinkingLevel: null });
-      return { ...prev, [roleKey]: models };
-    });
-  }, []);
-
-  const handleEditRemoveCandidate = useCallback((roleKey: string, index: number) => {
-    setEditRoleModelsList((prev) => {
-      const models = [...(prev[roleKey] ?? [])];
-      if (index > 0 && index < models.length) {
-        models.splice(index, 1);
-      }
-      return { ...prev, [roleKey]: models };
-    });
-  }, []);
 
   const handleToggleSystemNotifications = useCallback(async (enabled: boolean) => {
     if (enabled) {
@@ -1314,31 +552,21 @@ export default function App() {
     }
   }, []);
 
-  const THINKING_LABELS: Record<string, string> = {
-    off: '思考：关',
-    minimal: '思考：最低',
-    low: '思考：低',
-    medium: '思考：中',
-    high: '思考：高',
-    xhigh: '思考：最高',
-  };
+  const handleToggleShowArchived = useCallback(() => {
+    setShowArchived((v) => {
+      const next = !v;
+      try { localStorage.setItem('pi-show-archived', String(next)); } catch {}
+      return next;
+    });
+  }, []);
 
-  // Helper: get thinking level keys for a given model key (provider/id), or empty array if model doesn't support thinking
-  const getModelThinkingLevels = useCallback((modelKey: string): string[] => {
-    if (!modelKey || !modelsQuery.data) return [];
-    const [provider, id] = modelKey.split('/');
-    if (!provider || !id) return [];
-    const model = modelsQuery.data.find((m) => m.provider === provider && m.id === id);
-    if (!model?.thinkingLevelMap) return [];
-    return Object.keys(model.thinkingLevelMap);
-  }, [modelsQuery.data]);
-
-  const thinkingLevelOptionsForSelect = useCallback((levels: string[]) =>
-    levels.map((level) => ({
-      value: level,
-      label: THINKING_LABELS[level] ?? level,
-    })),
-  []);
+  const handleToggleShowWorker = useCallback(() => {
+    setShowWorker((v) => {
+      const next = !v;
+      try { localStorage.setItem('pi-show-worker', String(next)); } catch {}
+      return next;
+    });
+  }, []);
 
   if (!isLoggedIn) {
     return (
@@ -1354,6 +582,7 @@ export default function App() {
   const isPlannerRoot = sessionInfo?.role_template.key === 'planner' && sessionInfo.lineage.depth === 0;
 
   return (
+    <WebSocketProvider>
     <div className={`flex flex-col md:flex-row h-[100dvh] min-h-0 w-full overflow-hidden overscroll-none bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
       <div className={`${isSidebarVisible ? 'flex' : 'hidden'} w-full min-w-0 flex-1 md:w-auto md:flex-none`}>
         <Sidebar
@@ -1376,21 +605,9 @@ export default function App() {
           onOpenSettings={() => setShowSettings(true)}
           onOpenProjectSettings={handleOpenProjectSettings}
           showArchived={showArchived}
-          onToggleShowArchived={() => {
-            setShowArchived((v) => {
-              const next = !v;
-              try { localStorage.setItem('pi-show-archived', String(next)); } catch {}
-              return next;
-            });
-          }}
+          onToggleShowArchived={handleToggleShowArchived}
           showWorker={showWorker}
-          onToggleShowWorker={() => {
-            setShowWorker((v) => {
-              const next = !v;
-              try { localStorage.setItem('pi-show-worker', String(next)); } catch {}
-              return next;
-            });
-          }}
+          onToggleShowWorker={handleToggleShowWorker}
           treeLoading={treeQuery.isLoading}
           creatingSession={createSessionMut.isPending}
           isMobile={isMobile}
@@ -1525,7 +742,6 @@ export default function App() {
               {activeTab === 'chat' && (
                 <TabChat
                   messages={messages}
-                  pendingUserMessages={pendingUserMessages}
                   hasMore={hasMoreMessages}
                   loadingMore={loadingMoreMessages}
                   onLoadMore={handleLoadMore}
@@ -1533,11 +749,7 @@ export default function App() {
                   onStop={handleStop}
                   sending={sendMessageMut.isPending}
                   runtimeStatus={runtimeStatus}
-                  streamNote={streamNote}
-                  streamingContent={streamingContent}
-                  runtimeErrors={runtimeErrors}
                   sessionTitle={sessionInfo?.session.title}
-                  wsConnected={wsConnected}
                   selectedSessionId={selectedSessionId}
                   sendShortcutMode={sendShortcutMode}
                   models={modelsQuery.data ?? []}
@@ -1564,79 +776,27 @@ export default function App() {
               )}
               {activeTab === 'info' && (
   <TabSessionInfo
-    sessionInfo={sessionInfo ?? null}
-    isLoading={sessionInfoQuery.isLoading}
-    projectId={selectedProjectId}
-    todos={projectTodosQuery.data ?? []}
-    todosLoading={projectTodosQuery.isLoading}
-    onCreateTodo={(text, onSuccess) => createTodoMut.mutate(text, { onSuccess })}
-    onToggleTodo={(todoId, done) => updateTodoMut.mutate({ todoId, patch: { done } })}
-    onDeleteTodo={(todoId) => deleteTodoMut.mutate(todoId)}
-    createTodoPending={createTodoMut.isPending}
+    selectedSessionId={selectedSessionId}
+    selectedProjectId={selectedProjectId}
   />
 )}
               {activeTab === 'diff' && (
                 <TabGitDiff
-                  diff={displayDiff}
-                  isLoading={isDisplayLoading}
-                  onRefresh={handleRefreshDiff}
-                  onPull={() => gitPullMut.mutateAsync(selectedSessionId)}
-                  onPush={() => gitPushMut.mutateAsync(selectedSessionId)}
-                  onCommit={(message) => gitCommitMut.mutateAsync({ sessionId: selectedSessionId, message })}
-                  isPulling={gitPullMut.isPending}
-                  isPushing={gitPushMut.isPending}
-                  isCommitting={gitCommitMut.isPending}
-                  onAddGitignore={async (filePath) => { await addGitignoreMut.mutateAsync({ sessionId: selectedSessionId, path: filePath }); handleRefreshDiff(); }}
-                  isAddingGitignore={addGitignoreMut.isPending}
-                  currentBranch={gitBranchesQuery.data?.current_branch ?? null}
-                  branches={gitBranchesQuery.data?.branches ?? null}
-                  onCheckout={(branch) => gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId, branch })}
-                  isCheckingOut={gitCheckoutMut.isPending}
-                  cwd={gitDiffQuery.data?.cwd ?? gitBranchesQuery.data?.cwd ?? null}
-                  commits={gitCommitsQuery.data?.commits ?? null}
-                  selectedCommitHash={selectedCommitHash}
-                  onSelectCommit={setSelectedCommitHash}
+                  selectedSessionId={selectedSessionId}
+                  activeTab={activeTab}
                 />
               )}
               {activeTab === 'files' && (
                 <TabFiles
-                  treeResponse={fileTreeQuery.data ?? null}
-                  treeLoading={fileTreeQuery.isLoading}
-                  treeError={fileTreeQuery.error instanceof Error ? fileTreeQuery.error.message : null}
-                  contentResponse={fileContentQuery.data ?? null}
-                  contentLoading={fileContentQuery.isLoading}
-                  contentError={fileContentQuery.error instanceof Error ? fileContentQuery.error.message : null}
-                  selectedPath={selectedFilePath}
-                  onSelectPath={setSelectedFilePath}
-                  onRefresh={() => { void fileTreeQuery.refetch(); }}
-                  onSaveContent={handleSaveFileContent}
-                  saving={savingFile}
-                  expandedPaths={expandedFiles}
-                  onToggleExpanded={(path, isOpen) => setExpandedFiles(prev => ({ ...prev, [path]: isOpen }))}
-                  onDeleteFile={handleDeleteFile}
-                  deleting={deletingFile}
+                  selectedSessionId={selectedSessionId}
                 />
               )}
               {activeTab === 'doce' && (
                 <TabFiles
-                  treeResponse={fileTreeQuery.data ?? null}
-                  treeLoading={fileTreeQuery.isLoading}
-                  treeError={fileTreeQuery.error instanceof Error ? fileTreeQuery.error.message : null}
-                  contentResponse={doceContentQuery.data ?? null}
-                  contentLoading={doceContentQuery.isLoading}
-                  contentError={doceContentQuery.error instanceof Error ? doceContentQuery.error.message : null}
-                  selectedPath={selectedDocePath}
-                  onSelectPath={setSelectedDocePath}
-                  onRefresh={() => { void fileTreeQuery.refetch(); }}
-                  onSaveContent={handleSaveFileContent}
-                  saving={savingFile}
+                  selectedSessionId={selectedSessionId}
                   rootPathFilter={['doce', 'docs', 'doc']}
                   panelTitle="Doce"
-                  expandedPaths={expandedDoce}
-                  onToggleExpanded={(path, isOpen) => setExpandedDoce(prev => ({ ...prev, [path]: isOpen }))}
                   defaultExpanded={true}
-                  onDeleteFile={handleDeleteFile}
-                  deleting={deletingFile}
                 />
               )}
             </>
@@ -1651,140 +811,20 @@ export default function App() {
         </div>
       </div>
 
-      <Modal isOpen={showCreateProject} onClose={() => { setShowCreateProject(false); setCreateProjectRoleModels({}); setCreatePlannerThinkingLevel(''); }} title="新建项目" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}>
-        <form onSubmit={handleCreateProject} className="space-y-4">
-          <div>
-            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">项目名称 <span className="text-red-500">*</span></label>
-            <input required autoFocus type="text" placeholder="请输入项目名称..." value={createName} onChange={(e) => setCreateName(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
-          </div>
-          <div>
-            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">模式</label>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setCreateMode('existing')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${createMode === 'existing' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>绑定目录</button>
-              <button type="button" onClick={() => setCreateMode('git_clone')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${createMode === 'git_clone' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>Git Clone</button>
-            </div>
-          </div>
-          {createMode === 'existing' ? (
-            <div>
-              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">项目路径 <span className="text-red-500">*</span></label>
-              <input required type="text" placeholder="/path/to/project" value={createPath} onChange={(e) => setCreatePath(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
-            </div>
-          ) : (
-            <div>
-              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Git 仓库地址 <span className="text-red-500">*</span></label>
-              <input required type="url" placeholder="https://github.com/user/repo" value={createRepoUrl} onChange={(e) => setCreateRepoUrl(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
-            </div>
-          )}
-          <div>
-            <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">负责人模型</label>
-            <div className="flex items-center gap-2">
-              <div className="flex-1">
-                <Select
-                  value={createProjectModelKey}
-                  onChange={(v) => { setCreateProjectModelKey(v); setCreatePlannerThinkingLevel(''); }}
-                  options={[
-                    { value: '', label: '使用默认模型' },
-                    ...(modelsQuery.data ?? []).map((m) => ({
-                      value: `${m.provider}/${m.id}`,
-                      label: `${m.provider} / ${m.label}`,
-                    })),
-                  ]}
-                  searchable
-                  className="w-full"
-                />
-              </div>
-              {(() => {
-                const levels = getModelThinkingLevels(createProjectModelKey);
-                if (!levels.length) return null;
-                return (
-                  <div className="w-36 shrink-0">
-                    <Select
-                      value={createPlannerThinkingLevel}
-                      onChange={setCreatePlannerThinkingLevel}
-                      options={[
-                        { value: '', label: '未设置' },
-                        ...thinkingLevelOptionsForSelect(levels),
-                      ]}
-                      placeholder="思考层级"
-                    />
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
-          <details className="group">
-            <summary className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300 select-none">
-              角色默认模型（可选）
-            </summary>
-            <div className="mt-2 space-y-3 pl-2 border-l-2 border-slate-200 dark:border-slate-800">
-              {CONFIGURABLE_ROLE_KEYS.map((role) => {
-                const models = createProjectRoleModels[role.key] ?? [];
-                const displayModels = models.length === 0 ? [null] : models;
-                return (
-                  <div key={role.key}>
-                    {displayModels.map((model, idx) => {
-                      const modelKey = model ? `${model.provider}/${model.id}` : '';
-                      const levels = getModelThinkingLevels(modelKey);
-                      return (
-                        <div key={idx} className="flex items-center gap-3 mb-2">
-                          <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{idx === 0 ? role.label : ''}</span>
-                          <div className="flex-1">
-                            <Select
-                              value={modelKey}
-                              onChange={(v) => handleCreateProjectRoleModelChange(role.key, idx, v)}
-                              options={[
-                                { value: '', label: '继承（使用默认模型）' },
-                                ...(modelsQuery.data ?? []).map((m) => ({
-                                  value: `${m.provider}/${m.id}`,
-                                  label: `${m.provider} / ${m.label}`,
-                                })),
-                              ]}
-                              searchable
-                              className="w-full"
-                            />
-                          </div>
-                          {levels.length > 0 && (
-                            <div className="w-28 shrink-0">
-                              <Select
-                                value={model?.thinkingLevel ?? ''}
-                                onChange={(v) => handleCreateProjectRoleThinkingLevelChange(role.key, idx, v)}
-                                options={[
-                                  { value: '', label: '未设置' },
-                                  ...thinkingLevelOptionsForSelect(levels),
-                                ]}
-                                placeholder="思考"
-                              />
-                            </div>
-                          )}
-                          {idx === 0 ? (
-                            <button
-                              type="button"
-                              onClick={() => handleCreateProjectAddCandidate(role.key)}
-                              className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 rounded cursor-pointer shrink-0"
-                              title="添加候选模型"
-                            >+</button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleCreateProjectRemoveCandidate(role.key, idx)}
-                              className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded cursor-pointer shrink-0"
-                              title="移除候选模型"
-                            >×</button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-            </div>
-          </details>
-          <div className="flex space-x-2 pt-3 justify-end border-t border-slate-150 dark:border-slate-800">
-            <button type="button" onClick={() => { setShowCreateProject(false); setCreateProjectRoleModels({}); }} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
-            <button type="submit" disabled={createProjectMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs hover:shadow-xs transition cursor-pointer disabled:opacity-50">{createProjectMut.isPending ? '创建中…' : '确认创建'}</button>
-          </div>
-        </form>
-      </Modal>
+      <CreateProjectModal
+        isOpen={showCreateProject}
+        onClose={() => { setShowCreateProject(false); }}
+        onCreated={(projectId, sessionId) => {
+          setShowCreateProject(false);
+          setSelectedProjectId(projectId);
+          setSelectedSessionId(sessionId);
+          treeQuery.refetch();
+        }}
+        modelsQueryData={modelsQuery.data ?? []}
+        modelsQueryLoading={modelsQuery.isLoading}
+        createProjectMut={createProjectMut}
+        setProjectRoleModelsMut={setProjectRoleModelsMut}
+      />
 
       <Modal isOpen={showSettings} onClose={() => setShowSettings(false)} title="设置" icon={<Settings className="w-4 h-4 text-slate-500 dark:text-slate-400" />} maxWidthClassName="max-w-xl">
         {/* Tab bar */}
@@ -2024,468 +1064,28 @@ export default function App() {
         )}
       </Modal>
 
-      <Modal isOpen={showProjectSettings} onClose={() => { setShowProjectSettings(false); setEditRoleModelsList({}); setProjectPackageError(null); setProjectPackageSuccess(null); setProjectPackageSource(''); }} title="项目设置" icon={<Settings className="w-4 h-4" />} maxWidthClassName="max-w-xl">
-        {/* Tab bar */}
-        <div className="flex border-b border-slate-200 dark:border-slate-700 -mx-1">
-          <button onClick={() => setProjectSettingsTab('roles')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'roles' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>角色模型</button>
-          <button onClick={() => setProjectSettingsTab('packages')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'packages' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>扩展管理</button>
-        </div>
+      <ProjectSettingsModal
+        isOpen={showProjectSettings}
+        onClose={() => setShowProjectSettings(false)}
+        projectId={selectedProjectId}
+        modelsQueryData={modelsQuery.data ?? []}
+        packagesQueryData={packagesQuery.data ?? []}
+        projectPackagesQueryData={projectPackagesQuery.data ?? []}
+        projectPackagesUpdatesQueryData={projectPackagesUpdatesQuery.data}
+        projectPackagesUpdatesRefetch={projectPackagesUpdatesQuery.refetch}
+        projectPackagesRefetch={projectPackagesQuery.refetch}
+        installPkgMut={installPkgMut}
+        removePkgMut={removePkgMut}
+        updatePkgMut={updatePkgMut}
+        togglePkgMut={togglePkgMut}
+        setProjectRoleModelsMut={setProjectRoleModelsMut}
+      />
 
-        {/* 角色模型 tab */}
-        {projectSettingsTab === 'roles' && (
-          <div className="space-y-4">
-            <div className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">角色默认模型</div>
-            {CONFIGURABLE_ROLE_KEYS.map((role) => {
-              const models = editRoleModelsList[role.key] ?? [];
-              const displayModels = models.length === 0 ? [null] : models;
-              return (
-                <div key={role.key}>
-                  {displayModels.map((model, idx) => {
-                    const modelKey = model ? `${model.provider}/${model.id}` : '';
-                    const levels = getModelThinkingLevels(modelKey);
-                    return (
-                      <div key={idx} className="flex items-center gap-3 mb-2">
-                        <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{idx === 0 ? role.label : ''}</span>
-                        <div className="flex-1">
-                          <Select
-                            value={modelKey}
-                            onChange={(v) => handleEditRoleModelChange(role.key, idx, v)}
-                            options={[
-                              { value: '', label: '继承（使用父级模型）' },
-                              ...(modelsQuery.data ?? []).map((m) => ({
-                                value: `${m.provider}/${m.id}`,
-                                label: `${m.provider} / ${m.label}`,
-                              })),
-                            ]}
-                            searchable
-                            className="w-full"
-                          />
-                        </div>
-                        {levels.length > 0 && (
-                          <div className="w-28 shrink-0">
-                            <Select
-                              value={model?.thinkingLevel ?? ''}
-                              onChange={(v) => handleEditRoleThinkingLevelChange(role.key, idx, v)}
-                              options={[
-                                { value: '', label: '未设置' },
-                                ...thinkingLevelOptionsForSelect(levels),
-                              ]}
-                              placeholder="思考"
-                            />
-                          </div>
-                        )}
-                        {idx === 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => handleEditAddCandidate(role.key)}
-                            className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 rounded cursor-pointer shrink-0"
-                            title="添加候选模型"
-                          >+</button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleEditRemoveCandidate(role.key, idx)}
-                            className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded cursor-pointer shrink-0"
-                            title="移除候选模型"
-                          >×</button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
-              <button onClick={() => setShowProjectSettings(false)} className="px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer">取消</button>
-              <button onClick={handleSaveProjectRoleModels} disabled={setProjectRoleModelsMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50">
-                {setProjectRoleModelsMut.isPending ? '保存中…' : '保存'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* 扩展管理 tab */}
-        {projectSettingsTab === 'packages' && (
-          <div className="space-y-4">
-            <div className="text-[11px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900 rounded-lg px-3 py-2">
-              项目级扩展仅对当前项目生效。
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">安装新扩展</label>
-              <div className="flex gap-2">
-                <input
-                  value={projectPackageSource}
-                  onChange={(e) => setProjectPackageSource(e.target.value)}
-                  placeholder="npm:@foo/pi-tools / git:github.com/user/repo"
-                  className="flex-1 px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400"
-                />
-                <button
-                  onClick={async () => {
-                    if (!projectPackageSource.trim() || !selectedProjectId) return;
-                    setProjectPackageError(null);
-                    setProjectPackageSuccess(null);
-                    try {
-                      await installPkgMut.mutateAsync({ source: projectPackageSource.trim(), local: true, projectId: selectedProjectId });
-                      setProjectPackageSource('');
-                      setProjectPackageSuccess('安装成功');
-                    } catch (err) {
-                      setProjectPackageError(err instanceof Error ? err.message : '安装失败');
-                    }
-                  }}
-                  disabled={installPkgMut.isPending || !projectPackageSource.trim() || !selectedProjectId}
-                  className="px-4 py-2 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50 shrink-0"
-                >
-                  {installPkgMut.isPending ? '安装中…' : '安装'}
-                </button>
-              </div>
-            </div>
-
-            {projectPackageError && (
-              <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">{projectPackageError}</div>
-            )}
-            {projectPackageSuccess && (
-              <div className="text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-lg px-3 py-2">{projectPackageSuccess}</div>
-            )}
-
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">已安装扩展</div>
-                <button
-                  onClick={() => projectPackagesUpdatesQuery.refetch()}
-                  disabled={projectPackagesUpdatesQuery.isFetching}
-                  className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3 h-3 ${projectPackagesUpdatesQuery.isFetching ? 'animate-spin' : ''}`} />
-                  检查更新
-                </button>
-              </div>
-              <div className="space-y-2">
-                {(projectPackagesQuery.data ?? []).length === 0 ? (
-                  <div className="text-xs text-slate-400 dark:text-slate-500 text-center py-4">暂无已安装的扩展</div>
-                ) : (
-                  (projectPackagesQuery.data ?? []).map((pkg) => (
-                    <div key={pkg.source} className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 px-3 py-2">
-                      <label className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={!pkg.filtered}
-                          onChange={async () => {
-                            setProjectPackageError(null);
-                            setProjectPackageSuccess(null);
-                            try {
-                              await togglePkgMut.mutateAsync({ source: pkg.source, filtered: !pkg.filtered, local: true, projectId: selectedProjectId! });
-                            } catch (err) {
-                              setProjectPackageError(err instanceof Error ? err.message : '切换失败');
-                            }
-                          }}
-                          disabled={togglePkgMut.isPending}
-                          className="w-3.5 h-3.5 rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500 shrink-0"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">{pkg.source}</div>
-                          <div className="text-[10px] text-slate-400 dark:text-slate-500">
-                            项目级
-                            {pkg.installedPath ? ` · ${pkg.installedPath}` : ''}
-                          </div>
-                        </div>
-                      </label>
-                      <button
-                        onClick={async () => {
-                          setProjectPackageError(null);
-                          setProjectPackageSuccess(null);
-                          try {
-                            await removePkgMut.mutateAsync({ source: pkg.source, local: true, projectId: selectedProjectId! });
-                            setProjectPackageSuccess(`已移除：${pkg.source}`);
-                          } catch (err) {
-                            setProjectPackageError(err instanceof Error ? err.message : '移除失败');
-                          }
-                        }}
-                        disabled={removePkgMut.isPending}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition cursor-pointer disabled:opacity-50 shrink-0"
-                        title="移除"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            {projectPackagesUpdatesQuery.data && projectPackagesUpdatesQuery.data.length > 0 && (
-              <div>
-                <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">可用更新</div>
-                <div className="space-y-2">
-                  {projectPackagesUpdatesQuery.data.map((update) => (
-                    <div key={update.source} className="flex items-center justify-between rounded-lg border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/20 px-3 py-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-semibold text-amber-800 dark:text-amber-200 truncate">{update.displayName}</div>
-                        <div className="text-[10px] text-amber-600 dark:text-amber-400">{update.source} · {update.type === 'npm' ? 'npm 包' : 'git 仓库'}</div>
-                      </div>
-                      <button
-                        onClick={async () => {
-                          setProjectPackageError(null);
-                          setProjectPackageSuccess(null);
-                          try {
-                            await updatePkgMut.mutateAsync({ source: update.source, projectId: selectedProjectId! });
-                            setProjectPackageSuccess(`已更新：${update.displayName}`);
-                            projectPackagesUpdatesQuery.refetch();
-                            projectPackagesQuery.refetch();
-                          } catch (err) {
-                            setProjectPackageError(err instanceof Error ? err.message : '更新失败');
-                          }
-                        }}
-                        disabled={updatePkgMut.isPending}
-                        className="px-3 py-1 text-xs font-semibold bg-amber-600 text-white hover:bg-amber-700 rounded-lg transition cursor-pointer disabled:opacity-50"
-                      >
-                        更新
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex justify-end pt-2">
-                  <button
-                    onClick={async () => {
-                      setProjectPackageError(null);
-                      setProjectPackageSuccess(null);
-                      try {
-                        await updatePkgMut.mutateAsync({ projectId: selectedProjectId! });
-                        setProjectPackageSuccess('所有扩展已更新');
-                        projectPackagesUpdatesQuery.refetch();
-                        projectPackagesQuery.refetch();
-                      } catch (err) {
-                        setProjectPackageError(err instanceof Error ? err.message : '更新失败');
-                      }
-                    }}
-                    disabled={updatePkgMut.isPending}
-                    className="px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50"
-                  >
-                    {updatePkgMut.isPending ? '更新中…' : '更新全部'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
-
-      <Modal isOpen={showProviderModal} onClose={handleCloseProviderModal} title="添加模型" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />} maxWidthClassName="max-w-3xl">
-        <div className="space-y-4">
-          {/* Tabs */}
-          <div className="flex border-b border-slate-200 dark:border-slate-700 -mx-1">
-            <button
-              onClick={() => setProviderTab('native')}
-              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${
-                providerTab === 'native'
-                  ? 'border-blue-600 text-blue-700 dark:text-blue-400'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-              }`}
-            >
-              平台密钥
-            </button>
-            <button
-              onClick={() => setProviderTab('custom')}
-              className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${
-                providerTab === 'custom'
-                  ? 'border-blue-600 text-blue-700 dark:text-blue-400'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
-              }`}
-            >
-              自定义提供商
-            </button>
-          </div>
-
-          {/* Tab content: Native */}
-          {providerTab === 'native' && (
-            <div className="space-y-4">
-              <div className="text-xs text-slate-500 dark:text-slate-400">
-                选择平台并输入 API Key，密钥将写入 Pi 原生凭据存储 <code className="text-[10px] bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded">~/.pi/agent/auth.json</code>，用于启用内置模型平台。
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">平台</label>
-                  <Select
-                    value={nativeProvider}
-                    onChange={(v) => setNativeProvider(v)}
-                    options={(nativeProvidersQuery.data?.providers ?? []).map((p) => ({
-                      value: p.provider,
-                      label: `${p.label}${p.hasAuth ? ' (已配置)' : ''}`,
-                    }))}
-                    placeholder="选择平台"
-                    searchable
-                    className="w-full"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">API Key</label>
-                  <input
-                    value={nativeApiKey}
-                    onChange={(e) => setNativeApiKey(e.target.value)}
-                    type="password"
-                    placeholder="输入 API Key..."
-                    className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950"
-                  />
-                </div>
-              </div>
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-150 dark:border-slate-800">
-                <button onClick={handleCloseProviderModal} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
-                <button
-                  onClick={async () => {
-                    if (!nativeApiKey.trim()) return;
-                    try {
-                      await setNativeApiKeyMut.mutateAsync({ provider: nativeProvider, apiKey: nativeApiKey.trim() });
-                      setNativeApiKey('');
-                      handleCloseProviderModal();
-                    } catch {}
-                  }}
-                  disabled={setNativeApiKeyMut.isPending || !nativeApiKey.trim()}
-                  className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50"
-                >
-                  {setNativeApiKeyMut.isPending ? '保存中…' : '保存'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Tab content: Custom (existing form) */}
-          {providerTab === 'custom' && (
-            <div className="space-y-4">
-              {/* 下方直接从 custom provider 表单区域复制而来，providerKey 等原有字段 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">providerKey</label>
-                  <input value={providerKey} onChange={(e) => setProviderKey(e.target.value)} placeholder="例如 custom-openai" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">baseUrl</label>
-                  <input value={providerBaseUrl} onChange={(e) => setProviderBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">api</label>
-                  <select value={providerApi} onChange={(e) => setProviderApi(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950">
-                    <option value="">openai-completions（默认）</option>
-                    <option value="openai-completions">openai-completions</option>
-                    <option value="openai-responses">openai-responses</option>
-                    <option value="anthropic-messages">anthropic-messages</option>
-                    <option value="google-generative-ai">google-generative-ai</option>
-                  </select>
-                </div>
-                <div className="md:col-span-2">
-                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">apiKey</label>
-                  <input value={providerApiKey} onChange={(e) => setProviderApiKey(e.target.value)} type="password" placeholder="sk-..." className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={providerAuthHeader} onChange={(e) => setProviderAuthHeader(e.target.checked)} /> authHeader</label>
-                <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsDeveloperRole} onChange={(e) => setSupportsDeveloperRole(e.target.checked)} /> compat.supportsDeveloperRole</label>
-                <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsReasoningEffort} onChange={(e) => setSupportsReasoningEffort(e.target.checked)} /> compat.supportsReasoningEffort</label>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">headers（JSON，可选）</label>
-                  <textarea value={providerHeaders} onChange={(e) => setProviderHeaders(e.target.value)} placeholder='{
-  "x-custom-header": "value"
-}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">compat 额外字段（JSON，可选）</label>
-                  <textarea value={providerCompatJson} onChange={(e) => setProviderCompatJson(e.target.value)} placeholder='{
-  "supportsUsageInStreaming": false,
-  "maxTokensField": "max_tokens",
-  "thinkingFormat": "deepseek"
-}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">模型列表</div>
-                  <button onClick={handleAddProviderModel} className="px-3 py-1.5 text-xs font-semibold border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer">添加模型项</button>
-                </div>
-                {providerModels.map((model, index) => (
-                  <div key={index} className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-3 bg-slate-50 dark:bg-slate-950/40">
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">模型 {index + 1}</div>
-                      <button onClick={() => handleRemoveProviderModel(index)} disabled={providerModels.length === 1} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <input value={model.id} onChange={(e) => updateProviderModel(index, { id: e.target.value })} placeholder="id" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                      <input value={model.name ?? ''} onChange={(e) => updateProviderModel(index, { name: e.target.value })} placeholder="name（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      <div>
-                        <select value={model.api ?? ''} onChange={(e) => updateProviderModel(index, { api: e.target.value })} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950">
-                          <option value="">api（继承提供商）</option>
-                          <option value="openai-completions">openai-completions</option>
-                          <option value="openai-responses">openai-responses</option>
-                          <option value="anthropic-messages">anthropic-messages</option>
-                          <option value="google-generative-ai">google-generative-ai</option>
-                        </select>
-                      </div>
-                      <input value={model.contextWindow ?? ''} onChange={(e) => updateProviderModel(index, { contextWindow: e.target.value ? Number(e.target.value) : undefined })} type="number" placeholder="contextWindow（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                      <input value={model.maxTokens ?? ''} onChange={(e) => updateProviderModel(index, { maxTokens: e.target.value ? Number(e.target.value) : undefined })} type="number" placeholder="maxTokens（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                      <input value={model.cost?.input ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, input: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.input" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                      <input value={model.cost?.output ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, output: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.output" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                      <input value={model.cost?.cacheRead ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, cacheRead: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.cacheRead" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                      <input value={model.cost?.cacheWrite ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, cacheWrite: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.cacheWrite" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">compat（可选）</label>
-                        <textarea value={model.compat ?? ''} onChange={(e) => updateProviderModel(index, { compat: e.target.value })} placeholder='例：{ &quot;forceAdaptiveThinking&quot;: true, &quot;thinkingFormat&quot;: &quot;deepseek&quot; }' rows={2} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 font-mono" />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">thinkingLevelMap（可选）</label>
-                        <textarea value={model.thinkingLevelMap ?? ''} onChange={(e) => updateProviderModel(index, { thinkingLevelMap: e.target.value })} placeholder='例：{ &quot;off&quot;: null, &quot;medium&quot;: &quot;medium&quot;, &quot;high&quot;: &quot;high&quot; }' rows={2} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 font-mono" />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.reasoning} onChange={(e) => updateProviderModel(index, { reasoning: e.target.checked })} /> reasoning</label>
-                        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.inputImage} onChange={(e) => updateProviderModel(index, { inputImage: e.target.checked })} /> inputImage</label>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">input（可选）</label>
-                        <div className="flex flex-wrap gap-4">
-                          <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.input?.includes('text') ?? false} onChange={(e) => {
-                            const current = model.input ?? [];
-                            const next = e.target.checked ? [...current, 'text'] : current.filter((t) => t !== 'text');
-                            updateProviderModel(index, { input: next.length > 0 ? next : undefined });
-                          }} /> text</label>
-                          <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.input?.includes('image') ?? false} onChange={(e) => {
-                            const current = model.input ?? [];
-                            const next = e.target.checked ? [...current, 'image'] : current.filter((t) => t !== 'image');
-                            updateProviderModel(index, { input: next.length > 0 ? next : undefined });
-                          }} /> image</label>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {providerError && <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">{providerError}</div>}
-              {providerTestResult && <div className="text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-lg px-3 py-2">{providerTestResult}</div>}
-              {providerTestModels.length > 0 && (
-                <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-2">
-                  <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">测试返回模型</div>
-                  <div className="flex flex-wrap gap-2">{providerTestModels.map((model) => <span key={model.id} className="px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-xs text-slate-700 dark:text-slate-200">{model.name ?? model.id}</span>)}</div>
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-150 dark:border-slate-800">
-                <button onClick={handleCloseProviderModal} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
-                <button onClick={handleTestProvider} disabled={testProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer disabled:opacity-50">{testProviderMut.isPending ? '测试中…' : '测试连接'}</button>
-                <button onClick={handleSaveProvider} disabled={createProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50">{createProviderMut.isPending ? '保存中…' : '保存'}</button>
-              </div>
-            </div>
-          )}
-        </div>
-      </Modal>
+      <ProviderModal
+        isOpen={showProviderModal}
+        onClose={() => { setShowProviderModal(false); }}
+      />
     </div>
+    </WebSocketProvider>
   );
 }

@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { SessionFileContentResponseDTO, SessionFileTreeNodeDTO, SessionFileTreeResponseDTO } from '@piplus/shared';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,35 +7,18 @@ import rehypeHighlight from 'rehype-highlight';
 import hljs from 'highlight.js';
 import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import MermaidBlock from './MermaidBlock';
+import { useSessionFileTree, useSessionFileContent, useSaveSessionFileContentMutation, useDeleteSessionFileMutation } from '../lib/hooks';
 
 interface TabFilesProps {
-  treeResponse: SessionFileTreeResponseDTO | null;
-  treeLoading: boolean;
-  treeError?: string | null;
-  contentResponse: SessionFileContentResponseDTO | null;
-  contentLoading: boolean;
-  contentError?: string | null;
-  onRefresh: () => void;
-  selectedPath: string | null;
-  onSelectPath: (path: string) => void;
-  onSaveContent?: (path: string, content: string) => Promise<void>;
-  saving?: boolean;
+  selectedSessionId: string | null;
   /** Filter the tree to only show the root-level directory whose name matches one of these (case-insensitive) */
   rootPathFilter?: string[];
   /** Message to show when rootPathFilter is set but no matching directory is found */
   emptyMessage?: string;
   /** Label to display in the panel header (defaults to 'Files') */
   panelTitle?: string;
-  /** Controlled expanded state (keyed by node path). When omitted, internal state is used. */
-  expandedPaths?: Record<string, boolean>;
-  /** Called when a directory node is toggled with the new isOpen state (only used with expandedPaths) */
-  onToggleExpanded?: (path: string, newIsOpen: boolean) => void;
   /** Default expansion for nodes not in expandedPaths. Defaults to depth < 1 when unset. */
   defaultExpanded?: boolean;
-  /** Called when user confirms deletion of a file. Path is the full relative path. */
-  onDeleteFile?: (path: string) => void;
-  /** Whether a delete operation is in progress */
-  deleting?: boolean;
 }
 
 function isMarkdownFile(filePath: string | null): boolean {
@@ -421,27 +405,48 @@ function CodePreview({ filePath, content }: { filePath: string | null; content: 
   );
 }
 
-export default function TabFiles({
-  treeResponse,
-  treeLoading,
-  treeError,
-  contentResponse,
-  contentLoading,
-  contentError,
-  onRefresh,
-  selectedPath,
-  onSelectPath,
-  onSaveContent,
-  saving,
+function TabFiles({
+  selectedSessionId,
   rootPathFilter,
   emptyMessage,
   panelTitle,
-  expandedPaths,
-  onToggleExpanded,
   defaultExpanded,
-  onDeleteFile,
-  deleting,
 }: TabFilesProps) {
+  const queryClient = useQueryClient();
+  const fileTreeQuery = useSessionFileTree(selectedSessionId);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const fileContentQuery = useSessionFileContent(selectedSessionId, selectedPath);
+  const saveFileContentMut = useSaveSessionFileContentMutation(selectedSessionId);
+  const savingFile = saveFileContentMut.isPending;
+  const deleteFileMut = useDeleteSessionFileMutation(selectedSessionId);
+  const deletingFile = deleteFileMut.isPending;
+  const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({});
+  const treeResponse = fileTreeQuery.data ?? null;
+  const treeLoading = fileTreeQuery.isLoading;
+  const treeError = fileTreeQuery.error instanceof Error ? fileTreeQuery.error.message : null;
+  const contentResponse = fileContentQuery.data ?? null;
+  const contentLoading = fileContentQuery.isLoading;
+  const contentError = fileContentQuery.error instanceof Error ? fileContentQuery.error.message : null;
+
+  const handleRefresh = useCallback(() => {
+    void fileTreeQuery.refetch();
+  }, [fileTreeQuery]);
+
+  const handleSaveFileContent = useCallback(async (path: string, content: string) => {
+    if (!selectedSessionId) return;
+    await saveFileContentMut.mutateAsync({ path, content });
+  }, [selectedSessionId, saveFileContentMut]);
+
+  const handleDeleteFile = useCallback(async (path: string) => {
+    if (!selectedSessionId) return;
+    if (selectedPath === path) setSelectedPath(null);
+    try {
+      await deleteFileMut.mutateAsync({ path });
+    } catch {
+      // Error is surfaced via the mutation state; no need to alert here
+    }
+  }, [selectedSessionId, selectedPath, deleteFileMut]);
+
   // Filter tree if rootPathFilter is specified (case-insensitive match)
   const filteredTreeNodes = useMemo(() => {
     if (!treeResponse?.tree) return [];
@@ -456,9 +461,7 @@ export default function TabFiles({
   const isEmptyByFilter = rootPathFilter && rootPathFilter.length > 0 && treeResponse && !treeLoading && treeResponse.tree.length > 0 && filteredTreeNodes.length === 0;
   const defaultEmptyMessage = rootPathFilter && rootPathFilter.length > 0 ? '当前项目没有文档目录' : undefined;
 
-  const [internalExpanded, setInternalExpanded] = useState<Record<string, boolean>>({});
-  const isControlled = expandedPaths !== undefined;
-  const expanded = isControlled ? expandedPaths : internalExpanded;
+  const expanded = expandedPaths;
   const [refreshSpinning, setRefreshSpinning] = useState(false);
   const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
   const [editingPath, setEditingPath] = useState<string | null>(null);
@@ -504,24 +507,20 @@ export default function TabFiles({
   useEffect(() => {
     if (selectedPath && !selectedPathExistsInTree) {
       if (firstFilePath) {
-        onSelectPath(firstFilePath);
+        setSelectedPath(firstFilePath);
       }
     }
-  }, [selectedPath, selectedPathExistsInTree, firstFilePath, onSelectPath]);
+  }, [selectedPath, selectedPathExistsInTree, firstFilePath]);
 
   useEffect(() => {
     if (!selectedPath && firstFilePath) {
-      onSelectPath(firstFilePath);
+      setSelectedPath(firstFilePath);
     }
-  }, [selectedPath, firstFilePath, onSelectPath]);
+  }, [selectedPath, firstFilePath]);
 
   const toggleExpanded = (pathValue: string) => {
     const currentIsOpen = expanded[pathValue] ?? defaultExpanded ?? true;
-    if (isControlled && onToggleExpanded) {
-      onToggleExpanded(pathValue, !currentIsOpen);
-    } else {
-      setInternalExpanded((prev) => ({ ...prev, [pathValue]: !currentIsOpen }));
-    }
+    setExpandedPaths((prev) => ({ ...prev, [pathValue]: !currentIsOpen }));
   };
 
   return (
@@ -544,7 +543,7 @@ export default function TabFiles({
                 onClick={() => {
                   setRefreshSpinning(true);
                   setTimeout(() => setRefreshSpinning(false), 600);
-                  onRefresh();
+                  handleRefresh();
                 }}
                 className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
                 title="刷新文件树"
@@ -583,10 +582,10 @@ export default function TabFiles({
                     expanded={expanded}
                     onToggle={toggleExpanded}
                     selectedPath={selectedPath}
-                    onSelectPath={onSelectPath}
+                    onSelectPath={setSelectedPath}
                     defaultExpanded={defaultExpanded}
-                    onDeleteFile={onDeleteFile}
-                    deleting={deleting}
+                    onDeleteFile={handleDeleteFile}
+                    deleting={deletingFile}
                   />
                 ))}
               </div>
@@ -623,14 +622,14 @@ export default function TabFiles({
                     if (!selectedPath) return;
                     setEditError(null);
                     try {
-                      await onSaveContent?.(editingPath!, draftContent);
+                      await handleSaveFileContent(editingPath!, draftContent);
                       setEditingPath(null);
                       setDraftContent('');
                     } catch (err) {
                       setEditError(err instanceof Error ? err.message : '保存失败');
                     }
                   }}
-                  disabled={saving}
+                  disabled={savingFile}
                   className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 cursor-pointer transition"
                 >
                   <Save className="w-3.5 h-3.5" />
@@ -643,7 +642,7 @@ export default function TabFiles({
                     setDraftContent('');
                     setEditError(null);
                   }}
-                  disabled={saving}
+                  disabled={savingFile}
                   className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-50 cursor-pointer transition"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -712,3 +711,5 @@ export default function TabFiles({
     </div>
   );
 }
+
+export default React.memo(TabFiles);
