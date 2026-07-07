@@ -826,12 +826,7 @@ export default function TabGitDiff({
                       <PanelLeft className="w-4 h-4" />
                     </button>
                   )}
-                  <div className="flex items-start space-x-3 bg-blue-50/50 dark:bg-indigo-950/20 border border-blue-100 dark:border-indigo-900/60 p-4 rounded-xl text-xs text-blue-800 dark:text-indigo-300 leading-relaxed font-sans flex-1 min-w-0">
-                    <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold">Git Diff：</span>新增行以绿色高亮，删除行以红色高亮。可点击文件名展开/收起每个文件的变更。左侧目录可快速跳转。
-                    </div>
-                  </div>
+
                 </div>
 
                 {functionalFiles.map((fileObj) => {
