@@ -20,7 +20,7 @@ import CreateProjectModal from './components/CreateProjectModal';
 import ProviderModal from './components/ProviderModal';
 import ProjectSettingsModal from './components/ProjectSettingsModal';
 import { LoginScreen } from './components/LoginScreen';
-import { WebSocketProvider, useWebSocket } from './lib/ws-provider';
+import { useWebSocket } from './lib/ws-provider';
 import {
   useAuthSession,
   useTree,
@@ -582,7 +582,6 @@ export default function App() {
   const isPlannerRoot = sessionInfo?.role_template.key === 'planner' && sessionInfo.lineage.depth === 0;
 
   return (
-    <WebSocketProvider>
     <div className={`flex flex-col md:flex-row h-[100dvh] min-h-0 w-full overflow-hidden overscroll-none bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
       <div className={`${isSidebarVisible ? 'flex' : 'hidden'} w-full min-w-0 flex-1 md:w-auto md:flex-none`}>
         <Sidebar
@@ -1086,6 +1085,5 @@ export default function App() {
         onClose={() => { setShowProviderModal(false); }}
       />
     </div>
-    </WebSocketProvider>
   );
 }
