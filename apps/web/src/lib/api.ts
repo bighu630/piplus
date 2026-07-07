@@ -293,6 +293,28 @@ export function gitCheckout(sessionId: string, branch: string) {
   );
 }
 
+export function getGitCommits(sessionId: string, limit: number = 50) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return request<{
+    session_id: string;
+    cwd: string;
+    commits: Array<{ hash: string; message: string; author: string; date: string }>;
+  }>(`/api/v1/sessions/${sessionId}/git/commits?${params.toString()}`);
+}
+
+export function getGitShow(sessionId: string, hash: string) {
+  const params = new URLSearchParams({ hash });
+  return request<{
+    session_id: string;
+    cwd: string;
+    hash: string;
+    message: string;
+    author: string;
+    date: string;
+    diff: string;
+  }>(`/api/v1/sessions/${sessionId}/git/show?${params.toString()}`);
+}
+
 export function createProject(
   name: string,
   mode?: string,

@@ -31,6 +31,8 @@ import {
   gitCommit,
   addGitignore,
   getGitBranches,
+  getGitCommits,
+  getGitShow,
   gitCheckout,
   testModelProvider,
   createModelProvider,
@@ -392,6 +394,24 @@ export function useGitCheckoutMutation() {
       queryClient.invalidateQueries({ queryKey: ['session', 'git-branches', sessionId] });
       queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
     },
+  });
+}
+
+export function useGitCommits(sessionId: string | null, limit: number = 50) {
+  return useQuery({
+    queryKey: ['session', 'git-commits', sessionId],
+    queryFn: () => getGitCommits(sessionId!, limit),
+    enabled: Boolean(sessionId),
+    staleTime: 30_000,
+  });
+}
+
+export function useGitShow(sessionId: string | null, hash: string | null) {
+  return useQuery({
+    queryKey: ['session', 'git-show', sessionId, hash],
+    queryFn: () => getGitShow(sessionId!, hash!),
+    enabled: Boolean(sessionId && hash),
+    staleTime: 60_000,
   });
 }
 
