@@ -746,7 +746,7 @@ function TabChat({
                               className="overflow-hidden rounded-2xl border border-blue-400/30 bg-blue-500/10 hover:opacity-90 transition cursor-pointer"
                               title={block.filename ?? '预览图片'}
                             >
-                              <img src={src} alt={block.filename ?? `attachment-${index + 1}`} className="h-20 w-20 object-cover" />
+                              <img src={src} alt={block.filename ?? `attachment-${index + 1}`} className="h-20 w-20 object-cover" loading="lazy" />
                             </button>
                           );
                         })}
@@ -833,7 +833,7 @@ function TabChat({
                               return <hr className="border-blue-400/40 my-2" />;
                             },
                             img({ src, alt, ...imgProps }: any) {
-                              return <img src={src} alt={alt} className="max-w-full rounded-lg my-1.5" {...imgProps} />;
+                              return <img src={src} alt={alt} className="max-w-full rounded-lg my-1.5" style={{ aspectRatio: 'auto' }} loading="lazy" {...imgProps} />;
                             },
                           }}
                         >
