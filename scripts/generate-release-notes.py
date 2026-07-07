@@ -32,7 +32,7 @@ categories = {
 
 if prev:
     result = subprocess.run(
-        ["git", "log", "--no-decorate", "--format=%s", f"{prev}..{TAG}"],
+        ["git", "log", "--no-decorate", "--no-merges", "--format=%s", f"{prev}..{TAG}"],
         capture_output=True, text=True)
     log_text = result.stdout.strip()
 
