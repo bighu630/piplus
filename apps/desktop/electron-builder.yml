@@ -7,8 +7,6 @@ files:
   - package.json
   - "!node_modules/**"
 extraResources:
-  - from: assets
-    to: assets
   - from: ../api/dist
     to: api-dist
   - from: ../web/dist
@@ -26,12 +24,10 @@ linux:
   target:
     - AppImage
     - deb
-  icon: assets/icon.png
+    - rpm
 mac:
   target:
     - dmg
-  icon: assets/icon.png
   category: public.app-category.developer-tools
 win:
   target: nsis
-  icon: assets/icon.ico
