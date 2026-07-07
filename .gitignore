@@ -17,3 +17,5 @@ tsconfig.tsbuildinfo
 /apps/desktop/bun-bin/bun.exe
 /.agents/
 /.superpowers/
+/apps/desktop/bun-bin/bun
+/apps/web/tsconfig.tsbuildinfo
