@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO } from '@piplus/shared';
 import type { SessionMessageImageAttachment } from '../lib/api';
 import ReactMarkdown from 'react-markdown';
@@ -453,6 +453,22 @@ function TabChat({
 
   const isRunning = runtimeStatus === 'running';
 
+  // 兜底：如果最后一条消息是工具调用且 session 运行中，末尾连续的 tool_call 一定需要转圈
+  const trailingToolCallIds = useMemo(() => {
+    if (!isRunning) return new Set<string>();
+    const last = displayMessages[displayMessages.length - 1];
+    if (!last || last.message_kind !== 'tool_call') return new Set<string>();
+    const ids = new Set<string>();
+    for (let i = displayMessages.length - 1; i >= 0; i--) {
+      if (displayMessages[i].message_kind === 'tool_call') {
+        ids.add(displayMessages[i].id);
+      } else {
+        break;
+      }
+    }
+    return ids;
+  }, [isRunning, displayMessages]);
+
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative">
       {/* Messages */}
@@ -493,7 +509,7 @@ function TabChat({
 
             const msgIndex = messages.findIndex((m) => m.id === msg.id);
             const isInCurrentRun = currentRunStartIdxRef.current !== null && msgIndex >= currentRunStartIdxRef.current;
-            const isThisToolRunning = isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages);
+            const isThisToolRunning = (isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages)) || trailingToolCallIds.has(msg.id);
 
             let argsStr = '';
             let parsedArgs: Record<string, unknown> | null = null;
