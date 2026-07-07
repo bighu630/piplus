@@ -298,7 +298,7 @@ export function getGitCommits(sessionId: string, limit: number = 50) {
   return request<{
     session_id: string;
     cwd: string;
-    commits: Array<{ hash: string; message: string; author: string; date: string }>;
+    commits: Array<{ hash: string; message: string; author: string; date: string; refs: string }>;
   }>(`/api/v1/sessions/${sessionId}/git/commits?${params.toString()}`);
 }
 

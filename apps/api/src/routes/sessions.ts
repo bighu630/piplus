@@ -1238,15 +1238,16 @@ export function registerSessionRoutes(app: Hono) {
       const output = execGit(
         cwd,
         'log',
+        '--branches',
         `--max-count=${limit}`,
-        `--format=%H|||%s|||%an|||%ai`,
+        `--format=%H|||%s|||%an|||%ai|||%D`,
       );
       const commits = output
         .split('\n')
         .filter(Boolean)
         .map((line: string) => {
-          const [hash, message, author, date] = line.split('|||');
-          return { hash, message, author, date };
+          const [hash, message, author, date, refs] = line.split('|||');
+          return { hash, message, author, date, refs: refs || '' };
         });
 
       return c.json({ session_id: sessionId, cwd, commits });

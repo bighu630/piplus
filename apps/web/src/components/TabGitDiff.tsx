@@ -32,6 +32,7 @@ interface GitCommit {
   message: string;
   author: string;
   date: string;
+  refs: string;
 }
 
 interface TabGitDiffProps {
@@ -555,36 +556,54 @@ export default function TabGitDiff({
 
                   <div className="border-t border-slate-100 dark:border-slate-700" />
 
-                  {commits?.map((commit) => (
-                    <button
-                      key={commit.hash}
-                      type="button"
-                      onClick={() => {
-                        onSelectCommit(commit.hash);
-                        setCommitDropdownOpen(false);
-                      }}
-                      className={`w-full flex items-start space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
-                        selectedCommitHash === commit.hash
-                          ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 font-semibold'
-                          : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
-                      }`}
-                    >
-                      <GitCommitVertical className="w-3.5 h-3.5 shrink-0 mt-0.5 text-violet-500" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center space-x-1.5">
-                          <span className="font-mono font-bold text-[10px] text-slate-400 dark:text-slate-500">
-                            {commit.hash.slice(0, 7)}
-                          </span>
-                          <span className="text-[10px] text-slate-400 dark:text-slate-500">
-                            {commit.author}
-                          </span>
+                  {commits?.map((commit) => {
+                    // Parse branch refs from %D format, extract local branch names
+                    const branchRefs = commit.refs
+                      ? commit.refs
+                          .split(',')
+                          .map((r) => r.trim())
+                          .filter((r) => r && !r.startsWith('tag:') && !r.includes('/'))
+                          .map((r) => r.replace(/^HEAD -> /, ''))
+                      : [];
+                    return (
+                      <button
+                        key={commit.hash}
+                        type="button"
+                        onClick={() => {
+                          onSelectCommit(commit.hash);
+                          setCommitDropdownOpen(false);
+                        }}
+                        className={`w-full flex items-start space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
+                          selectedCommitHash === commit.hash
+                            ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 font-semibold'
+                            : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                        }`}
+                      >
+                        <GitCommitVertical className="w-3.5 h-3.5 shrink-0 mt-0.5 text-violet-500" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center flex-wrap gap-1">
+                            <span className="font-mono font-bold text-[10px] text-slate-400 dark:text-slate-500">
+                              {commit.hash.slice(0, 7)}
+                            </span>
+                            {branchRefs.slice(0, 2).map((ref) => (
+                              <span
+                                key={ref}
+                                className="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 leading-none"
+                              >
+                                {ref}
+                              </span>
+                            ))}
+                            <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">
+                              {commit.author}
+                            </span>
+                          </div>
+                          <div className="truncate mt-0.5 text-slate-700 dark:text-slate-200">
+                            {commit.message}
+                          </div>
                         </div>
-                        <div className="truncate mt-0.5 text-slate-700 dark:text-slate-200">
-                          {commit.message}
-                        </div>
-                      </div>
-                    </button>
-                  ))}
+                      </button>
+                    );
+                  })}
                   {!commits && (
                     <div className="px-3 py-4 text-xs text-slate-400 text-center">加载中…</div>
                   )}
