@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+
 jobs:
   build-linux:
     name: 'Linux (amd64)'
@@ -22,7 +25,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2 icnsutils graphicsmagick rpm
+          sudo apt-get install -y libfuse2t64 icns-utils graphicsmagick rpm
 
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
@@ -43,9 +46,7 @@ jobs:
           chmod +x apps/desktop/bun-bin/bun
 
       - name: Package
-        run: cd apps/desktop && bunx electron-builder --linux --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cd apps/desktop && bunx electron-builder --linux -p never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -84,13 +85,13 @@ jobs:
       - name: Prepare bundled bun
         run: |
           mkdir -p apps/desktop/bun-bin
-          cp "$(where.exe bun 2>nul || echo "$(bun which)")" apps/desktop/bun-bin/bun.exe
+          bun_path=$(bun which)
+          cp "$bun_path" apps/desktop/bun-bin/bun.exe
+          chmod +x apps/desktop/bun-bin/bun.exe
         shell: bash
 
       - name: Package
-        run: cd apps/desktop && bunx electron-builder --win --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cd apps/desktop && bunx electron-builder --win -p never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -128,9 +129,7 @@ jobs:
           chmod +x apps/desktop/bun-bin/bun
 
       - name: Package (x64)
-        run: cd apps/desktop && bunx electron-builder --mac --x64 --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cd apps/desktop && bunx electron-builder --mac --x64 -p never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -168,9 +167,7 @@ jobs:
           chmod +x apps/desktop/bun-bin/bun
 
       - name: Package (arm64)
-        run: cd apps/desktop && bunx electron-builder --mac --arm64 --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cd apps/desktop && bunx electron-builder --mac --arm64 -p never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -187,6 +184,8 @@ jobs:
       - build-mac-amd64
       - build-mac-arm64
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
