@@ -124,8 +124,9 @@ export async function invokeRoleManagerTool(
     const role = String(args.role ?? 'worker');
     const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
     const waitPrompt = wait
-      ? 'When you are done, you must call `writeback_to_parent` to report the result back to the parent session before stopping. Do not just answer normally — write back your final result with the `writeback_to_parent` tool.'
+      ? '所有任务完成后，必须调用`writeback_to_parent`报告结果给父会话'
       : undefined;
+      // ? 'When you are done, you must call `writeback_to_parent` to report the result back to the parent session before stopping. '
 
     const result = await roleManager.spawnSession({
       projectId: parent.projectId,
