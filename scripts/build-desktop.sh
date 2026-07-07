@@ -30,6 +30,7 @@ VERSION=$(jq -r '.version' apps/desktop/package.json)
 echo "  → Version: $VERSION"
 
 TARGET="${1:-linux}"
+ARCH="${2:-}"
 
 # ── 4. Prepare bundled bun ──────────────────────────────────
 echo "[4/5] Preparing bundled bun ..."
@@ -117,7 +118,11 @@ case "$TARGET" in
     echo "  ✅ deb:      apps/desktop/dist/piplus_${VERSION}_amd64.deb"
     ;;
   mac)
-    bunx electron-builder --mac
+    MAC_ARGS="--mac"
+    if [ -n "$ARCH" ]; then
+      MAC_ARGS="$MAC_ARGS --$ARCH"
+    fi
+    bunx electron-builder $MAC_ARGS
     echo ""
     echo "  ✅ dmg: apps/desktop/dist/piplus-${VERSION}.dmg"
     ;;

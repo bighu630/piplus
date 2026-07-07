@@ -30,23 +30,8 @@ jobs:
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build API bundle
-        run: cd apps/api && bun run build:bundle
-
-      - name: Build web for desktop
-        run: cd apps/web && bun run build:desktop
-
-      - name: Build desktop main/preload
-        run: cd apps/desktop && bun run build
-
-      - name: Prepare bundled bun
-        run: |
-          mkdir -p apps/desktop/bun-bin
-          cp "$(command -v bun)" apps/desktop/bun-bin/bun
-          chmod +x apps/desktop/bun-bin/bun
-
-      - name: Package
-        run: cd apps/desktop && bunx electron-builder --linux -p never
+      - name: Build & Package
+        run: bash scripts/build-desktop.sh linux
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -70,28 +55,11 @@ jobs:
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build API bundle
-        run: cd apps/api && bun run build:bundle
-        shell: bash
-
-      - name: Build web for desktop
-        run: cd apps/web && bun run build:desktop
-        shell: bash
-
-      - name: Build desktop main/preload
-        run: cd apps/desktop && bun run build
-        shell: bash
-
-      - name: Prepare bundled bun
+      - name: Build & Package
         run: |
-          mkdir -p apps/desktop/bun-bin
           bun_path=$(command -v bun)
-          cp "$bun_path" apps/desktop/bun-bin/bun.exe
-          chmod +x apps/desktop/bun-bin/bun.exe
+          PIPLUS_BUN_WIN_PATH="$bun_path" bash scripts/build-desktop.sh win
         shell: bash
-
-      - name: Package
-        run: cd apps/desktop && bunx electron-builder --win -p never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -113,23 +81,8 @@ jobs:
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build API bundle
-        run: cd apps/api && bun run build:bundle
-
-      - name: Build web for desktop
-        run: cd apps/web && bun run build:desktop
-
-      - name: Build desktop main/preload
-        run: cd apps/desktop && bun run build
-
-      - name: Prepare bundled bun
-        run: |
-          mkdir -p apps/desktop/bun-bin
-          cp "$(command -v bun)" apps/desktop/bun-bin/bun
-          chmod +x apps/desktop/bun-bin/bun
-
-      - name: Package (x64)
-        run: cd apps/desktop && bunx electron-builder --mac --x64 -p never
+      - name: Build & Package
+        run: bash scripts/build-desktop.sh mac x64
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -151,23 +104,8 @@ jobs:
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build API bundle
-        run: cd apps/api && bun run build:bundle
-
-      - name: Build web for desktop
-        run: cd apps/web && bun run build:desktop
-
-      - name: Build desktop main/preload
-        run: cd apps/desktop && bun run build
-
-      - name: Prepare bundled bun
-        run: |
-          mkdir -p apps/desktop/bun-bin
-          cp "$(command -v bun)" apps/desktop/bun-bin/bun
-          chmod +x apps/desktop/bun-bin/bun
-
-      - name: Package (arm64)
-        run: cd apps/desktop && bunx electron-builder --mac --arm64 -p never
+      - name: Build & Package
+        run: bash scripts/build-desktop.sh mac arm64
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
