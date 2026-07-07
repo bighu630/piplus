@@ -27,6 +27,13 @@ interface GitActionResult {
   stderr?: string;
 }
 
+interface GitCommit {
+  hash: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
 interface TabGitDiffProps {
   diff: string | null;
   isLoading: boolean;
@@ -44,6 +51,9 @@ interface TabGitDiffProps {
   onCheckout: (branch: string) => Promise<GitActionResult>;
   isCheckingOut: boolean;
   cwd: string | null;
+  commits: GitCommit[] | null;
+  selectedCommitHash: string | null;
+  onSelectCommit: (hash: string | null) => void;
 }
 
 interface DiffLine {
@@ -238,6 +248,9 @@ export default function TabGitDiff({
   onCheckout,
   isCheckingOut,
   cwd,
+  commits,
+  selectedCommitHash,
+  onSelectCommit,
 }: TabGitDiffProps) {
   const [copied, setCopied] = useState(false);
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({});
@@ -249,6 +262,20 @@ export default function TabGitDiff({
   const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const branchSelectorRef = useRef<HTMLDivElement>(null);
+  const [commitDropdownOpen, setCommitDropdownOpen] = useState(false);
+  const commitSelectorRef = useRef<HTMLDivElement>(null);
+
+  // Close commit dropdown on outside click
+  useEffect(() => {
+    if (!commitDropdownOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (commitSelectorRef.current && !commitSelectorRef.current.contains(e.target as Node)) {
+        setCommitDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [commitDropdownOpen]);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Close branch dropdown on outside click
@@ -486,6 +513,86 @@ export default function TabGitDiff({
                     )}
                   </div>
                 </div>
+            )}
+          </div>
+
+          {/* Commit selector dropdown */}
+          <div className="relative" ref={commitSelectorRef}>
+            <button
+              type="button"
+              onClick={() => setCommitDropdownOpen(!commitDropdownOpen)}
+              disabled={!commits}
+              className="flex items-center space-x-1.5 px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-mono font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition cursor-pointer disabled:opacity-50"
+            >
+              <GitCommitVertical className="w-3.5 h-3.5 text-violet-500" />
+              <span>{selectedCommitHash ? selectedCommitHash.slice(0, 7) : 'Commit'}</span>
+              <ChevronDown className={`w-3 h-3 transition ${commitDropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {commitDropdownOpen && (
+              <div className="absolute left-0 top-full mt-1 z-20 w-80 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg overflow-hidden">
+                <div className="px-3 py-2 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider border-b border-slate-100 dark:border-slate-700">
+                  最近 {commits?.length ?? 0} 个 Commit
+                </div>
+                <div className="max-h-72 overflow-y-auto">
+                  {/* "Working tree" option */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectCommit(null);
+                      setCommitDropdownOpen(false);
+                    }}
+                    className={`w-full flex items-center space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
+                      !selectedCommitHash
+                        ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 font-semibold'
+                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                    }`}
+                  >
+                    <FileCode className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">工作区变更</span>
+                    {!selectedCommitHash && <span className="ml-auto text-[10px] text-blue-500">当前</span>}
+                  </button>
+
+                  <div className="border-t border-slate-100 dark:border-slate-700" />
+
+                  {commits?.map((commit) => (
+                    <button
+                      key={commit.hash}
+                      type="button"
+                      onClick={() => {
+                        onSelectCommit(commit.hash);
+                        setCommitDropdownOpen(false);
+                      }}
+                      className={`w-full flex items-start space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
+                        selectedCommitHash === commit.hash
+                          ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 font-semibold'
+                          : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      <GitCommitVertical className="w-3.5 h-3.5 shrink-0 mt-0.5 text-violet-500" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center space-x-1.5">
+                          <span className="font-mono font-bold text-[10px] text-slate-400 dark:text-slate-500">
+                            {commit.hash.slice(0, 7)}
+                          </span>
+                          <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                            {commit.author}
+                          </span>
+                        </div>
+                        <div className="truncate mt-0.5 text-slate-700 dark:text-slate-200">
+                          {commit.message}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                  {!commits && (
+                    <div className="px-3 py-4 text-xs text-slate-400 text-center">加载中…</div>
+                  )}
+                  {commits && commits.length === 0 && (
+                    <div className="px-3 py-4 text-xs text-slate-400 text-center">无 commit</div>
+                  )}
+                </div>
+              </div>
             )}
           </div>
 
