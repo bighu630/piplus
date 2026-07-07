@@ -15,8 +15,12 @@ export class TerminalManager {
   }
 
   start(sessionId: string, projectPath: string, cols: number, rows: number): void {
-    if (this.sessions.has(sessionId)) return; // already running
+    if (this.sessions.has(sessionId)) {
+      console.log('[TerminalManager] already running for session', sessionId);
+      return;
+    }
     const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
+    console.log('[TerminalManager] spawning', { shell, sessionId, projectPath, cols, rows });
     const term = pty.spawn(shell, [], {
       name: 'xterm-color',
       cols,
@@ -25,13 +29,16 @@ export class TerminalManager {
       env: { ...process.env, TERM: 'xterm-color' },
     });
     term.onData((data: string) => {
+      console.log('[TerminalManager] onData for', sessionId, 'len:', data.length);
       this.onOutput(sessionId, data);
     });
     term.onExit(({ exitCode }: { exitCode: number }) => {
+      console.log('[TerminalManager] onExit for', sessionId, 'code:', exitCode);
       this.sessions.delete(sessionId);
       this.onExit(sessionId, exitCode);
     });
     this.sessions.set(sessionId, term);
+    console.log('[TerminalManager] started for', sessionId);
   }
 
   write(sessionId: string, data: string): void {
