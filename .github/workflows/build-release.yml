@@ -44,7 +44,7 @@ jobs:
 
   build-windows:
     name: 'Windows (amd64)'
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -52,14 +52,17 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Install wine
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y wine64 wine32
+
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
       - name: Build & Package
-        run: |
-          bun_path=$(command -v bun)
-          PIPLUS_BUN_WIN_PATH="$bun_path" bash scripts/build-desktop.sh win
-        shell: bash
+        run: bash scripts/build-desktop.sh win
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
