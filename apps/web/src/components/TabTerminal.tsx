@@ -60,6 +60,8 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
 
     // Terminal lifecycle: create on mount, destroy on unmount
     useEffect(() => {
+      // Debug: verify this effect runs
+      fetch('/api/v1/terminal-debug?event=mount&sid=' + sessionId).catch(()=>{});
       const colors = THEMES[theme];
 
       const terminal = new Terminal({
@@ -84,6 +86,8 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
       terminalRef.current = terminal;
       fitAddonRef.current = fitAddon;
 
+      // Debug: confirm we reach the send point
+      fetch('/api/v1/terminal-debug?event=willSend&sid=' + sessionId).catch(()=>{});
       // Always send terminal_start on mount with default 80x24
       // ResizeObserver will correct dimensions when container gets proper size
       onTerminalMessageRef.current({

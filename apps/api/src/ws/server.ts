@@ -78,6 +78,7 @@ export function registerWebSocketRoutes(app: Hono) {
 
       // Terminal message handling
       if (parsed.type === 'terminal_start') {
+        console.log('[Terminal] received terminal_start payload:', JSON.stringify((parsed as any).payload));
         try {
           const { sessionId, cols, rows } = (parsed as any).payload as { sessionId: string; cols: number; rows: number };
           const db = createDb(`file:${getDbPath()}`);

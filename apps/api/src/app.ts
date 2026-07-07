@@ -40,6 +40,10 @@ export function createApp() {
   );
 
   app.get('/health', (c) => c.json({ ok: true }));
+  app.get('/api/v1/terminal-debug', (c) => {
+    console.log('[Terminal-debug]', c.req.query('event'), c.req.query('sid'));
+    return c.json({ ok: true });
+  });
   registerAuthRoutes(app);
   app.use('/api/v1/tree', requireAuth);
   app.use('/api/v1/projects', requireAuth);
