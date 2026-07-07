@@ -59,7 +59,7 @@ export function createWorkspaceSocket({
     setContext(payload: {
       project_id?: string;
       session_id?: string;
-      current_tab?: 'chat' | 'session_info' | 'git_diff' | 'files';
+      current_tab?: 'chat' | 'session_info' | 'git_diff' | 'files' | 'terminal';
     }) {
       safeSend({ kind: 'client', type: 'set_context', payload } satisfies ClientMessage);
     },
@@ -69,6 +69,9 @@ export function createWorkspaceSocket({
         type: 'ping',
         payload: { timestamp: new Date().toISOString() },
       } satisfies ClientMessage);
+    },
+    sendRaw(message: Record<string, unknown>) {
+      safeSend(message as any);
     },
     close() {
       closed = true;
