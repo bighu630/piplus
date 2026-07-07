@@ -1240,7 +1240,7 @@ export function registerSessionRoutes(app: Hono) {
         'log',
         '--branches',
         `--max-count=${limit}`,
-        `--format=%H|||%s|||%an|||%ai|||%D`,
+        '--format=%H|||%s|||%an|||%ai|||%D',
       );
       const commits = output
         .split('\n')
