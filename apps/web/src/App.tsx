@@ -231,11 +231,9 @@ export default function App() {
   const [createProjectModelKey, setCreateProjectModelKey] = useState('');
   const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [projectSettingsTab, setProjectSettingsTab] = useState<'roles' | 'packages'>('roles');
-  const [editRoleModels, setEditRoleModels] = useState<Record<string, string>>({});
-  const [editRoleThinkingLevels, setEditRoleThinkingLevels] = useState<Record<string, string>>({});
-  const [roleDefaultModels, setRoleDefaultModels] = useState<Record<string, { provider: string; id: string; thinkingLevel?: string | null } | null>>({});
+  const [editRoleModelsList, setEditRoleModelsList] = useState<Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>>>({});
+  const [createProjectRoleModels, setCreateProjectRoleModels] = useState<Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>>>({});
   const [createPlannerThinkingLevel, setCreatePlannerThinkingLevel] = useState('');
-  const [roleDefaultThinkingLevels, setRoleDefaultThinkingLevels] = useState<Record<string, string>>({});
 
   const [providerKey, setProviderKey] = useState('');
   const [providerBaseUrl, setProviderBaseUrl] = useState('');
@@ -730,10 +728,22 @@ export default function App() {
         })() : null,
       });
       // Save role default models after project creation
-      const mergedRoleDefaults = { ...roleDefaultModels };
-      for (const [roleKey, level] of Object.entries(roleDefaultThinkingLevels)) {
-        if (level && mergedRoleDefaults[roleKey]) {
-          mergedRoleDefaults[roleKey] = { ...mergedRoleDefaults[roleKey]!, thinkingLevel: level };
+      const mergedRoleDefaults: Record<string, any> = {};
+      for (const [roleKey, models] of Object.entries(createProjectRoleModels)) {
+        if (models.length > 0 && models[0].provider && models[0].id) {
+          const entry: any = {
+            provider: models[0].provider,
+            id: models[0].id,
+          };
+          if (models[0].thinkingLevel) entry.thinkingLevel = models[0].thinkingLevel;
+          if (models.length > 1) {
+            entry.candidateModels = models.slice(1).map(m => ({
+              provider: m.provider,
+              id: m.id,
+              ...(m.thinkingLevel ? { thinkingLevel: m.thinkingLevel } : {}),
+            }));
+          }
+          mergedRoleDefaults[roleKey] = entry;
         }
       }
       if (Object.keys(mergedRoleDefaults).length > 0) {
@@ -747,15 +757,14 @@ export default function App() {
       setCreateRepoUrl('');
       setCreateProjectModelKey('');
       setCreatePlannerThinkingLevel('');
-      setRoleDefaultModels({});
-      setRoleDefaultThinkingLevels({});
+      setCreateProjectRoleModels({});
       if (result.sessionId) {
         setSelectedProjectId(result.projectId);
         setSelectedSessionId(result.sessionId);
       }
       await treeQuery.refetch();
     } catch {}
-  }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, treeQuery, roleDefaultModels, setProjectRoleModelsMut]);
+  }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, treeQuery, createProjectRoleModels, setProjectRoleModelsMut]);
 
   const handleCreateSession = useCallback(async () => {
     if (!selectedProjectId) return;
@@ -1115,19 +1124,24 @@ export default function App() {
   // Populate editRoleModels when the project settings modal opens and data arrives
   useEffect(() => {
     if (showProjectSettings && projectRoleModelsQuery.data) {
-      const initial: Record<string, string> = {};
-      const initialTl: Record<string, string> = {};
+      const initial: Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>> = {};
       for (const role of ROLE_CONFIG_KEYS) {
         const model = projectRoleModelsQuery.data[role.key];
         if (model) {
-          initial[role.key] = `${model.provider}/${model.id}`;
-          if (model.thinkingLevel) initialTl[role.key] = model.thinkingLevel;
+          const models: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [
+            { provider: model.provider, id: model.id, thinkingLevel: model.thinkingLevel ?? null },
+          ];
+          if (Array.isArray((model as any).candidateModels)) {
+            for (const cm of (model as any).candidateModels) {
+              models.push({ provider: cm.provider, id: cm.id, thinkingLevel: cm.thinkingLevel ?? null });
+            }
+          }
+          initial[role.key] = models;
         } else {
-          initial[role.key] = '';
+          initial[role.key] = [];
         }
       }
-      setEditRoleModels(initial);
-      setEditRoleThinkingLevels(initialTl);
+      setEditRoleModelsList(initial);
     }
   }, [showProjectSettings, projectRoleModelsQuery.data]);
 
@@ -1140,56 +1154,120 @@ export default function App() {
     setShowProjectSettings(true);
   }, []);
 
-  const handleRoleModelChange = useCallback((roleKey: string, value: string) => {
-    setEditRoleModels((prev) => ({ ...prev, [roleKey]: value }));
-    // Clear thinking level when model changes
-    setEditRoleThinkingLevels((prev) => ({ ...prev, [roleKey]: '' }));
-  }, []);
-
-  const handleRoleThinkingLevelChange = useCallback((roleKey: string, level: string) => {
-    setEditRoleThinkingLevels((prev) => ({ ...prev, [roleKey]: level }));
-  }, []);
-
   const handleSaveProjectRoleModels = useCallback(async () => {
     if (!selectedProjectId) return;
-    const models: Record<string, { provider: string; id: string; thinkingLevel?: string | null } | null> = {};
-    for (const [roleKey, value] of Object.entries(editRoleModels)) {
-      if (value) {
-        const [provider, id] = value.split('/');
-        if (provider && id) {
-          const entry: { provider: string; id: string; thinkingLevel?: string | null } = { provider, id };
-          const tl = editRoleThinkingLevels[roleKey];
-          if (tl) entry.thinkingLevel = tl;
-          models[roleKey] = entry;
+    const models: Record<string, any> = {};
+    for (const [roleKey, modelList] of Object.entries(editRoleModelsList)) {
+      if (modelList.length > 0 && modelList[0].provider && modelList[0].id) {
+        const entry: any = {
+          provider: modelList[0].provider,
+          id: modelList[0].id,
+        };
+        if (modelList[0].thinkingLevel) entry.thinkingLevel = modelList[0].thinkingLevel;
+        if (modelList.length > 1) {
+          entry.candidateModels = modelList.slice(1).map(m => ({
+            provider: m.provider,
+            id: m.id,
+            ...(m.thinkingLevel ? { thinkingLevel: m.thinkingLevel } : {}),
+          }));
         }
+        models[roleKey] = entry;
       } else {
         models[roleKey] = null;
       }
     }
     await setProjectRoleModelsMut.mutateAsync({ projectId: selectedProjectId, models });
     setShowProjectSettings(false);
-  }, [selectedProjectId, editRoleModels, editRoleThinkingLevels, setProjectRoleModelsMut]);
+  }, [selectedProjectId, editRoleModelsList, setProjectRoleModelsMut]);
 
-  // Also set roleDefaultModels when creating a project
-  const handleCreateProjectRoleModelChange = useCallback((roleKey: string, value: string) => {
-    setRoleDefaultModels((prev) => {
+  // Handlers for create project role model changes
+  const handleCreateProjectRoleModelChange = useCallback((roleKey: string, index: number, value: string) => {
+    setCreateProjectRoleModels((prev) => {
+      const models = [...(prev[roleKey] ?? [])];
+      while (models.length <= index) {
+        models.push({ provider: '', id: '', thinkingLevel: null });
+      }
       if (!value) {
-        const next = { ...prev };
-        delete next[roleKey];
-        // Also clear associated thinking level
-        setRoleDefaultThinkingLevels((t) => { const n = { ...t }; delete n[roleKey]; return n; });
-        return next;
+        models[index] = { ...models[index], provider: '', id: '' };
+      } else {
+        const [provider, id] = value.split('/');
+        models[index] = { ...models[index], provider, id };
       }
-      const [provider, id] = value.split('/');
-      if (provider && id) {
-        return { ...prev, [roleKey]: { provider, id } };
-      }
-      return prev;
+      return { ...prev, [roleKey]: models };
     });
   }, []);
 
-  const handleCreateProjectRoleThinkingLevelChange = useCallback((roleKey: string, level: string) => {
-    setRoleDefaultThinkingLevels((prev) => ({ ...prev, [roleKey]: level }));
+  const handleCreateProjectRoleThinkingLevelChange = useCallback((roleKey: string, index: number, level: string) => {
+    setCreateProjectRoleModels((prev) => {
+      const models = [...(prev[roleKey] ?? [])];
+      if (index < models.length) {
+        models[index] = { ...models[index], thinkingLevel: level || null };
+      }
+      return { ...prev, [roleKey]: models };
+    });
+  }, []);
+
+  const handleCreateProjectAddCandidate = useCallback((roleKey: string) => {
+    setCreateProjectRoleModels((prev) => {
+      const models = [...(prev[roleKey] ?? [])];
+      models.push({ provider: '', id: '', thinkingLevel: null });
+      return { ...prev, [roleKey]: models };
+    });
+  }, []);
+
+  const handleCreateProjectRemoveCandidate = useCallback((roleKey: string, index: number) => {
+    setCreateProjectRoleModels((prev) => {
+      const models = [...(prev[roleKey] ?? [])];
+      if (index > 0 && index < models.length) {
+        models.splice(index, 1);
+      }
+      return { ...prev, [roleKey]: models };
+    });
+  }, []);
+
+  // Handlers for project settings role model changes
+  const handleEditRoleModelChange = useCallback((roleKey: string, index: number, value: string) => {
+    setEditRoleModelsList((prev) => {
+      const models = [...(prev[roleKey] ?? [])];
+      while (models.length <= index) {
+        models.push({ provider: '', id: '', thinkingLevel: null });
+      }
+      if (!value) {
+        models[index] = { ...models[index], provider: '', id: '' };
+      } else {
+        const [provider, id] = value.split('/');
+        models[index] = { ...models[index], provider, id };
+      }
+      return { ...prev, [roleKey]: models };
+    });
+  }, []);
+
+  const handleEditRoleThinkingLevelChange = useCallback((roleKey: string, index: number, level: string) => {
+    setEditRoleModelsList((prev) => {
+      const models = [...(prev[roleKey] ?? [])];
+      if (index < models.length) {
+        models[index] = { ...models[index], thinkingLevel: level || null };
+      }
+      return { ...prev, [roleKey]: models };
+    });
+  }, []);
+
+  const handleEditAddCandidate = useCallback((roleKey: string) => {
+    setEditRoleModelsList((prev) => {
+      const models = [...(prev[roleKey] ?? [])];
+      models.push({ provider: '', id: '', thinkingLevel: null });
+      return { ...prev, [roleKey]: models };
+    });
+  }, []);
+
+  const handleEditRemoveCandidate = useCallback((roleKey: string, index: number) => {
+    setEditRoleModelsList((prev) => {
+      const models = [...(prev[roleKey] ?? [])];
+      if (index > 0 && index < models.length) {
+        models.splice(index, 1);
+      }
+      return { ...prev, [roleKey]: models };
+    });
   }, []);
 
   const handleToggleSystemNotifications = useCallback(async (enabled: boolean) => {
@@ -1548,7 +1626,7 @@ export default function App() {
         </div>
       </div>
 
-      <Modal isOpen={showCreateProject} onClose={() => { setShowCreateProject(false); setRoleDefaultModels({}); setRoleDefaultThinkingLevels({}); setCreatePlannerThinkingLevel(''); }} title="新建项目" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}>
+      <Modal isOpen={showCreateProject} onClose={() => { setShowCreateProject(false); setCreateProjectRoleModels({}); setCreatePlannerThinkingLevel(''); }} title="新建项目" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}>
         <form onSubmit={handleCreateProject} className="space-y-4">
           <div>
             <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">项目名称 <span className="text-red-500">*</span></label>
@@ -1615,46 +1693,69 @@ export default function App() {
             </summary>
             <div className="mt-2 space-y-3 pl-2 border-l-2 border-slate-200 dark:border-slate-800">
               {CONFIGURABLE_ROLE_KEYS.map((role) => {
-                const modelKey = roleDefaultModels[role.key] ? `${roleDefaultModels[role.key]!.provider}/${roleDefaultModels[role.key]!.id}` : '';
-                const levels = getModelThinkingLevels(modelKey);
+                const models = createProjectRoleModels[role.key] ?? [];
+                const displayModels = models.length === 0 ? [null] : models;
                 return (
-                  <div key={role.key} className="flex items-center gap-3">
-                    <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{role.label}</span>
-                    <div className="flex-1">
-                      <Select
-                        value={modelKey}
-                        onChange={(v) => handleCreateProjectRoleModelChange(role.key, v)}
-                        options={[
-                          { value: '', label: '继承（使用默认模型）' },
-                          ...(modelsQuery.data ?? []).map((m) => ({
-                            value: `${m.provider}/${m.id}`,
-                            label: `${m.provider} / ${m.label}`,
-                          })),
-                        ]}
-                        searchable
-                        className="w-full"
-                      />
-                    </div>
-                    {levels.length > 0 && (
-                      <div className="w-28 shrink-0">
-                        <Select
-                          value={roleDefaultThinkingLevels[role.key] ?? ''}
-                          onChange={(v) => handleCreateProjectRoleThinkingLevelChange(role.key, v)}
-                          options={[
-                            { value: '', label: '未设置' },
-                            ...thinkingLevelOptionsForSelect(levels),
-                          ]}
-                          placeholder="思考"
-                        />
-                      </div>
-                    )}
+                  <div key={role.key}>
+                    {displayModels.map((model, idx) => {
+                      const modelKey = model ? `${model.provider}/${model.id}` : '';
+                      const levels = getModelThinkingLevels(modelKey);
+                      return (
+                        <div key={idx} className="flex items-center gap-3 mb-2">
+                          <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{idx === 0 ? role.label : ''}</span>
+                          <div className="flex-1">
+                            <Select
+                              value={modelKey}
+                              onChange={(v) => handleCreateProjectRoleModelChange(role.key, idx, v)}
+                              options={[
+                                { value: '', label: '继承（使用默认模型）' },
+                                ...(modelsQuery.data ?? []).map((m) => ({
+                                  value: `${m.provider}/${m.id}`,
+                                  label: `${m.provider} / ${m.label}`,
+                                })),
+                              ]}
+                              searchable
+                              className="w-full"
+                            />
+                          </div>
+                          {levels.length > 0 && (
+                            <div className="w-28 shrink-0">
+                              <Select
+                                value={model?.thinkingLevel ?? ''}
+                                onChange={(v) => handleCreateProjectRoleThinkingLevelChange(role.key, idx, v)}
+                                options={[
+                                  { value: '', label: '未设置' },
+                                  ...thinkingLevelOptionsForSelect(levels),
+                                ]}
+                                placeholder="思考"
+                              />
+                            </div>
+                          )}
+                          {idx === 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => handleCreateProjectAddCandidate(role.key)}
+                              className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 rounded cursor-pointer shrink-0"
+                              title="添加候选模型"
+                            >+</button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleCreateProjectRemoveCandidate(role.key, idx)}
+                              className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded cursor-pointer shrink-0"
+                              title="移除候选模型"
+                            >×</button>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
             </div>
           </details>
           <div className="flex space-x-2 pt-3 justify-end border-t border-slate-150 dark:border-slate-800">
-            <button type="button" onClick={() => { setShowCreateProject(false); setRoleDefaultModels({}); }} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
+            <button type="button" onClick={() => { setShowCreateProject(false); setCreateProjectRoleModels({}); }} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
             <button type="submit" disabled={createProjectMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs hover:shadow-xs transition cursor-pointer disabled:opacity-50">{createProjectMut.isPending ? '创建中…' : '确认创建'}</button>
           </div>
         </form>
@@ -1898,7 +1999,7 @@ export default function App() {
         )}
       </Modal>
 
-      <Modal isOpen={showProjectSettings} onClose={() => { setShowProjectSettings(false); setEditRoleThinkingLevels({}); setProjectPackageError(null); setProjectPackageSuccess(null); setProjectPackageSource(''); }} title="项目设置" icon={<Settings className="w-4 h-4" />} maxWidthClassName="max-w-xl">
+      <Modal isOpen={showProjectSettings} onClose={() => { setShowProjectSettings(false); setEditRoleModelsList({}); setProjectPackageError(null); setProjectPackageSuccess(null); setProjectPackageSource(''); }} title="项目设置" icon={<Settings className="w-4 h-4" />} maxWidthClassName="max-w-xl">
         {/* Tab bar */}
         <div className="flex border-b border-slate-200 dark:border-slate-700 -mx-1">
           <button onClick={() => setProjectSettingsTab('roles')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'roles' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>角色模型</button>
@@ -1910,39 +2011,62 @@ export default function App() {
           <div className="space-y-4">
             <div className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">角色默认模型</div>
             {CONFIGURABLE_ROLE_KEYS.map((role) => {
-              const modelKey = editRoleModels[role.key] ?? '';
-              const levels = getModelThinkingLevels(modelKey);
+              const models = editRoleModelsList[role.key] ?? [];
+              const displayModels = models.length === 0 ? [null] : models;
               return (
-                <div key={role.key} className="flex items-center gap-3">
-                  <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{role.label}</span>
-                  <div className="flex-1">
-                    <Select
-                      value={modelKey}
-                      onChange={(v) => handleRoleModelChange(role.key, v)}
-                      options={[
-                        { value: '', label: '继承（使用父级模型）' },
-                        ...(modelsQuery.data ?? []).map((m) => ({
-                          value: `${m.provider}/${m.id}`,
-                          label: `${m.provider} / ${m.label}`,
-                        })),
-                      ]}
-                      searchable
-                      className="w-full"
-                    />
-                  </div>
-                  {levels.length > 0 && (
-                    <div className="w-28 shrink-0">
-                      <Select
-                        value={editRoleThinkingLevels[role.key] ?? ''}
-                        onChange={(v) => handleRoleThinkingLevelChange(role.key, v)}
-                        options={[
-                          { value: '', label: '未设置' },
-                          ...thinkingLevelOptionsForSelect(levels),
-                        ]}
-                        placeholder="思考"
-                      />
-                    </div>
-                  )}
+                <div key={role.key}>
+                  {displayModels.map((model, idx) => {
+                    const modelKey = model ? `${model.provider}/${model.id}` : '';
+                    const levels = getModelThinkingLevels(modelKey);
+                    return (
+                      <div key={idx} className="flex items-center gap-3 mb-2">
+                        <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{idx === 0 ? role.label : ''}</span>
+                        <div className="flex-1">
+                          <Select
+                            value={modelKey}
+                            onChange={(v) => handleEditRoleModelChange(role.key, idx, v)}
+                            options={[
+                              { value: '', label: '继承（使用父级模型）' },
+                              ...(modelsQuery.data ?? []).map((m) => ({
+                                value: `${m.provider}/${m.id}`,
+                                label: `${m.provider} / ${m.label}`,
+                              })),
+                            ]}
+                            searchable
+                            className="w-full"
+                          />
+                        </div>
+                        {levels.length > 0 && (
+                          <div className="w-28 shrink-0">
+                            <Select
+                              value={model?.thinkingLevel ?? ''}
+                              onChange={(v) => handleEditRoleThinkingLevelChange(role.key, idx, v)}
+                              options={[
+                                { value: '', label: '未设置' },
+                                ...thinkingLevelOptionsForSelect(levels),
+                              ]}
+                              placeholder="思考"
+                            />
+                          </div>
+                        )}
+                        {idx === 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => handleEditAddCandidate(role.key)}
+                            className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30 rounded cursor-pointer shrink-0"
+                            title="添加候选模型"
+                          >+</button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleEditRemoveCandidate(role.key, idx)}
+                            className="w-6 h-6 flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded cursor-pointer shrink-0"
+                            title="移除候选模型"
+                          >×</button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}

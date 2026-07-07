@@ -5,7 +5,7 @@ dist
 .env.local
 bun.lock
 *.log
-/.codegraph/daemon.pid
+/.codegraph/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
@@ -14,3 +14,6 @@ pi.db
 /piplus.sqlite-wal
 .worktrees
 tsconfig.tsbuildinfo
+/apps/desktop/bun-bin/bun.exe
+/.agents/
+/.superpowers/

@@ -348,6 +348,11 @@ export type RoleModelEntry = {
   provider: string;
   id: string;
   thinkingLevel?: string | null;
+  candidateModels?: Array<{
+    provider: string;
+    id: string;
+    thinkingLevel?: string | null;
+  }>;
 };
 
 export function getProjectRoleModels(projectId: string) {

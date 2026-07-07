@@ -577,6 +577,14 @@ export function registerSessionRoutes(app: Hono) {
         socketHub.broadcast(createEvent('session.created', { session_id: childSessionId }, { project_id: projectId, session_id: childSessionId }));
         socketHub.broadcast(createEvent('tree.changed', { project_id: projectId }, { project_id: projectId }));
       },
+      candidateModels: (() => {
+        try {
+          const parsed = JSON.parse(session.modelFallbacksJson ?? '[]');
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      })(),
     });
 
     socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));

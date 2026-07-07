@@ -97,18 +97,25 @@ case "$TARGET" in
   linux)
     bunx electron-builder --linux
     echo ""
-    echo "  ✅ AppImage: apps/desktop/dist/piplus-0.1.0.AppImage"
-    echo "  ✅ deb:      apps/desktop/dist/piplus_0.1.0_amd64.deb"
+    echo "  ✅ AppImage: apps/desktop/dist/piplus-0.2.1.AppImage"
+    echo "  ✅ deb:      apps/desktop/dist/piplus_0.2.1_amd64.deb"
     ;;
   mac)
     bunx electron-builder --mac
     echo ""
-    echo "  ✅ dmg: apps/desktop/dist/piplus-0.1.0.dmg"
+    echo "  ✅ dmg: apps/desktop/dist/piplus-0.2.1.dmg"
     ;;
   win)
     bunx electron-builder --win
+    # Rename to avoid spaces in filename (GitHub upload issue)
+    if [ -f "dist/piplus Setup 0.2.1.exe" ]; then
+      mv "dist/piplus Setup 0.2.1.exe" "dist/piplus-0.2.1.exe"
+    fi
+    if [ -f "dist/piplus Setup 0.2.1.exe.blockmap" ]; then
+      mv "dist/piplus Setup 0.2.1.exe.blockmap" "dist/piplus-0.2.1.exe.blockmap"
+    fi
     echo ""
-    echo "  ✅ exe: apps/desktop/dist/piplus Setup 0.1.0.exe"
+    echo "  ✅ exe: apps/desktop/dist/piplus-0.2.1.exe"
     ;;
   *)
     echo "Usage: $0 [linux|mac|win]"

@@ -86,6 +86,13 @@ function ensureProjectTodosTable(sqlite: Database) {
   }
 }
 
+function ensureModelFallbacksColumn(sqlite: Database) {
+  const columns = sqlite.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>;
+  if (!columns.some((col) => col.name === 'model_fallbacks_json')) {
+    sqlite.exec("ALTER TABLE sessions ADD COLUMN model_fallbacks_json TEXT NOT NULL DEFAULT '[]'");
+  }
+}
+
 function ensureBuiltinRows(sqlite: Database) {
   const now = Date.now();
   const seedPassword = Bun.password.hashSync('seed123', 'bcrypt');
@@ -211,6 +218,7 @@ export function createSeedDb(path: string) {
   ensureProjectPinnedAtColumn(sqlite);
   ensureProjectTodosTable(sqlite);
   ensureBuiltinRows(sqlite);
+  ensureModelFallbacksColumn(sqlite);
   sqlite.close();
 }
 
