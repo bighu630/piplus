@@ -1,9 +1,21 @@
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { createRequire } from 'node:module';
 
 const root = resolve(import.meta.dirname, '../../..');
-const electronDist = resolve(root, 'node_modules/.bun/electron@42.4.1/node_modules/electron/dist');
+// const electronDist = resolve(root, 'node_modules/.bun/electron@42.4.1/node_modules/electron/dist');
 const webDistIndex = resolve(root, 'apps/web/dist/index.html');
+
+const require = createRequire(import.meta.url);
+
+// 用 require.resolve 找到 electron 包的真实位置（自动处理 bun 的符号链接和版本号）
+let electronDist;
+try {
+  const electronPkgPath = require.resolve('electron/package.json');
+  electronDist = resolve(dirname(electronPkgPath), 'dist');
+} catch {
+  electronDist = null;
+}
 
 if (!existsSync(electronDist)) {
   console.error('[desktop] Electron binary is missing. Please reinstall electron or run npm/bun postinstall for electron.');
