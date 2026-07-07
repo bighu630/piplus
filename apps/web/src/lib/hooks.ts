@@ -346,6 +346,7 @@ export function useGitPullMutation() {
     mutationFn: (sessionId: string) => gitPull(sessionId),
     onSuccess: (_data, sessionId) => {
       queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', sessionId] });
     },
   });
 }
@@ -366,6 +367,7 @@ export function useGitCommitMutation() {
     mutationFn: ({ sessionId, message }: { sessionId: string; message: string }) => gitCommit(sessionId, message),
     onSuccess: (_data, { sessionId }) => {
       queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', sessionId] });
     },
   });
 }
@@ -393,13 +395,14 @@ export function useGitCheckoutMutation() {
       // Invalidate both branches list and git diff since checkout may change working tree
       queryClient.invalidateQueries({ queryKey: ['session', 'git-branches', sessionId] });
       queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', sessionId] });
     },
   });
 }
 
 export function useGitCommits(sessionId: string | null, limit: number = 50) {
   return useQuery({
-    queryKey: ['session', 'git-commits', sessionId],
+    queryKey: ['session', 'git-commits', sessionId, limit],
     queryFn: () => getGitCommits(sessionId!, limit),
     enabled: Boolean(sessionId),
     staleTime: 30_000,

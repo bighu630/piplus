@@ -888,16 +888,6 @@ export default function App() {
     queryClient.invalidateQueries({ queryKey: ['session', 'thinking-level', selectedSessionId] });
   }, [selectedSessionId, setModelMut, queryClient]);
 
-  // Reset commit selection when session changes
-  useEffect(() => {
-    setSelectedCommitHash(null);
-  }, [selectedSessionId]);
-
-  const handleRefreshDiff = useCallback(() => {
-    if (!selectedSessionId) return;
-    queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', selectedSessionId] });
-  }, [selectedSessionId, queryClient]);
-
   const gitPullMut = useGitPullMutation();
   const gitPushMut = useGitPushMutation();
   const gitCommitMut = useGitCommitMutation();
@@ -905,6 +895,18 @@ export default function App() {
   const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
   const gitCheckoutMut = useGitCheckoutMutation();
   const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
+
+  // Reset commit selection when session changes or branches change (e.g., after checkout)
+  useEffect(() => {
+    setSelectedCommitHash(null);
+  }, [selectedSessionId, gitBranchesQuery.data]);
+
+  const handleRefreshDiff = useCallback(() => {
+    if (!selectedSessionId) return;
+    queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', selectedSessionId] });
+    queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', selectedSessionId] });
+  }, [selectedSessionId, queryClient]);
+
   const gitCommitsQuery = useGitCommits(activeTab === 'diff' ? selectedSessionId : null, 50);
   const gitShowQuery = useGitShow(
     selectedCommitHash ? selectedSessionId : null,

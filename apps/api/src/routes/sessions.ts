@@ -1291,6 +1291,9 @@ export function registerSessionRoutes(app: Hono) {
     if (!hash) {
       return c.json({ error: { code: 'MISSING_HASH', message: 'Hash parameter is required' } }, 400);
     }
+    if (!/^[a-f0-9]{7,40}$/i.test(hash)) {
+      return c.json({ error: { code: 'INVALID_HASH', message: 'Invalid commit hash format' } }, 400);
+    }
 
     try {
       const output = execGit(cwd, 'show', hash, '--format=%H|||%s|||%an|||%ai', '--patch');
