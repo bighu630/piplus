@@ -38,9 +38,7 @@ jobs:
         with:
           name: linux-amd64
           path: |
-            apps/desktop/dist/*.AppImage
-            apps/desktop/dist/*.deb
-            apps/desktop/dist/*.rpm
+            apps/desktop/dist/piplus-*-linux-amd64.*
 
   build-windows:
     name: 'Windows (amd64)'
@@ -69,7 +67,7 @@ jobs:
         with:
           name: windows-amd64
           path: |
-            apps/desktop/dist/*.exe
+            apps/desktop/dist/piplus-*-win-amd64.*
 
   build-mac-amd64:
     name: 'macOS (amd64)'
@@ -92,7 +90,7 @@ jobs:
         with:
           name: mac-amd64
           path: |
-            apps/desktop/dist/*.dmg
+            apps/desktop/dist/piplus-*-mac-amd64.*
 
   build-mac-arm64:
     name: 'macOS (arm64)'
@@ -115,7 +113,7 @@ jobs:
         with:
           name: mac-arm64
           path: |
-            apps/desktop/dist/*.dmg
+            apps/desktop/dist/piplus-*-mac-arm64.*
 
   release:
     name: Create Release

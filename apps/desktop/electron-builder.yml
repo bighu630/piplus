@@ -21,6 +21,7 @@ extraResources:
     filter:
       - "**"
 linux:
+  artifactName: piplus-${version}-linux-amd64.${ext}
   category: Development
   executableName: piplus
   syncDesktopName: true
@@ -29,8 +30,10 @@ linux:
     - deb
     - rpm
 mac:
+  artifactName: piplus-${version}-mac-${arch}.${ext}
   target:
     - dmg
   category: public.app-category.developer-tools
 win:
+  artifactName: piplus-${version}-win-amd64.${ext}
   target: nsis

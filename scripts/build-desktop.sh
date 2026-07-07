@@ -103,9 +103,9 @@ fi
 echo "[5/5] Packaging${TARGET:+ for $TARGET} ..."
 cd apps/desktop
 
-# 清理上次产物，避免 asar 膨胀
+# 清理上次产物
 case "$TARGET" in
-  linux) rm -rf dist/linux-unpacked dist/*.AppImage dist/*.deb ;;
+  linux) rm -rf dist/linux-unpacked dist/*.AppImage dist/*.deb dist/*.rpm ;;
   mac)   rm -rf dist/mac dist/*.dmg ;;
   win)   rm -rf dist/win-unpacked dist/*.exe ;;
 esac
@@ -114,8 +114,9 @@ case "$TARGET" in
   linux)
     bunx electron-builder --linux
     echo ""
-    echo "  ✅ AppImage: apps/desktop/dist/piplus-${VERSION}.AppImage"
-    echo "  ✅ deb:      apps/desktop/dist/piplus_${VERSION}_amd64.deb"
+    echo "  ✅ AppImage: dist/piplus-${VERSION}-linux-amd64.AppImage"
+    echo "  ✅ deb:      dist/piplus-${VERSION}-linux-amd64.deb"
+    echo "  ✅ rpm:      dist/piplus-${VERSION}-linux-amd64.rpm"
     ;;
   mac)
     MAC_ARGS="--mac"
@@ -123,20 +124,18 @@ case "$TARGET" in
       MAC_ARGS="$MAC_ARGS --$ARCH"
     fi
     bunx electron-builder $MAC_ARGS
+    # artifactName 模板用 ${arch} 输出 x64，改为 amd64
+    if [ -f "dist/piplus-${VERSION}-mac-x64.dmg" ]; then
+      mv "dist/piplus-${VERSION}-mac-x64.dmg" "dist/piplus-${VERSION}-mac-amd64.dmg"
+    fi
     echo ""
-    echo "  ✅ dmg: apps/desktop/dist/piplus-${VERSION}.dmg"
+    echo "  ✅ dmg: dist/piplus-${VERSION}-mac-${ARCH:-amd64}.dmg"
     ;;
   win)
     bunx electron-builder --win
-    # Rename to avoid spaces in filename (GitHub upload issue)
-    if [ -f "dist/piplus Setup ${VERSION}.exe" ]; then
-      mv "dist/piplus Setup ${VERSION}.exe" "dist/piplus-${VERSION}.exe"
-    fi
-    if [ -f "dist/piplus Setup ${VERSION}.exe.blockmap" ]; then
-      mv "dist/piplus Setup ${VERSION}.exe.blockmap" "dist/piplus-${VERSION}.exe.blockmap"
-    fi
+    # artifactName 已处理命名，输出为 piplus-${VERSION}-win-amd64.exe
     echo ""
-    echo "  ✅ exe: apps/desktop/dist/piplus-${VERSION}.exe"
+    echo "  ✅ exe: dist/piplus-${VERSION}-win-amd64.exe"
     ;;
   *)
     echo "Usage: $0 [linux|mac|win]"
