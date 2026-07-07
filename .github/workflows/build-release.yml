@@ -73,7 +73,7 @@ jobs:
 
   build-mac-amd64:
     name: 'macOS (amd64)'
-    runs-on: macos-13
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
