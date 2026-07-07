@@ -277,6 +277,14 @@ export default function TabGitDiff({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [commitDropdownOpen]);
+
+  // Hide commit input when viewing a specific commit
+  useEffect(() => {
+    if (selectedCommitHash) {
+      setShowCommitInput(false);
+      setCommitMessage('');
+    }
+  }, [selectedCommitHash]);
   const fileRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Close branch dropdown on outside click
@@ -435,7 +443,7 @@ export default function TabGitDiff({
     setCollapsedFiles((prev) => ({ ...prev, [filename]: !prev[filename] }));
   }, []);
 
-  const anyBusy = isPulling || isPushing || isCommitting || isLoading || isCheckingOut;
+  const anyBusy = isPulling || isPushing || isCommitting || isLoading || isCheckingOut || !!selectedCommitHash;
 
   const functionalFiles = useMemo(
     () => parsedFiles.filter((f) => f.lines.some((l) => l.type !== 'header')),
@@ -633,7 +641,7 @@ export default function TabGitDiff({
         <div className="grid grid-cols-2 md:flex items-center gap-2 w-full md:w-auto">
           <button
             onClick={onRefresh}
-            disabled={isLoading}
+            disabled={anyBusy}
             className="flex items-center justify-center space-x-1.5 px-3 py-2 md:py-1.5 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200/50 dark:border-indigo-900 rounded-xl text-indigo-600 dark:text-indigo-400 font-semibold hover:bg-indigo-100/70 dark:hover:bg-indigo-900 disabled:opacity-50 text-xs transition cursor-pointer"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
