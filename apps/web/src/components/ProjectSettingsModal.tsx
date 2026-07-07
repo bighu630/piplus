@@ -185,8 +185,8 @@ export default function ProjectSettingsModal({
 
   return (
     <Modal isOpen={isOpen} onClose={wrappedOnClose} title="项目设置" icon={<Settings className="w-4 h-4" />} maxWidthClassName="max-w-xl">
-      {/* Tab bar */}
-      <div className="flex border-b border-slate-200 dark:border-slate-700 -mx-1">
+      {/* Tab bar — sticky at top */}
+      <div className="sticky top-0 z-10 bg-white dark:bg-slate-900 flex border-b border-slate-200 dark:border-slate-700 -mx-1">
         <button onClick={() => setProjectSettingsTab('roles')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'roles' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>角色模型</button>
         <button onClick={() => setProjectSettingsTab('packages')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'packages' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>扩展管理</button>
       </div>
