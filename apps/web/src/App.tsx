@@ -567,18 +567,15 @@ export default function App() {
   }, []);
 
   const handleTerminalMessage = useCallback((msg: { type: string; sessionId: string; data?: string; cols?: number; rows?: number }) => {
-    console.log('[App] handleTerminalMessage:', msg);
-    const payload = {
-      sessionId: msg.sessionId,
-      ...(msg.data !== undefined ? { data: msg.data } : {}),
-      ...(msg.cols !== undefined ? { cols: msg.cols } : {}),
-      ...(msg.rows !== undefined ? { rows: msg.rows } : {}),
-    };
-    console.log('[App] sending payload:', payload);
     sendRaw({
       kind: 'client',
       type: msg.type,
-      payload,
+      payload: {
+        sessionId: msg.sessionId,
+        ...(msg.data !== undefined ? { data: msg.data } : {}),
+        ...(msg.cols !== undefined ? { cols: msg.cols } : {}),
+        ...(msg.rows !== undefined ? { rows: msg.rows } : {}),
+      },
     });
   }, [sendRaw]);
 

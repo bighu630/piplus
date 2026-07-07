@@ -156,31 +156,28 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
 
     // Send terminal_start when first becoming visible
     useEffect(() => {
-      console.log('[Terminal] visible effect fired', { visible, started: startedRef.current, sessionId });
       if (!visible || startedRef.current) return;
       const fitAddon = fitAddonRef.current;
       const terminal = terminalRef.current;
-      console.log('[Terminal] refs:', { hasFitAddon: !!fitAddon, hasTerminal: !!terminal });
       if (!fitAddon || !terminal) return;
-      // Need to wait a tick for the display:block to take effect
-      requestAnimationFrame(() => {
+      // Use setTimeout(0) instead of rAF to ensure the browser has computed
+      // layout after display:none → display:block transition.
+      // rAF fires BEFORE layout recalc, so proposeDimensions() would see 0.
+      setTimeout(() => {
         try {
           fitAddon.fit();
-        } catch (e) { console.error('[Terminal] fit error:', e); }
+        } catch { /* container might not be ready */ }
         const dims = fitAddon.proposeDimensions();
-        console.log('[Terminal] proposeDimensions:', dims);
         if (dims && dims.cols > 0 && dims.rows > 0) {
           startedRef.current = true;
-          const msg = {
+          onTerminalMessageRef.current({
             type: 'terminal_start',
             sessionId,
             cols: dims.cols,
             rows: dims.rows,
-          };
-          console.log('[Terminal] sending terminal_start:', msg);
-          onTerminalMessageRef.current(msg);
+          });
         }
-      });
+      }, 0);
     }, [visible, sessionId]);
 
     return (
