@@ -22,6 +22,9 @@
 <td>🐧 Linux</td><td>AppImage / deb</td><td><a href="https://bun.sh">Bun</a>（运行时需安装）</td>
 </tr>
 <tr>
+<td>🍎 macOS</td><td>dmg</td><td>安装后需执行 <code>xattr -c /Applications/piplus.app</code></td>
+</tr>
+<tr>
 <td>🪟 Windows</td><td><code>piplus Setup *.exe</code></td><td>无额外依赖</td>
 </tr>
 </table>
