@@ -41,7 +41,6 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const onTerminalMessageRef = useRef(onTerminalMessage);
-    const startedRef = useRef(false);
 
     // Keep callback ref up to date to avoid stale closures inside the one-time effect
     useEffect(() => {
@@ -81,22 +80,18 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
       terminal.loadAddon(fitAddon);
 
       terminal.open(containerRef.current!);
-      fitAddon.fit();
 
       terminalRef.current = terminal;
       fitAddonRef.current = fitAddon;
 
-      // Send terminal_start with initial dimensions
-      const dimensions = fitAddon.proposeDimensions();
-      if (dimensions && dimensions.cols > 0 && dimensions.rows > 0) {
-        startedRef.current = true;
-        onTerminalMessageRef.current({
-          type: 'terminal_start',
-          sessionId,
-          cols: dimensions.cols,
-          rows: dimensions.rows,
-        });
-      }
+      // Always send terminal_start on mount with default 80x24
+      // ResizeObserver will correct dimensions when container gets proper size
+      onTerminalMessageRef.current({
+        type: 'terminal_start',
+        sessionId,
+        cols: 80,
+        rows: 24,
+      });
 
       // Forward user input to parent
       terminal.onData((data) => {
@@ -113,7 +108,7 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
           fitAddon.fit();
         } catch { /* ignore */ }
         const dims = fitAddon.proposeDimensions();
-        if (dims) {
+        if (dims && dims.cols > 0 && dims.rows > 0) {
           onTerminalMessageRef.current({
             type: 'terminal_resize',
             sessionId,
@@ -153,32 +148,6 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
         selectionBackground: colors.selectionBackground,
       };
     }, [theme]);
-
-    // Send terminal_start when first becoming visible
-    useEffect(() => {
-      if (!visible || startedRef.current) return;
-      const fitAddon = fitAddonRef.current;
-      const terminal = terminalRef.current;
-      if (!fitAddon || !terminal) return;
-      // Use setTimeout(0) instead of rAF to ensure the browser has computed
-      // layout after display:none → display:block transition.
-      // rAF fires BEFORE layout recalc, so proposeDimensions() would see 0.
-      setTimeout(() => {
-        try {
-          fitAddon.fit();
-        } catch { /* container might not be ready */ }
-        const dims = fitAddon.proposeDimensions();
-        if (dims && dims.cols > 0 && dims.rows > 0) {
-          startedRef.current = true;
-          onTerminalMessageRef.current({
-            type: 'terminal_start',
-            sessionId,
-            cols: dims.cols,
-            rows: dims.rows,
-          });
-        }
-      }, 0);
-    }, [visible, sessionId]);
 
     return (
       <div
