@@ -1205,6 +1205,119 @@ export function registerSessionRoutes(app: Hono) {
 
   /**
    * @swagger
+   * /api/v1/sessions/{sessionId}/git/commits:
+   *   get:
+   *     summary: 获取 Git 提交历史
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 获取指定会话所在仓库的 Git 提交历史。
+   *     parameters:
+   *       - in: query
+   *         name: limit
+   *         schema:
+   *           type: integer
+   *           default: 50
+   *         description: 最大提交数（上限 200）。
+   *     responses:
+   *       200:
+   *         description: 返回提交列表。
+   *       500:
+   *         description: Git 操作失败。
+   */
+  app.get('/api/v1/sessions/:sessionId/git/commits', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    const limit = Math.min(Number(c.req.query('limit') ?? 50), 200);
+
+    try {
+      const output = execGit(
+        cwd,
+        'log',
+        `--max-count=${limit}`,
+        `--format=%H|||%s|||%an|||%ai`,
+      );
+      const commits = output
+        .split('\n')
+        .filter(Boolean)
+        .map((line: string) => {
+          const [hash, message, author, date] = line.split('|||');
+          return { hash, message, author, date };
+        });
+
+      return c.json({ session_id: sessionId, cwd, commits });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
+    }
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git/show:
+   *   get:
+   *     summary: 查看单个 Git 提交详情
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 获取指定提交的详情，包括 diff。
+   *     parameters:
+   *       - in: query
+   *         name: hash
+   *         required: true
+   *         schema:
+   *           type: string
+   *         description: 提交哈希。
+   *     responses:
+   *       200:
+   *         description: 返回提交详情。
+   *       400:
+   *         description: 缺少 hash 参数。
+   *       500:
+   *         description: Git 操作失败。
+   */
+  app.get('/api/v1/sessions/:sessionId/git/show', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    const hash = String(c.req.query('hash') ?? '').trim();
+    if (!hash) {
+      return c.json({ error: { code: 'MISSING_HASH', message: 'Hash parameter is required' } }, 400);
+    }
+
+    try {
+      const output = execGit(cwd, 'show', hash, '--format=%H|||%s|||%an|||%ai', '--patch');
+      const lines = output.split('\n');
+      const metaLine = lines[0];
+      const [metaHash, message, author, date] = metaLine.split('|||');
+      const diffLines = lines.slice(1);
+      const diffStartIdx = diffLines.findIndex((l) => l.startsWith('diff --git'));
+      const diff = diffStartIdx >= 0 ? diffLines.slice(diffStartIdx).join('\n') : '';
+
+      return c.json({
+        session_id: sessionId,
+        cwd,
+        hash: metaHash || hash,
+        message,
+        author,
+        date,
+        diff,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
+    }
+  });
+
+  /**
+   * @swagger
    * /api/v1/sessions/{sessionId}/git/checkout:
    *   post:
    *     summary: 切换到指定 Git 分支
