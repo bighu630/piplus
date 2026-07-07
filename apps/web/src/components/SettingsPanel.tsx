@@ -59,7 +59,7 @@ export default function SettingsPanel({
   removePkgMut,
   updatePkgMut,
 }: SettingsPanelProps) {
-  const [settingsTab, setSettingsTab] = useState<'general' | 'notifications' | 'models' | 'packages'>('general');
+  const [settingsTab, setSettingsTab] = useState<'general' | 'packages'>('general');
   const [packageSource, setPackageSource] = useState('');
   const [packageError, setPackageError] = useState<string | null>(null);
   const [packageSuccess, setPackageSuccess] = useState<string | null>(null);
@@ -69,12 +69,10 @@ export default function SettingsPanel({
       {/* Tab bar — sticky at top */}
       <div className="sticky top-0 z-10 bg-white dark:bg-slate-900 flex border-b border-slate-200 dark:border-slate-700 -mx-1">
         <button onClick={() => setSettingsTab('general')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${settingsTab === 'general' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>常规</button>
-        <button onClick={() => setSettingsTab('notifications')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${settingsTab === 'notifications' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>通知</button>
-        <button onClick={() => setSettingsTab('models')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${settingsTab === 'models' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>模型</button>
         <button onClick={() => setSettingsTab('packages')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${settingsTab === 'packages' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>包管理</button>
       </div>
 
-      {/* 常规 tab */}
+      {/* 常规 tab — 包含快捷键、主题、通知、模型 */}
       {settingsTab === 'general' && (
         <div className="space-y-4">
           <div>
@@ -91,12 +89,6 @@ export default function SettingsPanel({
               <button onClick={() => onThemeChange('dark')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'dark' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>深色</button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* 通知 tab */}
-      {settingsTab === 'notifications' && (
-        <div className="space-y-4">
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -118,12 +110,6 @@ export default function SettingsPanel({
               <p className="text-[11px] text-amber-600 dark:text-amber-400">当前环境不支持系统通知（需要 HTTPS 或 localhost）。</p>
             )}
           </div>
-        </div>
-      )}
-
-      {/* 模型 tab */}
-      {settingsTab === 'models' && (
-        <div className="space-y-4">
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div>
