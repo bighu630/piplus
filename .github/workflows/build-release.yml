@@ -85,7 +85,7 @@ jobs:
       - name: Prepare bundled bun
         run: |
           mkdir -p apps/desktop/bun-bin
-          bun_path=$(bun which)
+          bun_path=$(command -v bun)
           cp "$bun_path" apps/desktop/bun-bin/bun.exe
           chmod +x apps/desktop/bun-bin/bun.exe
         shell: bash
