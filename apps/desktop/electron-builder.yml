@@ -22,11 +22,16 @@ extraResources:
 linux:
   category: Development
   executableName: piplus
+  syncDesktopName: true
   target:
     - AppImage
     - deb
+  icon: assets/icon.png
 mac:
   target:
     - dmg
+  icon: assets/icon.png
+  category: public.app-category.developer-tools
 win:
   target: nsis
+  icon: assets/icon.ico

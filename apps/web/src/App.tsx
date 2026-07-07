@@ -69,6 +69,8 @@ import {
   useDeleteProjectTodoMutation,
   useSessionThinkingLevel,
   useSetSessionThinkingLevelMutation,
+  useGitCommits,
+  useGitShow,
 } from './lib/hooks';
 import {
   Settings,
@@ -886,17 +888,37 @@ export default function App() {
     queryClient.invalidateQueries({ queryKey: ['session', 'thinking-level', selectedSessionId] });
   }, [selectedSessionId, setModelMut, queryClient]);
 
-  const handleRefreshDiff = useCallback(() => {
-    if (!selectedSessionId) return;
-    queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', selectedSessionId] });
-  }, [selectedSessionId, queryClient]);
-
   const gitPullMut = useGitPullMutation();
   const gitPushMut = useGitPushMutation();
   const gitCommitMut = useGitCommitMutation();
   const addGitignoreMut = useAddGitignoreMutation();
   const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
   const gitCheckoutMut = useGitCheckoutMutation();
+  const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
+
+  // Reset commit selection when session changes or branches change (e.g., after checkout)
+  useEffect(() => {
+    setSelectedCommitHash(null);
+  }, [selectedSessionId, gitBranchesQuery.data]);
+
+  const handleRefreshDiff = useCallback(() => {
+    if (!selectedSessionId) return;
+    queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', selectedSessionId] });
+    queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', selectedSessionId] });
+  }, [selectedSessionId, queryClient]);
+
+  const gitCommitsQuery = useGitCommits(activeTab === 'diff' ? selectedSessionId : null, 50);
+  const gitShowQuery = useGitShow(
+    selectedCommitHash ? selectedSessionId : null,
+    selectedCommitHash,
+  );
+
+  // Compute which diff to display
+  const displayDiff = selectedCommitHash
+    ? (gitShowQuery.data?.diff ?? null)
+    : (gitDiffQuery.data?.diff ?? null);
+  const isDisplayLoading = selectedCommitHash ? gitShowQuery.isLoading : gitDiffQuery.isLoading;
+
   const updateTitleMut = useUpdateSessionTitleMutation();
   const saveFileContentMut = useSaveSessionFileContentMutation(isFileOrDoce ? selectedSessionId : null);
   const savingFile = saveFileContentMut.isPending;
@@ -1555,8 +1577,8 @@ export default function App() {
 )}
               {activeTab === 'diff' && (
                 <TabGitDiff
-                  diff={gitDiffQuery.data?.diff ?? null}
-                  isLoading={gitDiffQuery.isLoading}
+                  diff={displayDiff}
+                  isLoading={isDisplayLoading}
                   onRefresh={handleRefreshDiff}
                   onPull={() => gitPullMut.mutateAsync(selectedSessionId)}
                   onPush={() => gitPushMut.mutateAsync(selectedSessionId)}
@@ -1571,6 +1593,9 @@ export default function App() {
                   onCheckout={(branch) => gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId, branch })}
                   isCheckingOut={gitCheckoutMut.isPending}
                   cwd={gitDiffQuery.data?.cwd ?? gitBranchesQuery.data?.cwd ?? null}
+                  commits={gitCommitsQuery.data?.commits ?? null}
+                  selectedCommitHash={selectedCommitHash}
+                  onSelectCommit={setSelectedCommitHash}
                 />
               )}
               {activeTab === 'files' && (
