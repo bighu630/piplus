@@ -1,12 +1,15 @@
 appId: com.piplus.desktop
 productName: piplus
 executableName: piplus
+icon: assets/icon.png
 files:
   - dist/main/**
   - dist/preload/**
   - package.json
   - "!node_modules/**"
 extraResources:
+  - from: assets
+    to: assets
   - from: ../api/dist
     to: api-dist
   - from: ../web/dist
