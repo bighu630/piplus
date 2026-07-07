@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
 import { findSessionNode } from './lib/tree-utils';
@@ -14,6 +14,7 @@ import TabChat from './components/TabChat';
 import TabSessionInfo from './components/TabSessionInfo';
 import TabGitDiff from './components/TabGitDiff';
 import TabFiles from './components/TabFiles';
+const TabTerminal = lazy(() => import('./components/TabTerminal'));
 import Modal from './components/Modal';
 import Select from './components/Select';
 import CreateProjectModal from './components/CreateProjectModal';
@@ -71,7 +72,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-type Tab = 'chat' | 'info' | 'diff' | 'files' | 'doce';
+type Tab = 'chat' | 'info' | 'diff' | 'files' | 'doce' | 'terminal';
 type SendShortcutMode = 'enter' | 'mod_enter';
 const WORKSPACE_ROOT_PATH = '/workspace';
 
@@ -158,6 +159,7 @@ export default function App() {
   const [editingTitle, setEditingTitle] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const terminalRef = useRef<any>(null);
   const [showWorker, setShowWorker] = useState(() => {
     try { return localStorage.getItem('pi-show-worker') !== 'false'; } catch { return true; }
   });
@@ -282,7 +284,7 @@ export default function App() {
   const archiveProjectMut = useArchiveProjectMutation();
   const setProjectPinnedMut = useSetProjectPinnedMutation();
   const deleteProjectMut = useDeleteProjectMutation();
-  const { connected: wsConnected, localRuntimeStatusBySession, setSessionContext } = useWebSocket();
+  const { connected: wsConnected, localRuntimeStatusBySession, setSessionContext, subscribeToMessages, sendRaw } = useWebSocket();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
   // localRuntimeStatusBySession is updated immediately from WS runtime_status_changed events,
   // before async query refetches complete. This prevents stale query data from
@@ -564,6 +566,32 @@ export default function App() {
     });
   }, []);
 
+  const handleTerminalMessage = useCallback((msg: { type: string; sessionId: string; data?: string; cols?: number; rows?: number }) => {
+    sendRaw({
+      kind: 'client',
+      type: msg.type,
+      payload: {
+        sessionId: msg.sessionId,
+        ...(msg.data !== undefined ? { data: msg.data } : {}),
+        ...(msg.cols !== undefined ? { cols: msg.cols } : {}),
+        ...(msg.rows !== undefined ? { rows: msg.rows } : {}),
+      },
+    });
+  }, [sendRaw]);
+
+  useEffect(() => {
+    const sessionId = selectedSessionId;
+    const unsub = subscribeToMessages((msg: any) => {
+      if (msg.kind === 'terminal' && msg.type === 'terminal_output' && msg.payload.sessionId === sessionId) {
+        terminalRef.current?.write(msg.payload.data);
+      }
+      if (msg.kind === 'terminal' && msg.type === 'terminal_exit' && msg.payload.sessionId === sessionId) {
+        console.log('[Terminal] process exited with code', msg.payload.code);
+      }
+    });
+    return unsub;
+  }, [subscribeToMessages, selectedSessionId]);
+
   if (!isLoggedIn) {
     return (
       <LoginScreen
@@ -666,6 +694,7 @@ export default function App() {
                   <button onClick={() => setActiveTab('diff')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'diff' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Git</button>
                   <button onClick={() => setActiveTab('files')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'files' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Files</button>
                   <button onClick={() => setActiveTab('doce')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'doce' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Doce</button>
+                  <button onClick={() => setActiveTab('terminal')} className={`px-3 py-2 text-xs font-semibold transition border-b-2 rounded-t-lg cursor-pointer whitespace-nowrap ${activeTab === 'terminal' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Terminal</button>
                 </div>
               </div>
             </>
@@ -709,6 +738,7 @@ export default function App() {
                 <button onClick={() => setActiveTab('diff')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'diff' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Git</button>
                 <button onClick={() => setActiveTab('files')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'files' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Files</button>
                 <button onClick={() => setActiveTab('doce')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'doce' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Doce</button>
+                <button onClick={() => setActiveTab('terminal')} className={`px-4 py-2 text-sm font-semibold transition border-b-2 rounded-t-lg cursor-pointer ${activeTab === 'terminal' ? 'border-blue-600 text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}`}>Terminal</button>
               </div>
             </>
           )}
@@ -794,6 +824,19 @@ export default function App() {
                   defaultExpanded={true}
                 />
               )}
+              {/* Terminal tab — keep-alive via display:none */}
+              <div style={{ display: activeTab === 'terminal' ? 'block' : 'none' }} className="h-full">
+                <Suspense fallback={<div className="h-full flex items-center justify-center text-xs text-slate-400">Terminal 加载中…</div>}>
+                  <TabTerminal
+                    key={selectedSessionId}
+                    ref={terminalRef}
+                    sessionId={selectedSessionId}
+                    theme={theme}
+                    visible={activeTab === 'terminal'}
+                    onTerminalMessage={handleTerminalMessage}
+                  />
+                </Suspense>
+              </div>
             </>
           ) : (
             <div className="h-full flex flex-col items-center justify-center p-8 bg-slate-50 dark:bg-slate-900/40">

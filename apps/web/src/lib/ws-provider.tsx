@@ -13,6 +13,8 @@ interface WebSocketContextValue {
   subscribeToStream: (cb: (msg: any) => void) => () => void;
   setSessionContext: (sessionId: string | null, projectId: string | null, activeTab: string) => void;
   subscribeToRuntimeErrors: (cb: (error: {sessionId: string; error: string}) => void) => () => void;
+  subscribeToMessages: (cb: (msg: any) => void) => () => void;
+  sendRaw: (msg: Record<string, unknown>) => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextValue | null>(null);
@@ -36,6 +38,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const streamListenersRef = useRef<Set<(msg: any) => void>>(new Set());
   const runtimeErrorListenersRef = useRef<Set<(error: {sessionId: string; error: string}) => void>>(new Set());
+  const messageListenersRef = useRef<Set<(msg: any) => void>>(new Set());
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
 
   // Refs for latest values used in closures
@@ -52,7 +55,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     socketRef.current?.setContext({
       project_id: projectId ?? undefined,
       session_id: sessionId ?? undefined,
-      current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : activeTab === 'files' || activeTab === 'doce' ? 'files' : 'chat',
+      current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : activeTab === 'files' || activeTab === 'doce' ? 'files' : activeTab === 'terminal' ? 'terminal' : 'chat',
     });
   }, []);
 
@@ -63,6 +66,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         try {
           const message = JSON.parse(event.data as string) as ServerMessage;
           const currentSessionId = selectedSessionIdRef.current;
+
+          // Notify all message subscribers (terminal events, etc.)
+          messageListenersRef.current.forEach(cb => cb(message));
 
           // ═══ Chat stream events ═══
           if (message.kind === 'chat_stream' && message.scope?.session_id === currentSessionId) {
@@ -232,7 +238,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         socket.setContext({
           project_id: selectedProjectIdRef.current ?? undefined,
           session_id: selectedSessionIdRef.current ?? undefined,
-          current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' || activeTabRef.current === 'doce' ? 'files' : 'chat',
+          current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' || activeTabRef.current === 'doce' ? 'files' : activeTabRef.current === 'terminal' ? 'terminal' : 'chat',
         });
         socket.ping();
         queryClient.refetchQueries({ queryKey: ['tree'] });
@@ -263,8 +269,17 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     return () => { runtimeErrorListenersRef.current.delete(cb); };
   }, []);
 
+  const subscribeToMessages = useCallback((cb: (msg: any) => void): (() => void) => {
+    messageListenersRef.current.add(cb);
+    return () => { messageListenersRef.current.delete(cb); };
+  }, []);
+
+  const sendRaw = useCallback((msg: Record<string, unknown>) => {
+    socketRef.current?.sendRaw?.(msg);
+  }, []);
+
   return (
-    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, subscribeToRuntimeErrors }}>
+    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, subscribeToRuntimeErrors, subscribeToMessages, sendRaw }}>
       {children}
     </WebSocketContext.Provider>
   );
