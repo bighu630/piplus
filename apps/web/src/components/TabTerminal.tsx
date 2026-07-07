@@ -41,6 +41,7 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const onTerminalMessageRef = useRef(onTerminalMessage);
+    const ptyStartedRef = useRef(false);
 
     // Keep callback ref up to date to avoid stale closures inside the one-time effect
     useEffect(() => {
@@ -54,14 +55,38 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
         write: (data: string) => {
           terminalRef.current?.write(data);
         },
+        /** Restart the pty process */
+        restart: () => {
+          ptyStartedRef.current = false;
+          if (visible) {
+            triggerStart();
+          }
+        },
       }),
-      [],
+      [visible],
     );
 
-    // Terminal lifecycle: create on mount, destroy on unmount
+    function triggerStart() {
+      if (ptyStartedRef.current) return;
+      const fitAddon = fitAddonRef.current;
+      if (!fitAddon) return;
+      // Fit to available space
+      try {
+        fitAddon.fit();
+      } catch { /* ignore */ }
+      const dims = fitAddon.proposeDimensions();
+      ptyStartedRef.current = true;
+      onTerminalMessageRef.current({
+        type: 'terminal_start',
+        sessionId,
+        cols: dims && dims.cols > 0 ? dims.cols : 80,
+        rows: dims && dims.rows > 0 ? dims.rows : 24,
+      });
+    }
+
+    // Terminal lifecycle: create xterm UI on mount, destroy on unmount
+    // Pty start is gated by visible (see below) — no terminal_start until user visits tab
     useEffect(() => {
-      // Debug: verify this effect runs
-      fetch('/api/v1/terminal-debug?event=mount&sid=' + sessionId).catch(()=>{});
       const colors = THEMES[theme];
 
       const terminal = new Terminal({
@@ -85,17 +110,6 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
 
       terminalRef.current = terminal;
       fitAddonRef.current = fitAddon;
-
-      // Debug: confirm we reach the send point
-      fetch('/api/v1/terminal-debug?event=willSend&sid=' + sessionId).catch(()=>{});
-      // Always send terminal_start on mount with default 80x24
-      // ResizeObserver will correct dimensions when container gets proper size
-      onTerminalMessageRef.current({
-        type: 'terminal_start',
-        sessionId,
-        cols: 80,
-        rows: 24,
-      });
 
       // Forward user input to parent
       terminal.onData((data) => {
@@ -135,10 +149,20 @@ const TabTerminal = forwardRef<TabTerminalHandle, TabTerminalProps>(
         terminal.dispose();
         terminalRef.current = null;
         fitAddonRef.current = null;
+        ptyStartedRef.current = false;
       };
       // Recreate terminal when sessionId changes (component key handles remount)
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // Start pty when tab becomes visible for the first time,
+    // or when sessionId changes (key remounts the component).
+    // This avoids eagerly starting pty before user visits the tab.
+    useEffect(() => {
+      if (visible) {
+        triggerStart();
+      }
+    }, [visible, sessionId]);
 
     // Update terminal theme when theme prop changes without remounting
     useEffect(() => {

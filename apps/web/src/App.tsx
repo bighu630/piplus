@@ -586,7 +586,12 @@ export default function App() {
         terminalRef.current?.write(msg.payload.data);
       }
       if (msg.kind === 'terminal' && msg.type === 'terminal_exit' && msg.payload.sessionId === sessionId) {
-        console.log('[Terminal] process exited with code', msg.payload.code);
+        const code = msg.payload.code;
+        terminalRef.current?.write(`\r\n\x1b[1;31m[进程退出，代码: ${code}]\x1b[0m\r\n`);
+        // Auto-restart pty after brief delay so output can be seen
+        setTimeout(() => {
+          terminalRef.current?.restart?.();
+        }, 500);
       }
     });
     return unsub;
