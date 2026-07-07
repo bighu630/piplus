@@ -275,7 +275,12 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const sendRaw = useCallback((msg: Record<string, unknown>) => {
-    socketRef.current?.sendRaw?.(msg);
+    console.log('[WSProvider] sendRaw called:', msg);
+    if (!socketRef.current) {
+      console.warn('[WSProvider] socketRef.current is null, cannot send');
+      return;
+    }
+    socketRef.current.sendRaw?.(msg);
   }, []);
 
   return (

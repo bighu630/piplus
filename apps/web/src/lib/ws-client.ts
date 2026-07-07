@@ -43,9 +43,17 @@ export function createWorkspaceSocket({
   connectTimer = setTimeout(connect, INITIAL_CONNECT_DELAY);
 
   function safeSend(message: ClientMessage) {
-    if (!ws) return;
-    if (ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify(message));
+    if (!ws) {
+      console.warn('[WS] safeSend skipped: ws not initialized');
+      return;
+    }
+    if (ws.readyState !== WebSocket.OPEN) {
+      console.warn('[WS] safeSend skipped: ws not open, state:', ws.readyState);
+      return;
+    }
+    const raw = JSON.stringify(message);
+    console.log('[WS] sending:', raw);
+    ws.send(raw);
   }
 
   return {
