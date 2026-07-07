@@ -1297,7 +1297,7 @@ export function registerSessionRoutes(app: Hono) {
     }
 
     try {
-      const output = execGit(cwd, 'show', hash, '--format=%H|||%s|||%an|||%ai', '--patch');
+      const output = execGit(cwd, 'show', hash, `'--format=%H|||%s|||%an|||%ai'`, '--patch');
       const lines = output.split('\n');
       const metaLine = lines[0];
       const [metaHash, message, author, date] = metaLine.split('|||');
