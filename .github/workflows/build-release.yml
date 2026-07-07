@@ -135,9 +135,22 @@ jobs:
 
       - name: Generate release notes
         run: |
-          echo "# piplus ${{ github.ref_name }}" > release-notes.md
+          TAG="${{ github.ref_name }}"
+          PREV_TAG=$(git tag --sort=-creatordate | grep -E '^v' | head -2 | tail -1)
+
+          echo "# piplus ${TAG}" > release-notes.md
           echo "" >> release-notes.md
-          echo "## 下载" >> release-notes.md
+
+          if [ -n "$PREV_TAG" ]; then
+            echo "## 📋 更新日志" >> release-notes.md
+            echo "" >> release-notes.md
+            echo '```' >> release-notes.md
+            git log --oneline "${PREV_TAG}..${TAG}" >> release-notes.md
+            echo '```' >> release-notes.md
+            echo "" >> release-notes.md
+          fi
+
+          echo "## 📦 下载" >> release-notes.md
           echo "" >> release-notes.md
           echo "| 平台 | 文件 |" >> release-notes.md
           echo "|------|------|" >> release-notes.md
