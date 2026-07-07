@@ -14,9 +14,9 @@
     "@piplus/pi-client": "workspace:*",
     "@piplus/shared": "workspace:*",
     "better-auth": "1.6.13",
+    "bun-pty": "^0.4.10",
     "drizzle-orm": "0.45.2",
-    "hono": "4.12.23",
-    "node-pty": "^1.1.0"
+    "hono": "4.12.23"
   },
   "devDependencies": {
     "@types/node": "25.0.0",

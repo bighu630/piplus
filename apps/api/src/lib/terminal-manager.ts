@@ -1,5 +1,4 @@
-import type { IPty } from 'node-pty';
-import pty from 'node-pty';
+import { spawn, type IPty } from 'bun-pty';
 
 type OutputCallback = (sessionId: string, data: string) => void;
 type ExitCallback = (sessionId: string, code: number) => void;
@@ -15,30 +14,23 @@ export class TerminalManager {
   }
 
   start(sessionId: string, projectPath: string, cols: number, rows: number): void {
-    if (this.sessions.has(sessionId)) {
-      console.log('[TerminalManager] already running for session', sessionId);
-      return;
-    }
-    const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
-    console.log('[TerminalManager] spawning', { shell, sessionId, projectPath, cols, rows });
-    const term = pty.spawn(shell, [], {
+    if (this.sessions.has(sessionId)) return;
+
+    const shell = process.platform === 'win32' ? 'cmd.exe' : 'bash';
+    const term = spawn(shell, [], {
       name: 'xterm-color',
       cols,
       rows,
       cwd: projectPath,
-      env: { ...process.env, TERM: 'xterm-color' },
     });
     term.onData((data: string) => {
-      console.log('[TerminalManager] onData for', sessionId, 'len:', data.length);
       this.onOutput(sessionId, data);
     });
     term.onExit(({ exitCode }: { exitCode: number }) => {
-      console.log('[TerminalManager] onExit for', sessionId, 'code:', exitCode);
       this.sessions.delete(sessionId);
       this.onExit(sessionId, exitCode);
     });
     this.sessions.set(sessionId, term);
-    console.log('[TerminalManager] started for', sessionId);
   }
 
   write(sessionId: string, data: string): void {

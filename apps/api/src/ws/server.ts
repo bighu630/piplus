@@ -80,7 +80,6 @@ export function registerWebSocketRoutes(app: Hono) {
       if (parsed.type === 'terminal_start') {
         try {
           const { sessionId, cols, rows } = (parsed as any).payload as { sessionId: string; cols: number; rows: number };
-          console.log('[Terminal] terminal_start:', { sessionId, cols, rows });
           const db = createDb(`file:${getDbPath()}`);
           const [row] = await db
             .select({ projectPath: projects.projectPath })
@@ -89,11 +88,9 @@ export function registerWebSocketRoutes(app: Hono) {
             .where(and(eq(sessions.id, sessionId), eq(projects.createdBy, (ws as any).__userId ?? 'local-user')))
             .limit(1);
           if (row) {
-            console.log('[Terminal] found projectPath:', row.projectPath);
             // Security: restrict cwd to allowed workspace paths
-            const allowedPrefixes = ['/workspace', '/data/code', process.env.HOME ?? ''].filter(Boolean);
+            const allowedPrefixes = ['/workspace', '/data/code'].filter(Boolean);
             const isAllowed = allowedPrefixes.some(prefix => row.projectPath.startsWith(prefix));
-            console.log('[Terminal] cwd check:', { path: row.projectPath, isAllowed });
             if (isAllowed) {
               terminalManager.start(sessionId, row.projectPath, cols, rows);
               // Track this terminal session for this connection
@@ -103,11 +100,7 @@ export function registerWebSocketRoutes(app: Hono) {
                 connectionTerminals.set(ws, sessions);
               }
               sessions.add(sessionId);
-            } else {
-              console.warn('[Terminal] Rejected terminal start for path outside workspace:', row.projectPath);
             }
-          } else {
-            console.log('[Terminal] no row found for session', sessionId, '(project not found or access denied)');
           }
         } catch (err) {
           console.error('[Terminal] Failed to start terminal:', err);
