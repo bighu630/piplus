@@ -1196,7 +1196,38 @@ export function registerSessionRoutes(app: Hono) {
           return { name: name.trim(), is_current: headMarker.trim() === '*' };
         });
 
-      return c.json({ session_id: sessionId, cwd, current_branch: currentBranch, branches });
+      // Get worktree info to mark branches checked out in other worktrees
+      const worktreeBranches = new Map<string, string>();
+      try {
+        // Normalize cwd to absolute path for reliable comparison with worktree paths
+        const resolvedCwd = path.resolve(cwd);
+        const worktreeOutput = execGit(cwd, 'worktree list');
+        const wtLines = worktreeOutput.trim().split('\n').filter(Boolean);
+        for (const line of wtLines) {
+          // Format: <path> <hash> [<branch>] or (detached HEAD)
+          const branchMatch = line.match(/\[(.+)\]$/);
+          const pathMatch = line.match(/^(\S+)/);
+          if (branchMatch && pathMatch) {
+            const branchName = branchMatch[1];
+            const wtPath = path.resolve(cwd, pathMatch[1]);
+            // Skip the main worktree — its branch is already marked as is_current
+            if (wtPath !== resolvedCwd) {
+              worktreeBranches.set(branchName, wtPath);
+            }
+          }
+        }
+      } catch {
+        // If worktree list fails, ignore and continue without worktree info
+      }
+
+      // Annotate branches with worktree info
+      const annotatedBranches = branches.map((b: { name: string; is_current: boolean }) => ({
+        ...b,
+        is_worktree: worktreeBranches.has(b.name),
+        worktree_path: worktreeBranches.get(b.name) ?? null,
+      }));
+
+      return c.json({ session_id: sessionId, cwd, current_branch: currentBranch, branches: annotatedBranches });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
