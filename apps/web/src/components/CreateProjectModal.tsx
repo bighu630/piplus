@@ -63,6 +63,9 @@ export default function CreateProjectModal({
   const [createProjectModelKey, setCreateProjectModelKey] = useState('');
   const [createPlannerThinkingLevel, setCreatePlannerThinkingLevel] = useState('');
   const [createProjectRoleModels, setCreateProjectRoleModels] = useState<Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>>>({});
+  const [createGitUserName, setCreateGitUserName] = useState('');
+  const [createGitUserEmail, setCreateGitUserEmail] = useState('');
+  const [createGitToken, setCreateGitToken] = useState('');
 
   const handleCreateProject = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -84,6 +87,9 @@ export default function CreateProjectModal({
               }
             : null;
         })() : null,
+        gitConfig: createGitUserName || createGitUserEmail || createGitToken
+          ? { userName: createGitUserName || undefined, userEmail: createGitUserEmail || undefined, token: createGitToken || undefined }
+          : undefined,
       });
       // Save role default models after project creation
       const mergedRoleDefaults: Record<string, any> = {};
@@ -116,6 +122,9 @@ export default function CreateProjectModal({
       setCreateProjectModelKey('');
       setCreatePlannerThinkingLevel('');
       setCreateProjectRoleModels({});
+      setCreateGitUserName('');
+      setCreateGitUserEmail('');
+      setCreateGitToken('');
       onCreated(result.projectId, result.sessionId);
     } catch {}
   }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, createProjectRoleModels, setProjectRoleModelsMut, onClose, onCreated]);
@@ -291,6 +300,25 @@ export default function CreateProjectModal({
                 </div>
               );
             })}
+          </div>
+        </details>
+        <details className="group">
+          <summary className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300 select-none">
+            Git 配置（可选）
+          </summary>
+          <div className="mt-2 space-y-3 pl-2 border-l-2 border-slate-200 dark:border-slate-800">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Git 用户名</label>
+              <input type="text" placeholder="git user name" value={createGitUserName} onChange={(e) => setCreateGitUserName(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Git 邮箱</label>
+              <input type="email" placeholder="git user email" value={createGitUserEmail} onChange={(e) => setCreateGitUserEmail(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Git Token</label>
+              <input type="password" placeholder="personal access token" value={createGitToken} onChange={(e) => setCreateGitToken(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400" />
+            </div>
           </div>
         </details>
         <div className="flex space-x-2 pt-3 justify-end border-t border-slate-150 dark:border-slate-800">

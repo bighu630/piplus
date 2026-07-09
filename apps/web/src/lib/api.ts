@@ -322,6 +322,7 @@ export function createProject(
   path?: string,
   repoUrl?: string,
   model?: { provider: string; id: string } | null,
+  gitConfig?: { userName?: string; userEmail?: string; token?: string } | null,
 ) {
   return request<{ projectId: string; sessionId?: string; piSessionId?: string }>('/api/v1/projects', {
     method: 'POST',
@@ -331,6 +332,7 @@ export function createProject(
       path: path ?? '',
       repo_url: repoUrl ?? '',
       model: model ?? null,
+      git_config: gitConfig ?? undefined,
     }),
   });
 }
@@ -386,6 +388,29 @@ export function setProjectRoleModels(projectId: string, models: Record<string, R
   return request<{ ok: boolean; role_default_models: Record<string, RoleModelEntry | null> }>(`/api/v1/projects/${projectId}/role-models`, {
     method: 'PUT',
     body: JSON.stringify(models),
+  });
+}
+
+export type ProjectGitConfig = {
+  userName: string;
+  userEmail: string;
+  tokenConfigured: boolean;
+};
+
+export function getProjectGitConfig(projectId: string) {
+  return request<ProjectGitConfig>(`/api/v1/projects/${projectId}/git-config`);
+}
+
+export function updateProjectGitConfig(projectId: string, config: { userName?: string; userEmail?: string; token?: string }) {
+  return request<{ ok: boolean }>(`/api/v1/projects/${projectId}/git-config`, {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+export function deleteProjectGitConfig(projectId: string) {
+  return request<{ ok: boolean }>(`/api/v1/projects/${projectId}/git-config`, {
+    method: 'DELETE',
   });
 }
 
