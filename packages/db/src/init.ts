@@ -93,6 +93,13 @@ function ensureModelFallbacksColumn(sqlite: Database) {
   }
 }
 
+function ensureSessionWorktreePathColumn(sqlite: Database) {
+  const columns = sqlite.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>;
+  if (!columns.some((col) => col.name === 'worktree_path')) {
+    sqlite.exec('ALTER TABLE sessions ADD COLUMN worktree_path TEXT');
+  }
+}
+
 function ensureBuiltinRows(sqlite: Database) {
   const now = Date.now();
   const seedPassword = Bun.password.hashSync('seed123', 'bcrypt');
@@ -219,6 +226,7 @@ export function createSeedDb(path: string) {
   ensureProjectTodosTable(sqlite);
   ensureBuiltinRows(sqlite);
   ensureModelFallbacksColumn(sqlite);
+  ensureSessionWorktreePathColumn(sqlite);
   sqlite.close();
 }
 

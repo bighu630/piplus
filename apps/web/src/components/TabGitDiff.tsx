@@ -447,6 +447,7 @@ function TabGitDiff({
   const isCheckingOut = gitCheckoutMut.isPending;
   const currentBranch = gitBranchesQuery.data?.current_branch ?? null;
   const branches = gitBranchesQuery.data?.branches ?? null;
+  const sessionWorktreePath = gitBranchesQuery.data?.session_worktree_path ?? null;
   const cwd = gitDiffQuery.data?.cwd ?? gitBranchesQuery.data?.cwd ?? null;
   const commits = gitCommitsQuery.data?.commits ?? null;
 
@@ -470,7 +471,11 @@ function TabGitDiff({
               disabled={isCheckingOut}
               className="flex items-center space-x-1.5 px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-mono font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition cursor-pointer disabled:opacity-50"
             >
-              <GitBranch className="w-3.5 h-3.5 text-blue-500" />
+              {sessionWorktreePath ? (
+                <span className="w-4 h-4 shrink-0 inline-flex items-center justify-center text-[9px] font-bold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/50 rounded">W</span>
+              ) : (
+                <GitBranch className="w-3.5 h-3.5 text-blue-500" />
+              )}
               <span>{currentBranch || '—'}</span>
               <ChevronDown className={`w-3 h-3 transition ${branchDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
@@ -488,15 +493,7 @@ function TabGitDiff({
                           key={b.name}
                           type="button"
                           onClick={async () => {
-                            if (isWorktreeBranch) {
-                              setBranchDropdownOpen(false);
-                              setOpFeedback({
-                                op: 'checkout',
-                                result: 'ok',
-                                message: `[W] ${b.name} 已在 worktree 中检出\n路径：${b.worktree_path || '未知'}`,
-                              });
-                              setTimeout(clearFeedback, 6000);
-                            } else if (!b.is_current) {
+                            if (!b.is_current) {
                               setBranchDropdownOpen(false);
                               try {
                                 const res = await gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId!, branch: b.name });
@@ -655,9 +652,17 @@ function TabGitDiff({
           <div className="w-px h-6 bg-slate-200 dark:bg-slate-700" />
 
           <div className="min-w-0">
-            <span className="font-bold text-slate-700 dark:text-slate-200 text-sm font-sans tracking-tight">
-              变更
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-slate-700 dark:text-slate-200 text-sm font-sans tracking-tight">
+                变更
+              </span>
+              {sessionWorktreePath && (
+                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 leading-none">
+                  <span>W</span>
+                  <span>worktree</span>
+                </span>
+              )}
+            </div>
             <span
               className="text-[10px] font-mono text-slate-400 block mt-0.5 truncate max-w-[320px]"
               title={cwd ?? undefined}

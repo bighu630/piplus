@@ -75,6 +75,7 @@ export const sessions = sqliteTable('sessions', {
   currentModelProvider: text('current_model_provider'),
   currentModelId: text('current_model_id'),
   modelFallbacksJson: text('model_fallbacks_json').notNull().default('[]'),
+  worktreePath: text('worktree_path'),
 });
 
 export const messages = sqliteTable('messages', {

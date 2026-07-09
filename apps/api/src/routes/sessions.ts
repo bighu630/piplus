@@ -837,7 +837,8 @@ export function registerSessionRoutes(app: Hono) {
     const [project] = db.select({ projectPath: projects.projectPath, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1).all();
     if (!project || project.createdBy !== userId) return { error: { code: 'NOT_FOUND', message: 'Session not found' }, status: 404 } as const;
 
-    return { cwd: project.projectPath || process.cwd() };
+    const cwd = session.worktreePath ? path.resolve(session.worktreePath) : (project.projectPath || process.cwd());
+    return { cwd, sessionWorktreePath: session.worktreePath ?? null };
   }
 
   function resolveSafeFilePath(rootDir: string, relativePath: string) {
@@ -1227,7 +1228,7 @@ export function registerSessionRoutes(app: Hono) {
         worktree_path: worktreeBranches.get(b.name) ?? null,
       }));
 
-      return c.json({ session_id: sessionId, cwd, current_branch: currentBranch, branches: annotatedBranches });
+      return c.json({ session_id: sessionId, cwd, current_branch: currentBranch, branches: annotatedBranches, session_worktree_path: resolved.sessionWorktreePath });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
@@ -1385,16 +1386,57 @@ export function registerSessionRoutes(app: Hono) {
       return c.json({ error: { code: 'INVALID_BRANCH', message: 'Branch name contains invalid characters' } }, 400);
     }
 
-    const resolved = resolveProjectDir(c, userId, sessionId);
-    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
-    const cwd = resolved.cwd;
+    // We need session and project directly (not via resolveProjectDir) because the
+    // checkout logic needs the main project directory and the session for worktree updates.
+    const db = createDb(`file:${getDbPath()}`);
+    const [session] = db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1).all();
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = db.select({ projectPath: projects.projectPath, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1).all();
+    if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const mainCwd = project.projectPath || process.cwd();
+
+    // Parse worktree list to check if the target branch is checked out in another worktree
+    const resolvedMainCwd = path.resolve(mainCwd);
+    let worktreePath: string | null = null;
+    try {
+      const worktreeOutput = execGit(mainCwd, 'worktree list');
+      const wtLines = worktreeOutput.trim().split('\n').filter(Boolean);
+      for (const line of wtLines) {
+        const branchMatch = line.match(/\[(.+)\]$/);
+        const pathMatch = line.match(/^(\S+)/);
+        if (branchMatch && pathMatch) {
+          const wtBranch = branchMatch[1];
+          const wtPath = path.resolve(mainCwd, pathMatch[1]);
+          // Skip the main worktree — its branch is handled by regular checkout
+          if (wtBranch === branch && wtPath !== resolvedMainCwd) {
+            worktreePath = wtPath;
+            break;
+          }
+        }
+      }
+    } catch {
+      // worktree list failed — fall back to normal checkout behavior
+    }
+
+    if (worktreePath) {
+      // Branch is checked out in a worktree — update session worktree_path, no git checkout
+      await db.update(sessions).set({ worktreePath, updatedAt: new Date() }).where(eq(sessions.id, sessionId)).run();
+      return c.json({ session_id: sessionId, cwd: worktreePath, result: 'ok', stdout: `Switched to worktree at ${worktreePath}`, branch });
+    }
+
+    // Not a worktree branch — clear worktree_path if previously set, then checkout normally
+    if (session.worktreePath) {
+      await db.update(sessions).set({ worktreePath: null, updatedAt: new Date() }).where(eq(sessions.id, sessionId)).run();
+    }
 
     try {
-      const stdout = execGit(cwd, `checkout "${branch.replace(/"/g, '\\"')}"`);
-      return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim(), branch });
+      const stdout = execGit(mainCwd, `checkout "${branch.replace(/"/g, '\\"')}"`);
+      return c.json({ session_id: sessionId, cwd: mainCwd, result: 'ok', stdout: stdout.trim(), branch });
     } catch (err: unknown) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
-      return c.json({ session_id: sessionId, cwd, result: 'error', stderr, branch }, 500);
+      return c.json({ session_id: sessionId, cwd: mainCwd, result: 'error', stderr, branch }, 500);
     }
   });
 
