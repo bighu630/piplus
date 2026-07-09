@@ -355,36 +355,38 @@ function Sidebar({
           </div>
 
           {!effectiveCollapsed && (hideRoleLabels ? (
-            <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-              <span
-                className={`text-[9px] font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate cursor-pointer ${isPinned ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}
-                title={isPinned ? '左键取消置顶，右键归档' : '左键置顶，右键归档'}
-                onClick={(e) => {
-                  if (e.button !== 0) return;
-                  e.stopPropagation();
-                  if (onToggleSessionPinned) {
-                    onToggleSessionPinned(session.id, !isPinned);
-                  }
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  if (onArchiveSession) {
-                    const name = session.title || roleLabel(session.role_template_key);
-                    setTimeout(() => {
-                      if (confirm(`确定归档会话 "${name}"？`)) {
-                        onArchiveSession(session.id);
-                      }
-                    }, 0);
-                  }
-                }}
-              >
-                {roleLabel(session.role_template_key)}
-              </span>
+            <>
+              <div className="absolute right-1.5 top-1/2 -translate-y-1/2 z-10 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+                <span
+                  className={`text-[9px] font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate cursor-pointer ${isPinned ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}
+                  title={isPinned ? '左键取消置顶，右键归档' : '左键置顶，右键归档'}
+                  onClick={(e) => {
+                    if (e.button !== 0) return;
+                    e.stopPropagation();
+                    if (onToggleSessionPinned) {
+                      onToggleSessionPinned(session.id, !isPinned);
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (onArchiveSession) {
+                      const name = session.title || roleLabel(session.role_template_key);
+                      setTimeout(() => {
+                        if (confirm(`确定归档会话 "${name}"？`)) {
+                          onArchiveSession(session.id);
+                        }
+                      }, 0);
+                    }
+                  }}
+                >
+                  {roleLabel(session.role_template_key)}
+                </span>
+              </div>
               {statusDotColor ? (
                 <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${session.runtime_status === 'running' ? 'animate-pulse' : ''}`} />
               ) : null}
-            </div>
+            </>
           ) : (
             <div className="flex items-center gap-1 shrink-0 select-none">
               <span
