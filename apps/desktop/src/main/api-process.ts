@@ -38,6 +38,7 @@ export function startApiProcess(options: ApiProcessOptions): ChildProcessWithout
       PROJECTS_ROOT: options.paths.projectsDir,
       PIPLUS_WEB_DIST: webDistDir,
       PIPLUS_SERVE_WEB: '1',
+      PIPLUS_FORCE_ROLE_PROMPTS: 'true',
       ...(options.appPassword ? { APP_PASSWORD: options.appPassword } : {}),
     },
     stdio: 'pipe',
