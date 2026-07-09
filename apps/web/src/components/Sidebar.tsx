@@ -55,6 +55,8 @@ interface SidebarProps {
   isMobileVisible?: boolean;
   /** 移动端返回目录树回调 */
   onReturnToTree?: () => void;
+  /** 隐藏 session 树上的角色名 */
+  hideRoleLabels?: boolean;
 }
 
 function roleLabel(key: string): string {
@@ -128,6 +130,7 @@ function Sidebar({
   isMobile,
   isMobileVisible,
   onReturnToTree,
+  hideRoleLabels,
 }: SidebarProps) {
   const [sidebarSearch, setSidebarSearch] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(() => {
@@ -311,7 +314,7 @@ function Sidebar({
         <div
           onClick={() => onSelectSession(projectId, session.id)}
           style={{ paddingLeft: effectiveCollapsed ? '0px' : `${Math.max(0, depth * 14 + 8 - 20)}px` }}
-          className={`group flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition ${
+          className={`group flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition ${hideRoleLabels ? 'relative' : ''} ${
             isActive
               ? 'bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold shadow-2xs'
               : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/40 text-slate-600 dark:text-slate-300'
@@ -349,13 +352,13 @@ function Sidebar({
             </div>
           </div>
 
-          {!effectiveCollapsed && (
-            <div className="flex items-center gap-1 shrink-0 select-none">
+          {!effectiveCollapsed && (hideRoleLabels ? (
+            <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
               <span
-                className={`text-[9px] font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate group-hover:opacity-40 transition-opacity cursor-pointer ${isPinned ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}
+                className={`text-[9px] font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate cursor-pointer ${isPinned ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}
                 title={isPinned ? '左键取消置顶，右键归档' : '左键置顶，右键归档'}
                 onClick={(e) => {
-                  if (e.button !== 0) return; // only left click
+                  if (e.button !== 0) return;
                   e.stopPropagation();
                   if (onToggleSessionPinned) {
                     onToggleSessionPinned(session.id, !isPinned);
@@ -366,7 +369,6 @@ function Sidebar({
                   e.stopPropagation();
                   if (onArchiveSession) {
                     const name = session.title || roleLabel(session.role_template_key);
-                    // setTimeout avoids Chrome suppressing confirm() when devtools is closed
                     setTimeout(() => {
                       if (confirm(`确定归档会话 "${name}"？`)) {
                         onArchiveSession(session.id);
@@ -381,7 +383,38 @@ function Sidebar({
                 <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${session.runtime_status === 'running' ? 'animate-pulse' : ''}`} />
               ) : null}
             </div>
-          )}
+          ) : (
+            <div className="flex items-center gap-1 shrink-0 select-none">
+              <span
+                className={`text-[9px] font-sans tracking-tight px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded-md font-medium max-w-[65px] truncate cursor-pointer ${isPinned ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}
+                title={isPinned ? '左键取消置顶，右键归档' : '左键置顶，右键归档'}
+                onClick={(e) => {
+                  if (e.button !== 0) return;
+                  e.stopPropagation();
+                  if (onToggleSessionPinned) {
+                    onToggleSessionPinned(session.id, !isPinned);
+                  }
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (onArchiveSession) {
+                    const name = session.title || roleLabel(session.role_template_key);
+                    setTimeout(() => {
+                      if (confirm(`确定归档会话 "${name}"？`)) {
+                        onArchiveSession(session.id);
+                      }
+                    }, 0);
+                  }
+                }}
+              >
+                {roleLabel(session.role_template_key)}
+              </span>
+              {statusDotColor ? (
+                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${session.runtime_status === 'running' ? 'animate-pulse' : ''}`} />
+              ) : null}
+            </div>
+          ))}
         </div>
 
         {!isCollapsed && hasChildren && (

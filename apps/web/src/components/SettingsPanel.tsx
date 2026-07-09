@@ -39,6 +39,8 @@ interface SettingsPanelProps {
   togglePkgMut: PkgMut;
   removePkgMut: PkgMut;
   updatePkgMut: PkgMut;
+  hideRoleLabels: boolean;
+  onHideRoleLabelsChange: (v: boolean) => void;
 }
 
 export default function SettingsPanel({
@@ -58,6 +60,8 @@ export default function SettingsPanel({
   togglePkgMut,
   removePkgMut,
   updatePkgMut,
+  hideRoleLabels,
+  onHideRoleLabelsChange,
 }: SettingsPanelProps) {
   const [settingsTab, setSettingsTab] = useState<'general' | 'packages'>('general');
   const [packageSource, setPackageSource] = useState('');
@@ -87,6 +91,18 @@ export default function SettingsPanel({
             <div className="flex gap-2">
               <button onClick={() => onThemeChange('light')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'light' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>浅色</button>
               <button onClick={() => onThemeChange('dark')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'dark' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>深色</button>
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">隐藏 session 树上的角色名</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">开启后，左侧会话树的角色标签将隐藏，鼠标悬停时显示。</div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" className="sr-only peer" checked={hideRoleLabels} onChange={(e) => onHideRoleLabelsChange(e.target.checked)} />
+                <div className="w-9 h-5 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
             </div>
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">

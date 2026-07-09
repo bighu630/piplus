@@ -163,6 +163,13 @@ export default function App() {
   const [showWorker, setShowWorker] = useState(() => {
     try { return localStorage.getItem('pi-show-worker') !== 'false'; } catch { return true; }
   });
+  const [hideRoleLabels, setHideRoleLabels] = useState(() => {
+    try { return localStorage.getItem('pi-hide-role-labels') === 'true'; } catch { return false; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem('pi-hide-role-labels', String(hideRoleLabels)); } catch {}
+  }, [hideRoleLabels]);
   const [showSettings, setShowSettings] = useState(false);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [showProviderModal, setShowProviderModal] = useState(false);
@@ -641,6 +648,7 @@ export default function App() {
           isMobile={isMobile}
           isMobileVisible={showMobileSidebar}
           onReturnToTree={() => setShowMobileSidebar(true)}
+          hideRoleLabels={hideRoleLabels}
         />
       </div>
 
@@ -886,6 +894,8 @@ export default function App() {
         togglePkgMut={togglePkgMut}
         removePkgMut={removePkgMut}
         updatePkgMut={updatePkgMut}
+        hideRoleLabels={hideRoleLabels}
+        onHideRoleLabelsChange={setHideRoleLabels}
       />
 
 
