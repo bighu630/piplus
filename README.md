@@ -1,12 +1,12 @@
 <div align="center">
   <br/>
-  <h1><img src="https://img.whosworld.fun/file/1783586341957_icon.png" alt="Piplus" height="32" style="vertical-align: middle; border-radius: 10px;" /> Piplus</h1>
+  <h1><img src="docs/images/1783586341957_icon.png" alt="Piplus" height="32" style="vertical-align: middle; border-radius: 10px;" /> Piplus</h1>
   <p><strong>Pi Coding Agent 本地桌面工作台</strong></p>
   <p>
     用更顺手的方式管理项目、Session、模型、文件、Git 和多角色协作
   </p>
   <br/>
-  <img src="https://img.whosworld.fun/file/1783584659047_image-20260709161054221.png" alt="Piplus Screenshot" width="800" style="border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.12)"/>
+  <img src="docs/images/1783584659047_image-20260709161054221.png" alt="Piplus Screenshot" width="800" style="border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.12)"/>
   <br/><br/>
 </div>
 
@@ -82,11 +82,11 @@ Piplus 内置角色化工作方式，让复杂的开发任务管理更自然：
 <table>
   <tr>
     <td align="center">
-      <img src="https://img.whosworld.fun/file/1783585164068_image-20260709161914141.png" alt="项目管理-项目列表" style="zoom:50%;" />
+      <img src="docs/images/1783585164068_image-20260709161914141.png" alt="项目管理-项目列表" width="50%" />
     </td>
     <td width="40"></td>
     <td align="center">
-      <img src="https://img.whosworld.fun/file/1783585214294_image-20260709162003963.png" alt="项目管理-项目详情" style="zoom:50%;" />
+      <img src="docs/images/1783585214294_image-20260709162003963.png" alt="项目管理-项目详情" width="50%" />
     </td>
   </tr>
 </table>
@@ -94,27 +94,27 @@ Piplus 内置角色化工作方式，让复杂的开发任务管理更自然：
 ### 📦 拓展包管理
 支持全局启用和按项目启用 pi 拓展
 
-<img src="https://img.whosworld.fun/file/1783585305095_image-20260709162136419.png" alt="拓展包管理" style="zoom:50%;" />
+<img src="docs/images/1783585305095_image-20260709162136419.png" alt="拓展包管理" width="50%" />
 
 ### 🔀 Git 管理
 可视化 diff、分支切换、提交记录一站搞定
 
-<img src="https://img.whosworld.fun/file/1783585375030_image-20260709162244307.png" alt="Git 管理" style="zoom:50%;" />
+<img src="docs/images/1783585375030_image-20260709162244307.png" alt="Git 管理" width="50%" />
 
 ### 📄 文件管理
 项目文件树浏览与编辑，操作直观高效
 
-<img src="https://img.whosworld.fun/file/1783585408090_image-20260709162317449.png" alt="文件管理" style="zoom:50%;" />
+<img src="docs/images/1783585408090_image-20260709162317449.png" alt="文件管理" width="50%" />
 
 ### 💻 内置终端
 直接执行命令，无需切换窗口
 
-<img src="https://img.whosworld.fun/file/1783585456190_image-20260709162406203.png" alt="终端" style="zoom:50%;" />
+<img src="docs/images/1783585456190_image-20260709162406203.png" alt="终端" width="50%" />
 
 ### 📊 Session 详情
 查看会话信息、角色链路与运行状态
 
-<img src="https://img.whosworld.fun/file/1783585496015_image-20260709162446045.png" alt="Session Info" style="zoom:50%;" />
+<img src="docs/images/1783585496015_image-20260709162446045.png" alt="Session Info" width="50%" />
 
 </div>
 
