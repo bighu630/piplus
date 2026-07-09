@@ -259,10 +259,11 @@ function Sidebar({
       .filter((p): p is ProjectDTO => p !== null);
   }, [projects, sidebarSearch, showArchived, showWorker]);
 
-  // Shared comparator: pinned first, then newest pinned first, then last_activity_at desc
+  // Shared comparator: blank first (no children, compact), then pinned first, then newest pinned first, then last_activity_at desc
   function sortByPinnedThenActivity(a: SessionTreeNodeDTO, b: SessionTreeNodeDTO): number {
-    if (a.pinned_at && !b.pinned_at) return -1;
-    if (!a.pinned_at && b.pinned_at) return 1;
+    // Blank sessions at top
+    if (a.role_template_key === 'blank' && b.role_template_key !== 'blank') return -1;
+    if (a.role_template_key !== 'blank' && b.role_template_key === 'blank') return 1;
     if (a.pinned_at && b.pinned_at) {
       // Newer pinned first
       if (a.pinned_at < b.pinned_at) return 1;
@@ -277,9 +278,9 @@ function Sidebar({
   // Sort planner's immediate children: pinned first, then role priority, then activity
   function sortPlannerChildren(sessions: SessionTreeNodeDTO[]): SessionTreeNodeDTO[] {
     const priority: Record<string, number> = {
-      feature_lead: 0,
-      bugfix_lead: 1,
-      blank: 3,
+      blank: 0,
+      feature_lead: 1,
+      bugfix_lead: 2,
     };
     return [...sessions].sort((a, b) => {
       // Pinned first
@@ -291,8 +292,8 @@ function Sidebar({
         if (a.pinned_at > b.pinned_at) return -1;
       }
       // Same pinned state: sort by role priority
-      const pa = priority[a.role_template_key] ?? 2;
-      const pb = priority[b.role_template_key] ?? 2;
+      const pa = priority[a.role_template_key] ?? 3;
+      const pb = priority[b.role_template_key] ?? 3;
       if (pa !== pb) return pa - pb;
       // Same role: fall back to last_activity_at desc
       if (a.last_activity_at < b.last_activity_at) return 1;
@@ -686,7 +687,7 @@ function Sidebar({
                 {/* Sessions — fp.sessions comes from filteredProjects, already filtered */}
                 {!isCollapsed && (
                   <div className={effectiveCollapsed ? 'space-y-1' : 'space-y-0.5'}>
-                    {fp.sessions.map((session) => renderSessionNode(session, fp.id, 1))}
+                    {[...fp.sessions].sort(sortByPinnedThenActivity).map((session) => renderSessionNode(session, fp.id, 1))}
                   </div>
                 )}
               </div>
