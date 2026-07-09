@@ -16,7 +16,7 @@ jobs:
     name: 'Linux (amd64)'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -34,7 +34,7 @@ jobs:
         run: bash scripts/build-desktop.sh linux
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: linux-amd64
           path: |
@@ -44,7 +44,7 @@ jobs:
     name: 'Windows (amd64)'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -63,7 +63,7 @@ jobs:
         run: bash scripts/build-desktop.sh win
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-amd64
           path: |
@@ -73,7 +73,7 @@ jobs:
     name: 'macOS (amd64)'
     runs-on: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -86,7 +86,7 @@ jobs:
         run: bash scripts/build-desktop.sh mac x64
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: mac-amd64
           path: |
@@ -96,7 +96,7 @@ jobs:
     name: 'macOS (arm64)'
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -109,7 +109,7 @@ jobs:
         run: bash scripts/build-desktop.sh mac arm64
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: mac-arm64
           path: |
@@ -126,12 +126,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
 
       - name: Generate release notes
         run: python3 scripts/generate-release-notes.py "${{ github.ref_name }}"
