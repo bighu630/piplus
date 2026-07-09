@@ -117,7 +117,7 @@ if [ "$MODE" = "development" ]; then
   PIDS="$PIDS $WEB_PID"
 fi
 
-trap 'echo; echo "[piplus] shutting down..."; kill -9 '$PIDS' 2>/dev/null; exit' INT TERM
+# trap 'echo; echo "[piplus] shutting down..."; kill -9 '$PIDS' 2>/dev/null; exit' INT TERM
 
 if [ -n "$PIDS" ]; then
   wait
