@@ -165,7 +165,7 @@ export default function CreateProjectModal({
   }, []);
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="新建项目" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />}>
+    <Modal isOpen={isOpen} onClose={onClose} title="新建项目" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />} maxWidthClassName="max-w-xl">
       <form onSubmit={handleCreateProject} className="space-y-4">
         <div>
           <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">项目名称 <span className="text-red-500">*</span></label>
