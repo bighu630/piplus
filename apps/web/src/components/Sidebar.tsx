@@ -23,6 +23,7 @@ import {
   ArrowUp,
 } from 'lucide-react';
 import { fuzzyMatch } from '../lib/fuzzy';
+import { version as appVersion } from '../../../../apps/desktop/package.json';
 
 interface SidebarProps {
   projects: ProjectDTO[];
@@ -465,6 +466,7 @@ function Sidebar({
             <span className="font-semibold text-slate-800 dark:text-slate-100 text-sm tracking-tight font-sans">
               Piplus
             </span>
+            <span className="text-[10px] text-slate-400 dark:text-slate-600 font-mono">v{appVersion}</span>
           </div>
         )}
 
@@ -482,6 +484,7 @@ function Sidebar({
             <span className="font-semibold text-slate-800 dark:text-slate-100 text-sm tracking-tight font-sans">
               Piplus
             </span>
+            <span className="text-[10px] text-slate-400 dark:text-slate-600 font-mono">v{appVersion}</span>
           </div>
         )}
 
