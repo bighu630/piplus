@@ -72,7 +72,7 @@ export default function ProjectSettingsModal({
     const model = modelsQueryData.find((m: any) => m.provider === provider && m.id === id);
     if (!model) return [];
     if (!model.reasoning) return ['off'];
-    if (!model.thinkingLevelMap) return ['off', 'minimal', 'low', 'medium', 'high'];
+    if (!model.thinkingLevelMap) return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
     return Object.keys(model.thinkingLevelMap);
   }, [modelsQueryData]);
 
