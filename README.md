@@ -82,14 +82,15 @@ Piplus 内置角色化工作方式，让复杂的开发任务管理更自然：
 <table>
   <tr>
     <td align="center">
-      <img src="docs/images/1783585164068_image-20260709161914141.png" alt="项目管理-项目列表" width="50%" />
+      <img src="docs/images/1783585164068_image-20260709161914141.png" alt="项目管理-项目列表" width="80%" />
     </td>
     <td width="40"></td>
     <td align="center">
-      <img src="docs/images/1783585214294_image-20260709162003963.png" alt="项目管理-项目详情" width="50%" />
+      <img src="docs/images/1783585214294_image-20260709162003963.png" alt="项目管理-项目详情" width="100%" />
     </td>
   </tr>
 </table>
+
 
 ### 📦 拓展包管理
 支持全局启用和按项目启用 pi 拓展
