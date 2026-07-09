@@ -70,7 +70,9 @@ export default function ProjectSettingsModal({
     const [provider, id] = modelKey.split('/');
     if (!provider || !id) return [];
     const model = modelsQueryData.find((m: any) => m.provider === provider && m.id === id);
-    if (!model?.thinkingLevelMap) return [];
+    if (!model) return [];
+    if (!model.reasoning) return ['off'];
+    if (!model.thinkingLevelMap) return ['off', 'minimal', 'low', 'medium', 'high'];
     return Object.keys(model.thinkingLevelMap);
   }, [modelsQueryData]);
 

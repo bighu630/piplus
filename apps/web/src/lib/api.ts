@@ -16,6 +16,7 @@ export type ModelInfo = {
   provider: string;
   id: string;
   label: string;
+  reasoning?: boolean;
   input?: string[];
   thinkingLevelMap?: Record<string, string | null>;
 };
