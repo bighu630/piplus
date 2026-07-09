@@ -488,7 +488,15 @@ function TabGitDiff({
                           key={b.name}
                           type="button"
                           onClick={async () => {
-                            if (!b.is_current && !isWorktreeBranch) {
+                            if (isWorktreeBranch) {
+                              setBranchDropdownOpen(false);
+                              setOpFeedback({
+                                op: 'checkout',
+                                result: 'ok',
+                                message: `[W] ${b.name} 已在 worktree 中检出\n路径：${b.worktree_path || '未知'}`,
+                              });
+                              setTimeout(clearFeedback, 6000);
+                            } else if (!b.is_current) {
                               setBranchDropdownOpen(false);
                               try {
                                 const res = await gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId!, branch: b.name });
@@ -511,7 +519,7 @@ function TabGitDiff({
                               setBranchDropdownOpen(false);
                             }
                           }}
-                          disabled={b.is_current || isCheckingOut || isWorktreeBranch}
+                          disabled={b.is_current || isCheckingOut}
                           className={`w-full flex items-center space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
                             b.is_current
                               ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 font-semibold'
