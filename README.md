@@ -95,27 +95,27 @@ Piplus 内置角色化工作方式，让复杂的开发任务管理更自然：
 ### 📦 拓展包管理
 支持全局启用和按项目启用 pi 拓展
 
-<img src="docs/images/1783585305095_image-20260709162136419.png" alt="拓展包管理" width="50%" />
+<img src="docs/images/1783585305095_image-20260709162136419.png" alt="拓展包管理" width="100%" />
 
 ### 🔀 Git 管理
 可视化 diff、分支切换、提交记录一站搞定
 
-<img src="docs/images/1783585375030_image-20260709162244307.png" alt="Git 管理" width="50%" />
+<img src="docs/images/1783585375030_image-20260709162244307.png" alt="Git 管理" width="100%" />
 
 ### 📄 文件管理
 项目文件树浏览与编辑，操作直观高效
 
-<img src="docs/images/1783585408090_image-20260709162317449.png" alt="文件管理" width="50%" />
+<img src="docs/images/1783585408090_image-20260709162317449.png" alt="文件管理" width="100%" />
 
 ### 💻 内置终端
 直接执行命令，无需切换窗口
 
-<img src="docs/images/1783585456190_image-20260709162406203.png" alt="终端" width="50%" />
+<img src="docs/images/1783585456190_image-20260709162406203.png" alt="终端" width="100%" />
 
 ### 📊 Session 详情
 查看会话信息、角色链路与运行状态
 
-<img src="docs/images/1783585496015_image-20260709162446045.png" alt="Session Info" width="50%" />
+<img src="docs/images/1783585496015_image-20260709162446045.png" alt="Session Info" width="100%" />
 
 </div>
 
