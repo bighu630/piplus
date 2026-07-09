@@ -18,6 +18,7 @@ export type CreateProjectInput = {
     id: string;
     thinkingLevel?: string | null;
   } | null;
+  gitConfigJson?: string;
 };
 
 export type CreateSessionInput = {
@@ -237,6 +238,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         lastActivityAt: timestamp,
         createdAt: timestamp,
         updatedAt: timestamp,
+        ...(input.gitConfigJson ? { gitConfigJson: input.gitConfigJson } : {}),
       } as any);
 
       if (input.plannerModel?.provider && input.plannerModel?.id) {

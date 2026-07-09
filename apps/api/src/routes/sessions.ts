@@ -834,11 +834,11 @@ export function registerSessionRoutes(app: Hono) {
     const [session] = db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1).all();
     if (!session) return { error: { code: 'NOT_FOUND', message: 'Session not found' }, status: 404 } as const;
 
-    const [project] = db.select({ projectPath: projects.projectPath, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1).all();
+    const [project] = db.select({ projectPath: projects.projectPath, createdBy: projects.createdBy, gitConfigJson: projects.gitConfigJson }).from(projects).where(eq(projects.id, session.projectId)).limit(1).all();
     if (!project || project.createdBy !== userId) return { error: { code: 'NOT_FOUND', message: 'Session not found' }, status: 404 } as const;
 
     const cwd = session.worktreePath ? path.resolve(session.worktreePath) : (project.projectPath || process.cwd());
-    return { cwd, sessionWorktreePath: session.worktreePath ?? null };
+    return { cwd, sessionWorktreePath: session.worktreePath ?? null, gitConfigJson: project.gitConfigJson ?? '{}' };
   }
 
   function resolveSafeFilePath(rootDir: string, relativePath: string) {
@@ -1090,7 +1090,13 @@ export function registerSessionRoutes(app: Hono) {
     const cwd = resolved.cwd;
 
     try {
-      const stdout = execGit(cwd, 'push');
+      const cfg = JSON.parse(resolved.gitConfigJson || '{}');
+      const opts: string[] = [];
+      if (cfg.token) {
+        const encoded = Buffer.from(`token:${cfg.token}`).toString('base64');
+        opts.push('-c', `http.extraheader="AUTHORIZATION: Basic ${encoded}"`);
+      }
+      const stdout = execGit(cwd, ...opts, 'push');
       return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim() || 'Everything up-to-date.' });
     } catch (err: unknown) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
@@ -1114,7 +1120,11 @@ export function registerSessionRoutes(app: Hono) {
 
     try {
       execGit(cwd, 'add -A');
-      const stdout = execGit(cwd, `commit -m "${message.replace(/"/g, '\\"')}"`);
+      const cfg = JSON.parse(resolved.gitConfigJson || '{}');
+      const opts: string[] = [];
+      if (cfg.userName) opts.push('-c', `user.name="${cfg.userName}"`);
+      if (cfg.userEmail) opts.push('-c', `user.email="${cfg.userEmail}"`);
+      const stdout = execGit(cwd, ...opts, `commit -m "${message.replace(/"/g, '\\"')}"`);
       return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim() });
     } catch (err: unknown) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);

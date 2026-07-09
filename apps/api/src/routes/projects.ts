@@ -42,6 +42,8 @@ export function registerProjectRoutes(app: Hono) {
     const path = (body as { path?: string }).path ?? '';
     const repoUrl = (body as { repo_url?: string }).repo_url ?? '';
     const requestedModel = (body as { model?: { provider?: string; id?: string; thinkingLevel?: string | null } | null }).model;
+    const gitConfig = (body as { git_config?: { userName?: string; userEmail?: string; token?: string } | null }).git_config;
+    const gitConfigJson = gitConfig ? JSON.stringify(gitConfig) : undefined;
     const plannerModel = requestedModel?.provider && requestedModel?.id
       ? {
           provider: requestedModel.provider,
@@ -65,11 +67,16 @@ export function registerProjectRoutes(app: Hono) {
       if (existsSync(targetPath)) {
         return c.json({ error: { code: 'PATH_EXISTS', message: 'Target directory already exists' } }, 409);
       }
-      const proc = Bun.spawnSync(['git', 'clone', repoUrl, targetPath], { stdout: 'pipe', stderr: 'pipe' });
+      const cloneArgs = ['git', 'clone', repoUrl, targetPath];
+      if (gitConfig?.token) {
+        const encoded = Buffer.from(`token:${gitConfig.token}`).toString('base64');
+        cloneArgs.splice(1, 0, '-c', `http.extraheader=AUTHORIZATION: Basic ${encoded}`);
+      }
+      const proc = Bun.spawnSync(cloneArgs, { stdout: 'pipe', stderr: 'pipe' });
       if (proc.exitCode !== 0) {
         return c.json({ error: { code: 'CLONE_FAILED', message: 'Git clone failed' } }, 500);
       }
-      const result = await createProjectWithPlanner(db, piClient, repoName, userId, targetPath, 'git_clone', repoUrl, plannerModel);
+      const result = await createProjectWithPlanner(db, piClient, repoName, userId, targetPath, 'git_clone', repoUrl, plannerModel, gitConfigJson);
       await createAuditService(db).record(userId, "project.created", "project", result.projectId, { name: repoName, path: targetPath, sourceType: 'git_clone', sourceUrl: repoUrl });
       await createAuditService(db).record(userId, "session.created", "session", result.sessionId, { role: "planner", project_id: result.projectId });
       socketHub.broadcast(createEvent('project.created', { project_id: result.projectId }, { project_id: result.projectId }));
@@ -79,7 +86,7 @@ export function registerProjectRoutes(app: Hono) {
     }
 
     // existing mode
-    const result = await createProjectWithPlanner(db, piClient, name, userId, path, 'existing', '', plannerModel);
+    const result = await createProjectWithPlanner(db, piClient, name, userId, path, 'existing', '', plannerModel, gitConfigJson);
     await createAuditService(db).record(userId, "project.created", "project", result.projectId, { name });
     await createAuditService(db).record(userId, "session.created", "session", result.sessionId, { role: "planner", project_id: result.projectId });
     socketHub.broadcast(createEvent('project.created', { project_id: result.projectId }, { project_id: result.projectId }));
@@ -470,6 +477,124 @@ export function registerProjectRoutes(app: Hono) {
 
     await db.delete(projectTodos)
       .where(and(eq(projectTodos.id, todoId), eq(projectTodos.projectId, projectId)));
+
+    return c.json({ ok: true });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/projects/{projectId}/git-config:
+   *   get:
+   *     summary: 获取项目 Git 配置（不返回 token 值）
+   *     tags: [Projects]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 项目不存在。
+   */
+  app.get('/api/v1/projects/:projectId/git-config', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, gitConfigJson: projects.gitConfigJson })
+      .from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    if (project.createdBy !== userId) return c.json({ error: { code: 'FORBIDDEN', message: 'Access denied' } }, 403);
+
+    let config: { userName?: string; userEmail?: string; token?: string } = {};
+    try {
+      config = JSON.parse(project.gitConfigJson ?? '{}');
+    } catch { /* ignore */ }
+
+    return c.json({
+      userName: config.userName ?? '',
+      userEmail: config.userEmail ?? '',
+      tokenConfigured: Boolean(config.token),
+    });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/projects/{projectId}/git-config:
+   *   put:
+   *     summary: 更新项目 Git 配置
+   *     tags: [Projects]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       200:
+   *         description: 更新成功。
+   */
+  app.put('/api/v1/projects/:projectId/git-config', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+    const body = await c.req.json().catch(() => ({}));
+    const { userName, userEmail, token } = body as { userName?: string; userEmail?: string; token?: string };
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, gitConfigJson: projects.gitConfigJson })
+      .from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    if (project.createdBy !== userId) return c.json({ error: { code: 'FORBIDDEN', message: 'Access denied' } }, 403);
+
+    // Merge with existing config — treat empty string / null as clearing the field
+    let existingConfig: Record<string, string> = {};
+    try {
+      existingConfig = JSON.parse(project.gitConfigJson ?? '{}');
+    } catch { /* ignore */ }
+
+    const newConfig: Record<string, string> = { ...existingConfig };
+    if (userName !== undefined) {
+      if (userName) newConfig.userName = userName;
+      else delete newConfig.userName;
+    }
+    if (userEmail !== undefined) {
+      if (userEmail) newConfig.userEmail = userEmail;
+      else delete newConfig.userEmail;
+    }
+    if (token !== undefined) {
+      if (token) newConfig.token = token;
+      else delete newConfig.token;
+    }
+
+    await db.update(projects).set({
+      gitConfigJson: JSON.stringify(newConfig),
+      updatedAt: new Date(),
+    }).where(eq(projects.id, projectId));
+
+    return c.json({ ok: true });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/projects/{projectId}/git-config:
+   *   delete:
+   *     summary: 清除项目 Git 配置
+   *     tags: [Projects]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       200:
+   *         description: 清除成功。
+   */
+  app.delete('/api/v1/projects/:projectId/git-config', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy })
+      .from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    if (project.createdBy !== userId) return c.json({ error: { code: 'FORBIDDEN', message: 'Access denied' } }, 403);
+
+    await db.update(projects).set({
+      gitConfigJson: '{}',
+      updatedAt: new Date(),
+    }).where(eq(projects.id, projectId));
 
     return c.json({ ok: true });
   });

@@ -56,6 +56,9 @@ import {
   getSessionCommands,
   getSessionThinkingLevel,
   setSessionThinkingLevel,
+  getProjectGitConfig,
+  updateProjectGitConfig,
+  deleteProjectGitConfig,
 } from './api';
 
 export function useAuthSession() {
@@ -157,6 +160,36 @@ export function useSetSessionThinkingLevelMutation() {
   });
 }
 
+export function useProjectGitConfig(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project', 'git-config', projectId],
+    queryFn: () => getProjectGitConfig(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 10_000,
+  });
+}
+
+export function useUpdateProjectGitConfigMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, config }: { projectId: string; config: { userName?: string; userEmail?: string; token?: string } }) =>
+      updateProjectGitConfig(projectId, config),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'git-config', variables.projectId] });
+    },
+  });
+}
+
+export function useDeleteProjectGitConfigMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => deleteProjectGitConfig(projectId),
+    onSuccess: (_data, projectId) => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'git-config', projectId] });
+    },
+  });
+}
+
 export function useTree() {
   return useQuery({
     queryKey: ['tree'],
@@ -243,8 +276,8 @@ export function useDeleteSessionFileMutation(sessionId: string | null) {
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (params: { name: string; mode?: string; path?: string; repoUrl?: string; model?: ModelInfo | null }) =>
-      createProject(params.name, params.mode, params.path, params.repoUrl, params.model ?? null),
+    mutationFn: (params: { name: string; mode?: string; path?: string; repoUrl?: string; model?: ModelInfo | null; gitConfig?: { userName?: string; userEmail?: string; token?: string } | null }) =>
+      createProject(params.name, params.mode, params.path, params.repoUrl, params.model ?? null, params.gitConfig),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },
