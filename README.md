@@ -5,10 +5,14 @@
   <p>
     用更顺手的方式管理项目、Session、模型、文件、Git 和多角色协作
   </p>
+  <p>
+    智能拆分 需求/bug/可预期任务 给不同会话，保持核心session上下文干净
+  </p>
   <br/>
   <img src="docs/images/1783584659047_image-20260709161054221.png" alt="Piplus Screenshot" width="800" style="border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.12)"/>
   <br/><br/>
 </div>
+
 
 
 
