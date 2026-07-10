@@ -141,7 +141,9 @@ function TabChat({
   const prevSessionIdRef = useRef<string | null>(null);
   const [streamNote, setStreamNote] = useState('');
   const [streamingContent, setStreamingContent] = useState('');
+  const streamingContentRef = useRef('');
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
+  const [pendingAssistantContent, setPendingAssistantContent] = useState<string | null>(null);
   const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
   const { subscribeToStream, subscribeToRuntimeErrors, connected: wsConnected } = useWebSocket();
 
@@ -193,6 +195,26 @@ function TabChat({
     const hasPendingMatch = allMessages.some((m) => m.id === pm.id);
     if (!hasConfirmedMatch && !hasPendingMatch) {
       allMessages.push(pm);
+    }
+  }
+
+  // 将刚完成的 streaming 内容作为占位消息加入，避免 query 刷新前的闪白
+  if (pendingAssistantContent) {
+    const alreadyConfirmed = allMessages.some((m) =>
+      m.role === 'assistant' && m.content_text === pendingAssistantContent,
+    );
+    if (!alreadyConfirmed) {
+      allMessages.push({
+        id: `stream-pending-${Date.now()}`,
+        role: 'assistant',
+        message_kind: 'normal',
+        source_session_id: null,
+        content_text: pendingAssistantContent,
+        created_at: new Date().toISOString(),
+      });
+    } else {
+      // 已确认，清除 pending
+      setPendingAssistantContent(null);
     }
   }
 
@@ -348,10 +370,16 @@ function TabChat({
         setRuntimeErrors([]);
         setStreamNote(`${message.phase}${delta ? ' · streaming' : ''}`);
       } else if (message.phase === 'delta') {
-        setStreamingContent((prev: string) => prev + delta);
+        setStreamingContent((prev) => {
+          const next = prev + delta;
+          streamingContentRef.current = next;
+          return next;
+        });
       } else if (message.phase === 'complete') {
         setStreamNote('');
         setPendingUserMessages([]);
+        // 保存流式内容，在 query 刷新前作为占位消息显示
+        setPendingAssistantContent(streamingContentRef.current);
         setStreamingContent('');
       } else if (message.phase === 'error') {
         const errorText = message.payload?.error ?? 'Unknown agent loop error';
