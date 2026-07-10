@@ -537,10 +537,9 @@ function TabChat({
                 )}
                 <div className="flex flex-col items-start max-w-full flex-1">
                   <div
-                    className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden cursor-pointer select-none transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
-                    onClick={toggleExpand}
+                    className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
                   >
-                    <div className="px-3 py-2 flex items-center gap-2">
+                    <div className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none" onClick={toggleExpand}>
                       {isExpanded ? (
                         <ChevronDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                       ) : (
