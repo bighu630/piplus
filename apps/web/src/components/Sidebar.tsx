@@ -154,6 +154,7 @@ function Sidebar({
   const [isDragging, setIsDragging] = useState(false);
   const dragInfo = useRef({ startX: 0, startWidth: 0 });
   const draggingRef = useRef(false);
+  const sidebarRef = useRef<HTMLDivElement>(null);
 
   const handleResizePointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
@@ -167,10 +168,20 @@ function Sidebar({
     if (!draggingRef.current) return;
     const delta = e.clientX - dragInfo.current.startX;
     const newWidth = Math.max(240, Math.min(520, dragInfo.current.startWidth + delta));
-    onWidthChange(newWidth);
+    // 直接操作 DOM，避免触发 React 重渲染
+    if (sidebarRef.current) {
+      sidebarRef.current.style.width = `${newWidth}px`;
+    }
   }, [onWidthChange]);
 
   const finishResize = useCallback(() => {
+    if (draggingRef.current && sidebarRef.current) {
+      // 松手时同步最终宽度到 React state
+      const finalWidth = parseInt(sidebarRef.current.style.width, 10);
+      if (!isNaN(finalWidth)) {
+        onWidthChange(finalWidth);
+      }
+    }
     draggingRef.current = false;
     setIsDragging(false);
   }, []);
@@ -440,6 +451,7 @@ function Sidebar({
 
   return (
     <div
+      ref={sidebarRef}
       className={`bg-slate-100 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-[100dvh] min-h-0 overflow-hidden select-none relative ${
         isDragging ? '' : 'transition-all duration-200'
       } ${!isVisible ? 'hidden' : ''}`}
