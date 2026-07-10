@@ -669,7 +669,7 @@ function TabChat({
                               rehypePlugins={[[rehypeHighlight, { detect: false }]]}
                               components={{
                                 p({ children }) {
-                                  return <p className="text-slate-700 dark:text-slate-300 leading-relaxed my-1.5 text-[13px]">{children}</p>;
+                                  return <p className="text-slate-700 dark:text-slate-300 leading-relaxed my-1.5 text-[13.5px]">{children}</p>;
                                 },
                                 ul({ children }) {
                                   return <ul className="list-disc pl-5 my-1.5 text-xs text-slate-700 dark:text-slate-300 space-y-0.5">{children}</ul>;
@@ -682,10 +682,10 @@ function TabChat({
                                   if (isInline) {
                                     return <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold" {...codeProps}>{children}</code>;
                                   }
-                                  return <code className={className} {...codeProps}>{children}</code>;
+                                  return <code className={`${className ?? ''} text-[11.5px]`} {...codeProps}>{children}</code>;
                                 },
                                 pre({ children }) {
-                                  return <pre className="code-block my-2">{children}</pre>;
+                                  return <pre className="code-block my-2 overflow-x-auto text-[11.5px] leading-relaxed">{children}</pre>;
                                 },
                                 blockquote({ children }) {
                                   return <blockquote className="border-l-3 border-indigo-300 dark:border-indigo-700 pl-3 py-1 my-2 text-slate-600 dark:text-slate-400 text-xs">{children}</blockquote>;
