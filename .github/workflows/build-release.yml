@@ -143,9 +143,11 @@ jobs:
           name: ${{ github.ref_name }}
           body_path: release-notes.md
           files: |
-            linux-amd64/**
-            windows-amd64/**
-            mac-amd64/**
-            mac-arm64/**
+            linux-amd64/*.AppImage
+            linux-amd64/*.deb
+            linux-amd64/*.rpm
+            windows-amd64/*.exe
+            mac-amd64/*.dmg
+            mac-arm64/*.dmg
           draft: true
           prerelease: false
