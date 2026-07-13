@@ -831,6 +831,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     const createdSession = allSessions.find(s => s.id !== sourceSessionId);
     expect(createdSession).toBeDefined();
     expect(createdSession!.projectId).toBe(targetProjectId);
+    expect(createdSession!.title).toBe('询问：「代码审查请求」');
     expect(createdSession!.crossProjectSourceJson).toBeTruthy();
 
     const source = JSON.parse(createdSession!.crossProjectSourceJson!);

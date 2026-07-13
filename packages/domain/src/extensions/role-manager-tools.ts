@@ -304,9 +304,12 @@ export async function invokeRoleManagerTool(
       fromSessionId: ctx.sessionId,
     });
 
-    // Set crossProjectSourceJson on the new session
+    // Set crossProjectSourceJson and a meaningful title on the new session
     await ctx.db.update(sessions)
-      .set({ crossProjectSourceJson: crossProjectSource })
+      .set({
+        crossProjectSourceJson: crossProjectSource,
+        title: `询问：「${briefDescription}」`,
+      })
       .where(eq(sessions.id, newSession.sessionId));
 
     // Broadcast the new session to the frontend
