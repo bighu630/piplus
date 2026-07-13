@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { ROLE_ICONS_MAP } from '../lib/role-icons';
 import { fuzzyMatch } from '../lib/fuzzy';
-import { version as appVersion } from '../../../../apps/desktop/package.json';
+const appVersion = __APP_VERSION__;
 
 interface SidebarProps {
   projects: ProjectDTO[];
