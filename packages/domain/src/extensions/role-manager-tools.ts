@@ -2,8 +2,8 @@ import type { PiToolDef } from '@piplus/pi-client';
 import type { PiClient } from '@piplus/pi-client';
 import type { RoleCatalog } from './role-catalog';
 import type { RoleManagerDb } from '../role-manager/service';
-import { messages, sessions } from '@piplus/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { messages, projects, sessions } from '@piplus/db/schema';
+import { and, eq, like } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
 import { startSessionRun } from '../session/runtime';
 import { setRequestContext, getRequestContext } from '../session/request-context';
@@ -86,6 +86,41 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
           },
         },
         required: ['session_id', 'content'],
+      },
+    },
+    {
+      name: 'cross_project_ask',
+      description:
+        'Ask a question to another project and wait for a reply. The target project\'s agent will process the question and respond. ' +
+        'Use this when you need information or help from another project. ' +
+        'The target project must belong to the same user.',
+      parameters: {
+        type: 'object',
+        properties: {
+          projectName: { type: 'string', description: 'The name of the target project to ask' },
+          question: { type: 'string', description: 'The question or request to send to the other project' },
+          briefDescription: { type: 'string', description: 'A very short description of the question (optional, defaults to the first 80 characters of the question)' },
+        },
+        required: ['projectName', 'question'],
+      },
+    },
+    {
+      name: 'cross_project_reply',
+      description:
+        'Reply to a cross-project question received from another project. ' +
+        'Call this after processing a question from cross_project_ask. ' +
+        'The reply will be sent back to the asking project.',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'The reply content to send back' },
+          blocks: {
+            type: 'array',
+            items: { type: 'object' },
+            description: 'Optional structured content blocks',
+          },
+        },
+        required: ['summary'],
       },
     },
   ];
@@ -210,6 +245,160 @@ export async function invokeRoleManagerTool(
       session_id: targetSessionId,
       message: '已向子会话发送消息',
     };
+  }
+
+  if (toolName === 'cross_project_ask') {
+    const projectName = String(args.projectName ?? '');
+    const question = String(args.question ?? '');
+    const briefDescription = args.briefDescription ? String(args.briefDescription) : question.slice(0, 80);
+
+    if (!projectName) throw new Error('missing_project_name');
+    if (!question) throw new Error('missing_question');
+
+    // Get current session's project
+    const [currentSession] = await ctx.db
+      .select({ projectId: sessions.projectId })
+      .from(sessions)
+      .where(eq(sessions.id, ctx.sessionId))
+      .limit(1);
+    if (!currentSession) throw new Error('session_not_found');
+    const sourceProjectId = currentSession.projectId;
+
+    // Find target project by name (case-insensitive fuzzy match)
+    const [targetProject] = await ctx.db
+      .select({ id: projects.id, name: projects.name, createdBy: projects.createdBy })
+      .from(projects)
+      .where(
+        and(
+          like(projects.name, `%${projectName}%`),
+          eq(projects.createdBy, ctx.userId),
+        ),
+      )
+      .limit(1);
+    if (!targetProject) {
+      return {
+        status: 'error',
+        message: `未找到匹配的项目「${projectName}」`,
+      };
+    }
+
+    // Same project check
+    if (targetProject.id === sourceProjectId) {
+      return {
+        status: 'error',
+        message: '不能向当前项目发起跨项目询问，请使用 spawn_session 创建子会话',
+      };
+    }
+
+    // Create a blank session in the target project
+    const roleManager = createRoleManagerService(ctx.db, ctx.piClient);
+    const newSession = await roleManager.createTopLevelBlankSession({
+      projectId: targetProject.id,
+      createdBy: ctx.userId,
+    });
+
+    const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
+    const crossProjectSource = JSON.stringify({
+      requestId,
+      fromProjectId: sourceProjectId,
+      fromSessionId: ctx.sessionId,
+    });
+
+    // Set crossProjectSourceJson and a meaningful title on the new session
+    await ctx.db.update(sessions)
+      .set({
+        crossProjectSourceJson: crossProjectSource,
+        title: `询问：「${briefDescription}」`,
+      })
+      .where(eq(sessions.id, newSession.sessionId));
+
+    // Broadcast the new session to the frontend
+    await ctx.onSessionCreated?.({
+      sessionId: newSession.sessionId,
+      projectId: targetProject.id,
+    });
+
+    // Get source project name for context in the question
+    const [sourceProject] = await ctx.db
+      .select({ name: projects.name })
+      .from(projects)
+      .where(eq(projects.id, sourceProjectId))
+      .limit(1);
+    const sourceProjectName = sourceProject?.name ?? '未知项目';
+
+    // Wrap the question with cross-project context so the target agent understands
+    const crossProjectContent = [
+      `【来自项目「${sourceProjectName}」的跨项目询问】`,
+      `摘要：${briefDescription}`,
+      '',
+      question,
+      '',
+      '---',
+      '请处理以上问题，完成后调用 `cross_project_reply` 工具回复。',
+      `回复时请提供答案摘要作为 summary，可选附加结构化内容。`,
+    ].join('\n');
+
+    // Start the session with the question as content
+    await startChildSessionRun(ctx, newSession.sessionId, crossProjectContent, requestId, ctx.onSessionCreated);
+
+    // Poll for reply
+    return await waitForCrossProjectReply(ctx, requestId);
+  }
+
+  if (toolName === 'cross_project_reply') {
+    const summary = String(args.summary ?? '');
+    const blocks = Array.isArray(args.blocks) ? args.blocks : null;
+
+    if (!summary) throw new Error('missing_summary');
+
+    // Read cross-project source info from current session
+    const [session] = await ctx.db
+      .select({ crossProjectSourceJson: sessions.crossProjectSourceJson })
+      .from(sessions)
+      .where(eq(sessions.id, ctx.sessionId))
+      .limit(1);
+    if (!session) throw new Error('session_not_found');
+    if (!session.crossProjectSourceJson) {
+      return {
+        status: 'error',
+        message: '当前会话不是跨项目询问的目标会话，无法使用 cross_project_reply',
+      };
+    }
+
+    let source: { requestId: string; fromProjectId: string; fromSessionId: string };
+    try {
+      source = JSON.parse(session.crossProjectSourceJson);
+    } catch {
+      throw new Error('invalid_cross_project_source');
+    }
+
+    const { requestId, fromProjectId, fromSessionId } = source;
+
+    if (!requestId || !fromSessionId) throw new Error('invalid_cross_project_source');
+
+    // Write reply to the source session's messages
+    const messageId = `msg_${crypto.randomUUID().slice(0, 12)}`;
+    const timestamp = new Date();
+    await ctx.db.insert(messages).values({
+      id: messageId,
+      sessionId: fromSessionId,
+      piMessageId: null,
+      messageKind: 'cross_project_reply',
+      sourceSessionId: ctx.sessionId,
+      role: 'assistant',
+      contentText: summary,
+      contentBlocksJson: blocks ? JSON.stringify(blocks) : null,
+      contentVersion: 1,
+      requestId,
+      createdAt: timestamp,
+    } as any);
+
+    // Update session activity timestamps
+    await ctx.db.update(sessions)
+      .set({ lastActivityAt: timestamp, updatedAt: timestamp })
+      .where(eq(sessions.id, ctx.sessionId));
+
+    return { ok: true, message: '跨项目回复已发送' };
   }
 
   if (toolName === 'writeback_to_parent') {
@@ -513,5 +702,94 @@ async function waitForChildWriteback(
     status: 'timeout',
     session_id: childSessionId,
     message: '子会话超时未返回结果',
+  };
+}
+
+/**
+ * Poll for a cross-project reply, keyed by (sessionId, messageKind, requestId).
+ * Unlike waitForChildWriteback, the reply is written DIRECTLY to the asking session's
+ * messages table (sessionId = ctx.sessionId), not to a parent session.
+ */
+async function waitForCrossProjectReply(
+  ctx: RoleManagerToolContext,
+  requestId: string,
+): Promise<unknown> {
+  const timeoutMs = 10 * 60 * 1000;
+  const pollIntervalMs = 2000;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    // Check if the asking session is still active
+    const [session] = await ctx.db
+      .select({ runtimeStatus: sessions.runtimeStatus })
+      .from(sessions)
+      .where(eq(sessions.id, ctx.sessionId))
+      .limit(1);
+
+    if (!session) {
+      console.log('[role-manager-tools] waitForCrossProjectReply session missing', {
+        sessionId: ctx.sessionId,
+        requestId,
+      });
+      return {
+        status: 'cancelled',
+        message: '当前会话不存在，已取消等待跨项目回复',
+      };
+    }
+
+    if (session.runtimeStatus === 'stopping') {
+      console.log('[role-manager-tools] waitForCrossProjectReply session stopping', {
+        sessionId: ctx.sessionId,
+        requestId,
+      });
+      return {
+        status: 'cancelled',
+        message: '当前会话正在停止，已取消等待跨项目回复',
+      };
+    }
+
+    const [reply] = await ctx.db
+      .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
+      .from(messages)
+      .where(
+        and(
+          eq(messages.sessionId, ctx.sessionId),
+          eq(messages.messageKind, 'cross_project_reply'),
+          eq(messages.requestId, requestId),
+        ),
+      )
+      .limit(1);
+
+    if (reply) {
+      let blocks = null;
+      if (reply.blocksJson) {
+        try {
+          blocks = JSON.parse(reply.blocksJson);
+        } catch {
+          /* ignore */
+        }
+      }
+      console.log('[role-manager-tools] waitForCrossProjectReply matched', {
+        sessionId: ctx.sessionId,
+        requestId,
+      });
+      return {
+        status: 'completed',
+        summary: reply.summary,
+        blocks,
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  console.log('[role-manager-tools] waitForCrossProjectReply timeout', {
+    sessionId: ctx.sessionId,
+    requestId,
+  });
+
+  return {
+    status: 'timeout',
+    message: '目标项目未在 10 分钟内回复，已超时',
   };
 }

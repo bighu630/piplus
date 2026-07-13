@@ -340,7 +340,7 @@ export function registerSessionRoutes(app: Hono) {
     const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
-    const [template] = await db.select({ key: roleTemplates.key }).from(roleTemplates).where(eq(roleTemplates.id, session.roleTemplateId)).limit(1);
+    const [template] = await db.select({ key: roleTemplates.key, basePrompt: roleTemplates.basePrompt }).from(roleTemplates).where(eq(roleTemplates.id, session.roleTemplateId)).limit(1);
     if (!template || template.key !== 'planner' || session.depth !== 0) {
       return c.json({ error: { code: 'NOT_PLANNER_ROOT', message: 'Only top-level planner sessions are supported' } }, 400);
     }
@@ -349,10 +349,11 @@ export function registerSessionRoutes(app: Hono) {
       return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
     }
 
+    const prompt = template.basePrompt || session.compiledPrompt;
     return c.json({
       session_id: sessionId,
-      prompt: session.compiledPrompt,
-      prompt_length: session.compiledPrompt.length,
+      prompt,
+      prompt_length: prompt.length,
     });
   });
 

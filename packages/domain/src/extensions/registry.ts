@@ -17,8 +17,8 @@ export type PlatformToolContext = {
   }) => void | Promise<void>;
 };
 
-export async function buildAllToolDefs(db: RoleManagerDb) {
-  const catalog = await loadRoleCatalog(db);
+export async function buildAllToolDefs(db: RoleManagerDb, projectId?: string) {
+  const catalog = await loadRoleCatalog(db, projectId);
   return buildRoleManagerToolDefs(catalog);
 }
 

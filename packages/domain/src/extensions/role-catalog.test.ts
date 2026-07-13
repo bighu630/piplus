@@ -3,24 +3,32 @@ import { loadRoleCatalog } from './role-catalog';
 import type { RoleManagerDb } from '../role-manager/service';
 
 function emptyDb() {
-  const queryable = { then: (resolve: (v: unknown) => void) => resolve([]) };
+  const queryable: any = Promise.resolve([]);
+  queryable.orderBy = () => queryable;
+  queryable.limit = () => queryable;
   return {
     select: () => ({
       from: () => ({
         where: () => queryable,
       }),
     }),
+    insert: () => ({ values: () => Promise.resolve() }),
+    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
   } as unknown as RoleManagerDb;
 }
 
 function dbWithRows(rows: Record<string, unknown>[]) {
-  const queryable = { then: (resolve: (v: unknown) => void) => resolve(rows) };
+  const queryable: any = Promise.resolve(rows);
+  queryable.orderBy = () => queryable;
+  queryable.limit = () => queryable;
   return {
     select: () => ({
       from: () => ({
         where: () => queryable,
       }),
     }),
+    insert: () => ({ values: () => Promise.resolve() }),
+    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
   } as unknown as RoleManagerDb;
 }
 

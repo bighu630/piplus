@@ -171,6 +171,22 @@ function TabChat({
   const textBlocks = (msg: ChatMessageDTO): ChatMessageContentBlockDTO[] =>
     (msg.content_blocks ?? []).filter((block) => block.type === 'text');
 
+  // 将刚完成的 streaming 内容作为占位消息加入，避免 query 刷新前的闪白
+  // 用 useMemo 判断当前 pending 内容是否已被真实消息确认
+  const pendingAssistantConfirmed = useMemo(() => {
+    if (!pendingAssistantContent) return false;
+    return messages.some((m) =>
+      m.role === 'assistant' && m.content_text === pendingAssistantContent,
+    );
+  }, [messages, pendingAssistantContent]);
+
+  // 当真实消息已包含 pending 内容时，清除它
+  useEffect(() => {
+    if (pendingAssistantConfirmed) {
+      setPendingAssistantContent(null);
+    }
+  }, [pendingAssistantConfirmed]);
+
   const allMessages = [...messages];
   // Append pending user messages that haven't been confirmed.
   // Reconcile by comparing both text and image block identity to avoid
@@ -198,24 +214,15 @@ function TabChat({
     }
   }
 
-  // 将刚完成的 streaming 内容作为占位消息加入，避免 query 刷新前的闪白
-  if (pendingAssistantContent) {
-    const alreadyConfirmed = allMessages.some((m) =>
-      m.role === 'assistant' && m.content_text === pendingAssistantContent,
-    );
-    if (!alreadyConfirmed) {
-      allMessages.push({
-        id: `stream-pending-${Date.now()}`,
-        role: 'assistant',
-        message_kind: 'normal',
-        source_session_id: null,
-        content_text: pendingAssistantContent,
-        created_at: new Date().toISOString(),
-      });
-    } else {
-      // 已确认，清除 pending
-      setPendingAssistantContent(null);
-    }
+  if (pendingAssistantContent && !pendingAssistantConfirmed) {
+    allMessages.push({
+      id: `stream-pending-${Date.now()}`,
+      role: 'assistant',
+      message_kind: 'normal',
+      source_session_id: null,
+      content_text: pendingAssistantContent,
+      created_at: new Date().toISOString(),
+    });
   }
 
   const displayMessages = allMessages.length > 0
@@ -308,6 +315,7 @@ function TabChat({
     if (runtimeStatus === 'idle' && prevRuntimeStatus.current === 'running') {
       setStreamNote('');
       setPendingUserMessages([]);
+      setPendingAssistantContent(null);
     }
     prevRuntimeStatus.current = runtimeStatus;
   }, [runtimeStatus]);
@@ -395,6 +403,8 @@ function TabChat({
     setStreamNote('');
     setPendingUserMessages([]);
     setRuntimeErrors([]);
+    setPendingAssistantContent(null);
+    streamingContentRef.current = '';
   }, [selectedSessionId]);
 
   // Subscribe to runtime errors from ws-provider

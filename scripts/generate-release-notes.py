@@ -34,25 +34,35 @@ if prev:
     result = subprocess.run(
         ["git", "log", "--no-decorate", "--no-merges", "--format=%s", f"{prev}..{TAG}"],
         capture_output=True, text=True)
-    log_text = result.stdout.strip()
+    # Dedup by subject line while preserving order
+    seen = set()
+    unique_msgs = []
+    for msg in result.stdout.strip().split("\n"):
+        if msg not in seen:
+            seen.add(msg)
+            unique_msgs.append(msg)
 
+    classified = {k: [] for k in categories}
     uncategorized = []
-    for prefix, (emoji, title) in categories.items():
-        items = []
-        for msg in log_text.split("\n"):
+    for msg in unique_msgs:
+        matched = False
+        for prefix in categories:
             if re.match(rf"^{prefix}[(:]", msg, re.IGNORECASE):
                 clean = re.sub(r"^[^(:]+[:(]\s*", "", msg)
-                if not clean.endswith(")"):
-                    clean = re.sub(r"\)$", "", clean)
-                items.append(f"  - {clean}" if clean else f"  - {msg}")
-            elif not re.match(r"^(feat|fix|refactor|docs|style|chore|ci)[(:]", msg, re.IGNORECASE):
-                uncategorized.append(f"  - {msg}")
+                if clean.endswith(")"):
+                    clean = clean[:-1]
+                classified[prefix].append(f"  - {clean}" if clean else f"  - {msg}")
+                matched = True
+                break
+        if not matched:
+            uncategorized.append(f"  - {msg}")
 
-        if items:
+    for prefix, (emoji, title) in categories.items():
+        if classified[prefix]:
             lines.append("")
             lines.append(f"## {emoji} {title}")
             lines.append("")
-            lines.extend(items)
+            lines.extend(classified[prefix])
 
     if uncategorized:
         lines.append("")

@@ -22,6 +22,7 @@ import {
   User,
   ArrowUp,
 } from 'lucide-react';
+import { ROLE_ICONS_MAP } from '../lib/role-icons';
 import { fuzzyMatch } from '../lib/fuzzy';
 import { version as appVersion } from '../../../../apps/desktop/package.json';
 
@@ -72,7 +73,15 @@ function roleLabel(key: string): string {
   return map[key] ?? key;
 }
 
-function roleIcon(key: string) {
+function roleIcon(key: string, templates?: Array<{ key: string; icon: string | null }>): React.ComponentType<{ className?: string }> {
+  // Try backend-stored icon first
+  if (templates) {
+    const tpl = templates.find(t => t.key === key);
+    if (tpl?.icon && ROLE_ICONS_MAP[tpl.icon]) {
+      return ROLE_ICONS_MAP[tpl.icon];
+    }
+  }
+  // Fallback to hardcoded map
   const map: Record<string, React.ComponentType<{ className?: string }>> = {
     planner: Star,
     worker: Circle,

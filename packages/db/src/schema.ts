@@ -26,6 +26,7 @@ export const projects = sqliteTable('projects', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   roleDefaultModels: text('role_default_models').notNull().default('{}'),
   gitConfigJson: text('git_config_json').notNull().default('{}'),
+  roleConfigJson: text('role_config_json').notNull().default('{}'),
 });
 
 export const roleTemplates = sqliteTable('role_templates', {
@@ -77,6 +78,7 @@ export const sessions = sqliteTable('sessions', {
   currentModelId: text('current_model_id'),
   modelFallbacksJson: text('model_fallbacks_json').notNull().default('[]'),
   worktreePath: text('worktree_path'),
+  crossProjectSourceJson: text('cross_project_source_json'),
 });
 
 export const messages = sqliteTable('messages', {
