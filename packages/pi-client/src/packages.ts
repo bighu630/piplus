@@ -1,4 +1,5 @@
 import {
+  type PackageSource,
   DefaultPackageManager,
   SettingsManager,
   getAgentDir,
@@ -91,22 +92,42 @@ export function setPackageFiltered(
   filtered: boolean,
   options?: { local?: boolean; cwd?: string },
 ): boolean {
-  const pm = createManager(options?.cwd);
+  const agentDir = getAgentDir();
+  const resolvedCwd = options?.cwd ?? process.cwd();
+  const settingsManager = SettingsManager.create(resolvedCwd, agentDir);
+
+  // Get current packages from the appropriate scope (defensive copy)
+  const scopeSettings = options?.local
+    ? settingsManager.getProjectSettings()
+    : settingsManager.getGlobalSettings();
+  const packages: PackageSource[] = [...(scopeSettings.packages ?? [])];
+
+  // Find the matching package by comparing the exact source string
+  const index = packages.findIndex((p) => {
+    const pkgSource = typeof p === 'string' ? p : p.source;
+    return pkgSource === source;
+  });
+
+  if (index === -1) return false;
+
+  const current = packages[index];
 
   if (filtered) {
     // Disable: convert string to object form with empty resource arrays
-    return pm.addSourceToSettings(
-      { source, extensions: [], skills: [], prompts: [], themes: [] } as any,
-      { local: options?.local },
-    );
+    if (typeof current !== 'string') return false; // already filtered
+    packages[index] = { source, extensions: [], skills: [], prompts: [], themes: [] };
   } else {
-    // Enable: remove the object form (which disables it) and add back as string
-    // First remove the object form
-    pm.removeSourceFromSettings(
-      { source, extensions: [], skills: [], prompts: [], themes: [] } as any,
-      { local: options?.local },
-    );
-    // Then add as plain string (enabled)
-    return pm.addSourceToSettings(source, { local: options?.local });
+    // Enable: convert object form back to plain string
+    if (typeof current === 'string') return false; // already enabled
+    packages[index] = source;
   }
+
+  // Persist
+  if (options?.local) {
+    settingsManager.setProjectPackages(packages);
+  } else {
+    settingsManager.setPackages(packages);
+  }
+
+  return true;
 }
