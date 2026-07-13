@@ -18,10 +18,10 @@
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.3",
-    "bun-types": "*",
-    "happy-dom": "^20.9.0",
+    "bun-types": "^1.3.14",
+    "happy-dom": "^20.10.6",
     "jsdom": "^29.1.1",
-    "typescript": "*"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.10"
