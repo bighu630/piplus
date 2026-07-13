@@ -7,6 +7,8 @@ services:
       API_PORT: 3000
       DATABASE_URL: file:/home/app/.config/piplus/piplus.sqlite
       PUBLIC_WEB_ORIGIN: piplus.whosworld.fun
+      # Alternatively, use CORS_ORIGINS for multiple origins (comma-separated):
+      # CORS_ORIGINS: http://localhost:3002,https://piplus.whosworld.fun
       PIPLUS_SERVE_WEB: "1"
       PIPLUS_WEB_DIST: /app/apps/web/dist
     ports:
