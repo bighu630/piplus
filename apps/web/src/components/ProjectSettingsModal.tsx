@@ -22,12 +22,7 @@ interface ProjectSettingsModalProps {
   setProjectRoleModelsMut: any;
 }
 
-const ROLE_ICONS = [
-  '🤖', '🧠', '👨‍💻', '👩‍💻', '🛠️', '🔧', '⚙️', '🎯', '📋', '📝',
-  '🔍', '👁️', '🧪', '📊', '🎨', '✏️', '💡', '🚀', '⭐', '💎',
-  '👤', '🔄', '🔗', '📡', '📦', '🗂️', '📁', '🔒', '🔓', '🌐',
-  '🤝', '💬', '📢', '🎤', '🏗️', '🧩', '🔬', '📈', '📉', '🎮',
-];
+import { ROLE_ICON_NAMES, renderRoleIcon } from '../lib/role-icons';
 
 const ROLE_CONFIG_KEYS = [
   { key: 'planner', label: '负责人' },
@@ -598,11 +593,10 @@ export default function ProjectSettingsModal({
             const roleVersions = (roleTemplatesQuery.data ?? [])
               .filter((t) => t.key === role.key)
               .sort((a, b) => String(b.version).localeCompare(String(a.version), undefined, { numeric: true }));
-            const roleIcon = roleVersions[0]?.icon || '🤖';
             return (
               <div key={role.key} className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 px-3 py-2">
                 <div className="flex items-center gap-3 flex-1">
-                  <span className="text-lg">{roleIcon}</span>
+                  <span className="mr-1">{renderRoleIcon(roleVersions[0]?.icon, 'w-4 h-4')}</span>
                   <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 w-24 shrink-0">{role.label}</span>
                   <span className="text-[10px] text-slate-400 dark:text-slate-500 w-16 shrink-0">{role.key}</span>
                   <div className="flex-1 min-w-0">
