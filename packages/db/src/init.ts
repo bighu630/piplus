@@ -128,16 +128,16 @@ function ensureBuiltinRows(sqlite: Database) {
 
   sqlite.prepare(`INSERT OR IGNORE INTO users (id, email, password_hash, name, created_at) VALUES (?, ?, ?, ?, ?)`).run('user_seed', 'seed@local', seedPassword, 'Seed User', now);
 
-  const updateBuiltinRoleStmt = sqlite.prepare(`UPDATE role_templates SET base_prompt = ?, version = ?, updated_at = ? WHERE id = ? AND visibility = 'builtin'`);
+  const updateBuiltinRoleStmt = sqlite.prepare(`UPDATE role_templates SET base_prompt = ?, version = ?, config_json = ?, updated_at = ? WHERE id = ? AND visibility = 'builtin'`);
 
   sqlite.prepare(`INSERT OR IGNORE INTO role_templates (id, key, version, name, description, base_prompt, config_json, created_by, owner_type, visibility, is_builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     'role_planner',
     'planner',
-    '2',
+    '内置',
     '规划者',
     '规划并协调工作。将大目标分解为结构化的步骤。',
     PLANNER_PROMPT,
-    '{}',
+    '{"icon":"Star"}',
     null,
     'system',
     'public',
@@ -148,7 +148,8 @@ function ensureBuiltinRows(sqlite: Database) {
   if (forceRolePrompts) {
     updateBuiltinRoleStmt.run(
       PLANNER_PROMPT,
-      '2',
+      '内置',
+      '{"icon":"Star"}',
       now,
       'role_planner',
     );
@@ -157,11 +158,11 @@ function ensureBuiltinRows(sqlite: Database) {
   sqlite.prepare(`INSERT OR IGNORE INTO role_templates (id, key, version, name, description, base_prompt, config_json, created_by, owner_type, visibility, is_builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     'role_blank',
     'blank',
-    '1',
+    '内置',
     '空白',
     '一个极简的无预设会话。没有内置工作流或角色设定。',
     BLANK_PROMPT,
-    '{}',
+    '{"icon":"User"}',
     null,
     'system',
     'public',
@@ -172,7 +173,8 @@ function ensureBuiltinRows(sqlite: Database) {
   if (forceRolePrompts) {
     updateBuiltinRoleStmt.run(
       BLANK_PROMPT,
-      '1',
+      '内置',
+      '{"icon":"User"}',
       now,
       'role_blank',
     );
@@ -181,11 +183,11 @@ function ensureBuiltinRows(sqlite: Database) {
   sqlite.prepare(`INSERT OR IGNORE INTO role_templates (id, key, version, name, description, base_prompt, config_json, created_by, owner_type, visibility, is_builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     'role_reviewer',
     'reviewer',
-    '1',
+    '内置',
     '审查者',
     '审查代码并返回简洁的批评意见或确认。',
     REVIEWER_PROMPT,
-    '{}',
+    '{"icon":"Eye"}',
     null,
     'system',
     'public',
@@ -196,7 +198,8 @@ function ensureBuiltinRows(sqlite: Database) {
   if (forceRolePrompts) {
     updateBuiltinRoleStmt.run(
       REVIEWER_PROMPT,
-      '1',
+      '内置',
+      '{"icon":"Eye"}',
       now,
       'role_reviewer',
     );
@@ -205,11 +208,11 @@ function ensureBuiltinRows(sqlite: Database) {
   sqlite.prepare(`INSERT OR IGNORE INTO role_templates (id, key, version, name, description, base_prompt, config_json, created_by, owner_type, visibility, is_builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     'role_worker',
     'worker',
-    '1',
+    '内置',
     '执行者',
     '执行具体的工作项，不增加流程开销。',
     WORKER_PROMPT,
-    '{}',
+    '{"icon":"Circle"}',
     null,
     'system',
     'public',
@@ -220,7 +223,8 @@ function ensureBuiltinRows(sqlite: Database) {
   if (forceRolePrompts) {
     updateBuiltinRoleStmt.run(
       WORKER_PROMPT,
-      '1',
+      '内置',
+      '{"icon":"Circle"}',
       now,
       'role_worker',
     );
@@ -229,11 +233,11 @@ function ensureBuiltinRows(sqlite: Database) {
   sqlite.prepare(`INSERT OR IGNORE INTO role_templates (id, key, version, name, description, base_prompt, config_json, created_by, owner_type, visibility, is_builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     'role_feature_lead',
     'feature_lead',
-    '1',
+    '内置',
     '需求负责人',
     '与用户对齐需求，规划方法，并委派执行给执行者。',
     FEATURE_LEAD_PROMPT,
-    '{}',
+    '{"icon":"Triangle"}',
     null,
     'system',
     'public',
@@ -244,7 +248,8 @@ function ensureBuiltinRows(sqlite: Database) {
   if (forceRolePrompts) {
     updateBuiltinRoleStmt.run(
       FEATURE_LEAD_PROMPT,
-      '1',
+      '内置',
+      '{"icon":"Triangle"}',
       now,
       'role_feature_lead',
     );
@@ -253,11 +258,11 @@ function ensureBuiltinRows(sqlite: Database) {
   sqlite.prepare(`INSERT OR IGNORE INTO role_templates (id, key, version, name, description, base_prompt, config_json, created_by, owner_type, visibility, is_builtin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     'role_bugfix_lead',
     'bugfix_lead',
-    '1',
+    '内置',
     'Bug 负责人',
     '与用户对齐 Bug 详情，诊断根因，并委派修复给执行者。',
     BUGFIX_LEAD_PROMPT,
-    '{}',
+    '{"icon":"Bug"}',
     null,
     'system',
     'public',
@@ -268,38 +273,31 @@ function ensureBuiltinRows(sqlite: Database) {
   if (forceRolePrompts) {
     updateBuiltinRoleStmt.run(
       BUGFIX_LEAD_PROMPT,
-      '1',
+      '内置',
+      '{"icon":"Bug"}',
       now,
       'role_bugfix_lead',
     );
   }
-}
 
-function ensureBuiltinRoleIcons(sqlite: Database) {
-  const builtinIcons: Record<string, string> = {
-    role_planner: 'Star',
-    role_blank: 'User',
-    role_reviewer: 'Eye',
-    role_worker: 'Circle',
-    role_feature_lead: 'Triangle',
-    role_bugfix_lead: 'Bug',
+  // Update existing built-in rows: set version to '内置' and add icon if missing
+  const existing = sqlite.prepare("SELECT id, config_json, version FROM role_templates WHERE is_builtin = 1").all() as Array<{ id: string; config_json: string; version: string }>;
+  const iconMap: Record<string, string> = {
+    role_planner: 'Star', role_blank: 'User', role_reviewer: 'Eye',
+    role_worker: 'Circle', role_feature_lead: 'Triangle', role_bugfix_lead: 'Bug',
   };
-  const rows = sqlite.prepare("SELECT id, config_json FROM role_templates WHERE is_builtin = 1").all() as Array<{ id: string; config_json: string }>;
-  for (const row of rows) {
-    const icon = builtinIcons[row.id];
-    if (!icon) continue;
+  for (const row of existing) {
+    if (row.version === '内置' && row.config_json.includes('"icon"')) continue;
     try {
       const config = JSON.parse(row.config_json ?? '{}');
-      if (config.icon) continue; // already has icon
-      config.icon = icon;
-      sqlite.prepare('UPDATE role_templates SET config_json = ?, updated_at = ? WHERE id = ?').run(
+      if (!config.icon && iconMap[row.id]) config.icon = iconMap[row.id];
+      sqlite.prepare('UPDATE role_templates SET version = ?, config_json = ?, updated_at = ? WHERE id = ?').run(
+        '内置',
         JSON.stringify(config),
         Date.now(),
         row.id,
       );
-    } catch {
-      // skip parse errors
-    }
+    } catch { /* skip */ }
   }
 }
 
@@ -327,7 +325,6 @@ export function createSeedDb(path: string) {
   ensureProjectPinnedAtColumn(sqlite);
   ensureProjectTodosTable(sqlite);
   ensureBuiltinRows(sqlite);
-  ensureBuiltinRoleIcons(sqlite);
   ensureModelFallbacksColumn(sqlite);
   ensureSessionWorktreePathColumn(sqlite);
   sqlite.close();
