@@ -34,7 +34,7 @@ jobs:
         run: bash scripts/build-desktop.sh linux
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: linux-amd64
           path: |
@@ -63,7 +63,7 @@ jobs:
         run: bash scripts/build-desktop.sh win
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: windows-amd64
           path: |
@@ -86,7 +86,7 @@ jobs:
         run: bash scripts/build-desktop.sh mac x64
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: mac-amd64
           path: |
@@ -109,7 +109,7 @@ jobs:
         run: bash scripts/build-desktop.sh mac arm64
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: mac-arm64
           path: |
@@ -131,7 +131,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
 
       - name: Generate release notes
         run: python3 scripts/generate-release-notes.py "${{ github.ref_name }}"
