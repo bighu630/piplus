@@ -428,7 +428,7 @@ export default function SettingsPanel({
                             <span>
                               <span className="mr-1">{renderRoleIcon(tpl.icon, 'w-3.5 h-3.5')}</span>
                               <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                                版本 {tpl.version}
+                                {tpl.version === '内置' ? '内置版本' : `版本 ${tpl.version}`}
                                 {tpl.isBuiltin && <span className="ml-1 text-[9px] text-amber-500">(内置)</span>}
                               </span>
                             </span>

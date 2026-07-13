@@ -612,7 +612,7 @@ export default function ProjectSettingsModal({
                         <option value="">最新版本</option>
                         {roleVersions.map((v) => (
                           <option key={v.id} value={v.version}>
-                            v{v.version} {v.isBuiltin ? '(内置)' : ''}
+                            {v.version === '内置' ? '内置' : `v${v.version}`}
                           </option>
                         ))}
                       </select>
