@@ -275,6 +275,34 @@ function ensureBuiltinRows(sqlite: Database) {
   }
 }
 
+function ensureBuiltinRoleIcons(sqlite: Database) {
+  const builtinIcons: Record<string, string> = {
+    role_planner: 'Star',
+    role_blank: 'User',
+    role_reviewer: 'Eye',
+    role_worker: 'Circle',
+    role_feature_lead: 'Triangle',
+    role_bugfix_lead: 'Bug',
+  };
+  const rows = sqlite.prepare("SELECT id, config_json FROM role_templates WHERE is_builtin = 1").all() as Array<{ id: string; config_json: string }>;
+  for (const row of rows) {
+    const icon = builtinIcons[row.id];
+    if (!icon) continue;
+    try {
+      const config = JSON.parse(row.config_json ?? '{}');
+      if (config.icon) continue; // already has icon
+      config.icon = icon;
+      sqlite.prepare('UPDATE role_templates SET config_json = ?, updated_at = ? WHERE id = ?').run(
+        JSON.stringify(config),
+        Date.now(),
+        row.id,
+      );
+    } catch {
+      // skip parse errors
+    }
+  }
+}
+
 export function createSeedDb(path: string) {
   const sqlite = new Database(path, { create: true });
 
@@ -299,6 +327,7 @@ export function createSeedDb(path: string) {
   ensureProjectPinnedAtColumn(sqlite);
   ensureProjectTodosTable(sqlite);
   ensureBuiltinRows(sqlite);
+  ensureBuiltinRoleIcons(sqlite);
   ensureModelFallbacksColumn(sqlite);
   ensureSessionWorktreePathColumn(sqlite);
   sqlite.close();

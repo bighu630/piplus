@@ -26,7 +26,7 @@ export const ROLE_ICON_NAMES = [
 
 export type RoleIconName = (typeof ROLE_ICON_NAMES)[number];
 
-const ROLE_ICONS_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+export const ROLE_ICONS_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   Star, Circle, Eye, Triangle, Bug, User, FileText,
   Zap, Shield, Code, Terminal, Cpu, Database, Globe,
   Lock, Bell, Flag, Heart, Crown, Rocket, Compass,
@@ -50,4 +50,35 @@ export function renderRoleIcon(iconName: string | null | undefined, className?: 
  */
 export function defaultRoleIcon(): string {
   return 'FileText';
+}
+
+/**
+ * Map role keys to their default icon names (for Sidebar fallback).
+ */
+const ROLE_KEY_ICONS: Record<string, string> = {
+  planner: 'Star',
+  worker: 'Circle',
+  reviewer: 'Eye',
+  feature_lead: 'Triangle',
+  bugfix_lead: 'Bug',
+  blank: 'User',
+};
+
+/**
+ * Get the icon component for a role, given optional templates data.
+ * If templates data is available, looks up the icon from the backend.
+ * Otherwise falls back to the hardcoded key-based map.
+ */
+export function getRoleIconComponent(
+  roleKey: string,
+  templates?: Array<{ key: string; icon: string | null }>,
+): React.ComponentType<{ className?: string }> {
+  if (templates) {
+    const tpl = templates.find(t => t.key === roleKey);
+    if (tpl?.icon && ROLE_ICONS_MAP[tpl.icon]) {
+      return ROLE_ICONS_MAP[tpl.icon];
+    }
+  }
+  const fallbackName = ROLE_KEY_ICONS[roleKey] ?? 'FileText';
+  return ROLE_ICONS_MAP[fallbackName] ?? FileText;
 }
