@@ -114,6 +114,13 @@ function ensureSessionWorktreePathColumn(sqlite: Database) {
   }
 }
 
+function ensureCrossProjectSourceColumn(sqlite: Database) {
+  const columns = sqlite.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>;
+  if (!columns.some((col) => col.name === 'cross_project_source_json')) {
+    sqlite.exec('ALTER TABLE sessions ADD COLUMN cross_project_source_json TEXT');
+  }
+}
+
 function ensureBuiltinRows(sqlite: Database) {
   const now = Date.now();
   const seedPassword = Bun.password.hashSync('seed123', 'bcrypt');
@@ -327,6 +334,7 @@ export function createSeedDb(path: string) {
   ensureBuiltinRows(sqlite);
   ensureModelFallbacksColumn(sqlite);
   ensureSessionWorktreePathColumn(sqlite);
+  ensureCrossProjectSourceColumn(sqlite);
   sqlite.close();
 }
 
