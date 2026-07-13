@@ -151,7 +151,7 @@ describe('role manager service', () => {
     expect(session?.depth).toBe(0);
     expect(session?.roleTemplateId).toBe(template?.id);
     expect(session?.title).toContain('负责人');
-    expect(session?.compiledPrompt).toContain('project lead');
+    expect(session?.compiledPrompt).toContain('项目负责人');
     expect(session?.currentModelProvider).toBe('openai');
     expect(session?.currentModelId).toBe('gpt-4.1');
     expect(session?.piSessionLocatorJson).toContain('sessionFile');
