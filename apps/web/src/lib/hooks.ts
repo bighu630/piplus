@@ -698,7 +698,7 @@ export function useRoleTemplate(id: string | null) {
 export function useCreateRoleTemplateMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { key: string; version: string; basePrompt?: string; name?: string; description?: string }) =>
+    mutationFn: (payload: { key: string; version: string; basePrompt?: string; name?: string; description?: string; icon?: string }) =>
       createRoleTemplate(payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['role-templates'] });
@@ -709,7 +709,7 @@ export function useCreateRoleTemplateMutation() {
 export function useUpdateRoleTemplateMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...payload }: { id: string; basePrompt?: string; name?: string; description?: string }) =>
+    mutationFn: ({ id, ...payload }: { id: string; basePrompt?: string; name?: string; description?: string; icon?: string }) =>
       updateRoleTemplate(id, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['role-templates'] });

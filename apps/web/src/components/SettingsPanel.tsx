@@ -3,6 +3,13 @@ import { Settings, RefreshCw, Trash2 } from 'lucide-react';
 import Modal from './Modal';
 import { useRoleTemplates, useUpdateRoleTemplateMutation, useCreateRoleTemplateMutation, useDeleteRoleTemplateMutation } from '../lib/hooks';
 
+const ROLE_ICONS = [
+  '🤖', '🧠', '👨‍💻', '👩‍💻', '🛠️', '🔧', '⚙️', '🎯', '📋', '📝',
+  '🔍', '👁️', '🧪', '📊', '🎨', '✏️', '💡', '🚀', '⭐', '💎',
+  '👤', '🔄', '🔗', '📡', '📦', '🗂️', '📁', '🔒', '🔓', '🌐',
+  '🤝', '💬', '📢', '🎤', '🏗️', '🧩', '🔬', '📈', '📉', '🎮',
+];
+
 interface PkgMut {
   isPending: boolean;
   mutateAsync: (args: any) => Promise<any>;
@@ -82,6 +89,9 @@ export default function SettingsPanel({
   const [newRoleName, setNewRoleName] = useState('');
   const [newRoleDescription, setNewRoleDescription] = useState('');
   const [newRoleBasePrompt, setNewRoleBasePrompt] = useState('');
+  const [editingIcon, setEditingIcon] = useState('');
+  const [newRoleIcon, setNewRoleIcon] = useState('🤖');
+  const [showIconPicker, setShowIconPicker] = useState<string | null>(null);
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="设置" icon={<Settings className="w-4 h-4 text-slate-500 dark:text-slate-400" />} maxWidthClassName="max-w-xl">
@@ -334,11 +344,35 @@ export default function SettingsPanel({
                 <input value={newRoleDescription} onChange={(e) => setNewRoleDescription(e.target.value)} placeholder="会显示在 spawn_session 工具中" className="w-full px-2 py-1.5 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition" />
               </div>
               <div>
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 block mb-0.5">图标</label>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowIconPicker(showIconPicker === 'new' ? null : 'new')}
+                    className="w-9 h-9 flex items-center justify-center text-xl border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                  >
+                    {newRoleIcon}
+                  </button>
+                  {showIconPicker === 'new' && (
+                    <div className="absolute z-20 mt-1 p-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg grid grid-cols-8 gap-1 w-72">
+                      {ROLE_ICONS.map((icn) => (
+                        <button
+                          key={icn}
+                          onClick={() => { setNewRoleIcon(icn); setShowIconPicker(null); }}
+                          className={`w-7 h-7 flex items-center justify-center text-base rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer ${newRoleIcon === icn ? 'bg-blue-100 dark:bg-blue-900/30 ring-2 ring-blue-500' : ''}`}
+                        >
+                          {icn}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div>
                 <label className="text-[10px] text-slate-500 dark:text-slate-400 block mb-0.5">系统提示词 (Base Prompt)</label>
                 <textarea value={newRoleBasePrompt} onChange={(e) => setNewRoleBasePrompt(e.target.value)} placeholder="Enter the role's system prompt..." className="w-full h-24 px-3 py-2 text-xs font-mono border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition" />
               </div>
               <div className="flex justify-end gap-2">
-                <button onClick={() => { setShowNewRoleForm(false); setNewRoleKey(''); setNewRoleVersion(''); setNewRoleName(''); setNewRoleDescription(''); setNewRoleBasePrompt(''); }} className="px-2 py-1 text-[10px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer">取消</button>
+                <button onClick={() => { setShowNewRoleForm(false); setNewRoleKey(''); setNewRoleVersion(''); setNewRoleName(''); setNewRoleDescription(''); setNewRoleBasePrompt(''); setNewRoleIcon('🤖'); }} className="px-2 py-1 text-[10px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer">取消</button>
                 <button
                   onClick={async () => {
                     if (!newRoleKey || !newRoleVersion) { alert('Key 和版本为必填'); return; }
@@ -349,6 +383,7 @@ export default function SettingsPanel({
                         basePrompt: newRoleBasePrompt,
                         name: newRoleName || newRoleKey,
                         description: newRoleDescription,
+                        icon: newRoleIcon,
                       });
                       setShowNewRoleForm(false);
                       setNewRoleKey('');
@@ -356,6 +391,7 @@ export default function SettingsPanel({
                       setNewRoleName('');
                       setNewRoleDescription('');
                       setNewRoleBasePrompt('');
+                      setNewRoleIcon('🤖');
                     } catch (err) {
                       alert(err instanceof Error ? err.message : '创建失败');
                     }
@@ -378,6 +414,7 @@ export default function SettingsPanel({
                 <div key={key} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3">
                   <div className="flex items-center justify-between mb-2">
                     <div>
+                      <span className="text-lg mr-1">{templates[0].icon || '🤖'}</span>
                       <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">{key}</span>
                       <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-2">{templates[0].name}</span>
                     </div>
@@ -393,9 +430,12 @@ export default function SettingsPanel({
                       {templates.map((tpl) => (
                         <div key={tpl.id} className="border-t border-slate-200 dark:border-slate-700 pt-2">
                           <div className="flex items-center justify-between mb-1">
-                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                              版本 {tpl.version}
-                              {tpl.isBuiltin && <span className="ml-1 text-[9px] text-amber-500">(内置)</span>}
+                            <span>
+                              <span className="text-base mr-1">{tpl.icon || '🤖'}</span>
+                              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                                版本 {tpl.version}
+                                {tpl.isBuiltin && <span className="ml-1 text-[9px] text-amber-500">(内置)</span>}
+                              </span>
                             </span>
                             <div className="flex gap-1">
                               <button
@@ -450,6 +490,30 @@ export default function SettingsPanel({
                                 />
                               </div>
                               <div className="mb-2">
+                                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1 block">图标</label>
+                                <div className="relative">
+                                  <button
+                                    onClick={() => setShowIconPicker(showIconPicker === tpl.id ? null : tpl.id)}
+                                    className="w-9 h-9 flex items-center justify-center text-xl border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                                  >
+                                    {editingIcon || '🤖'}
+                                  </button>
+                                  {showIconPicker === tpl.id && (
+                                    <div className="absolute z-20 mt-1 p-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg grid grid-cols-8 gap-1 w-72">
+                                      {ROLE_ICONS.map((icn) => (
+                                        <button
+                                          key={icn}
+                                          onClick={() => { setEditingIcon(icn); setShowIconPicker(null); }}
+                                          className={`w-7 h-7 flex items-center justify-center text-base rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition cursor-pointer ${editingIcon === icn ? 'bg-blue-100 dark:bg-blue-900/30 ring-2 ring-blue-500' : ''}`}
+                                        >
+                                          {icn}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="mb-2">
                                 <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1 block">系统提示词 (Base Prompt)</label>
                                 <textarea
                                   value={editingPrompt}
@@ -462,10 +526,16 @@ export default function SettingsPanel({
                                 <button
                                   onClick={async () => {
                                     try {
-                                      await updateRoleTemplateMut.mutateAsync({ id: tpl.id, basePrompt: editingPrompt, description: editingDescription });
+                                      await updateRoleTemplateMut.mutateAsync({
+                                        id: tpl.id,
+                                        basePrompt: editingPrompt,
+                                        description: editingDescription,
+                                        icon: editingIcon || undefined,
+                                      });
                                       setEditingTemplateId(null);
                                       setEditingPrompt('');
                                       setEditingDescription('');
+                                      setEditingIcon('');
                                     } catch (err) {
                                       alert(err instanceof Error ? err.message : '保存失败');
                                     }
@@ -484,7 +554,7 @@ export default function SettingsPanel({
                                 {tpl.basePrompt.slice(0, 500)}{tpl.basePrompt.length > 500 ? '...' : ''}
                               </div>
                               <button
-                                onClick={() => { setEditingTemplateId(tpl.id); setEditingPrompt(tpl.basePrompt); setEditingDescription(tpl.description || ''); }}
+                                onClick={() => { setEditingTemplateId(tpl.id); setEditingPrompt(tpl.basePrompt); setEditingDescription(tpl.description || ''); setEditingIcon(tpl.icon || '🤖'); }}
                                 className="mt-1 text-[10px] text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
                               >
                                 编辑

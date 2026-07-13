@@ -513,6 +513,7 @@ export type RoleTemplateDTO = {
   name: string;
   description: string;
   basePrompt: string;
+  icon: string | null;
   isBuiltin: boolean;
   created_at: string;
   updated_at: string;
@@ -526,14 +527,14 @@ export function getRoleTemplate(id: string) {
   return request<RoleTemplateDTO>(`/api/v1/role-templates/${id}`);
 }
 
-export function createRoleTemplate(payload: { key: string; version: string; basePrompt?: string; name?: string; description?: string }) {
+export function createRoleTemplate(payload: { key: string; version: string; basePrompt?: string; name?: string; description?: string; icon?: string }) {
   return request<RoleTemplateDTO>('/api/v1/role-templates', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
-export function updateRoleTemplate(id: string, payload: { basePrompt?: string; name?: string; description?: string }) {
+export function updateRoleTemplate(id: string, payload: { basePrompt?: string; name?: string; description?: string; icon?: string }) {
   return request<RoleTemplateDTO>(`/api/v1/role-templates/${id}`, {
     method: 'PUT',
     body: JSON.stringify(payload),

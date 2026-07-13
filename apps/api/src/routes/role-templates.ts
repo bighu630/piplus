@@ -17,6 +17,7 @@ export function registerRoleTemplateRoutes(app: Hono) {
         name: roleTemplates.name,
         description: roleTemplates.description,
         basePrompt: roleTemplates.basePrompt,
+        configJson: roleTemplates.configJson,
         isBuiltin: roleTemplates.isBuiltin,
         createdAt: roleTemplates.createdAt,
         updatedAt: roleTemplates.updatedAt,
@@ -25,11 +26,25 @@ export function registerRoleTemplateRoutes(app: Hono) {
       .where(isNull(roleTemplates.archivedAt))
       .orderBy(roleTemplates.key, roleTemplates.version);
     
-    return c.json(rows.map(r => ({
-      ...r,
-      created_at: new Date(r.createdAt).toISOString(),
-      updated_at: new Date(r.updatedAt).toISOString(),
-    })));
+    return c.json(rows.map(r => {
+      let icon: string | null = null;
+      try {
+        const parsed = JSON.parse(r.configJson ?? '{}');
+        if (parsed.icon && typeof parsed.icon === 'string') icon = parsed.icon;
+      } catch {}
+      return {
+        id: r.id,
+        key: r.key,
+        version: r.version,
+        name: r.name,
+        description: r.description,
+        basePrompt: r.basePrompt,
+        icon,
+        isBuiltin: r.isBuiltin,
+        created_at: new Date(r.createdAt).toISOString(),
+        updated_at: new Date(r.updatedAt).toISOString(),
+      };
+    }));
   });
 
   // 获取单个角色模板详情
@@ -42,8 +57,14 @@ export function registerRoleTemplateRoutes(app: Hono) {
       .where(and(eq(roleTemplates.id, id), isNull(roleTemplates.archivedAt)))
       .limit(1);
     if (!row) return c.json({ error: { code: 'NOT_FOUND', message: 'Role template not found' } }, 404);
+    let icon: string | null = null;
+    try {
+      const parsed = JSON.parse(row.configJson ?? '{}');
+      if (parsed.icon && typeof parsed.icon === 'string') icon = parsed.icon;
+    } catch {}
     return c.json({
       ...row,
+      icon,
       created_at: new Date(row.createdAt).toISOString(),
       updated_at: new Date(row.updatedAt).toISOString(),
     });
@@ -54,7 +75,7 @@ export function registerRoleTemplateRoutes(app: Hono) {
     const db = createDb(`file:${getDbPath()}`);
     const userId = (c as any).get('userId') as string;
     const body = await c.req.json().catch(() => ({}));
-    const { key, version, basePrompt, name, description } = body as any;
+    const { key, version, basePrompt, name, description, icon } = body as any;
     
     if (!key || !version) {
       return c.json({ error: { code: 'VALIDATION_ERROR', message: 'key and version are required' } }, 400);
@@ -80,7 +101,7 @@ export function registerRoleTemplateRoutes(app: Hono) {
       name: name || key,
       description: description || '',
       basePrompt: basePrompt || '',
-      configJson: '{}',
+      configJson: icon ? JSON.stringify({ icon }) : '{}',
       createdBy: userId,
       ownerType: 'user',
       visibility: 'public',
@@ -111,6 +132,16 @@ export function registerRoleTemplateRoutes(app: Hono) {
     if (body.name !== undefined) updates.name = body.name;
     if (body.description !== undefined) updates.description = body.description;
     if (body.visibility !== undefined) updates.visibility = body.visibility;
+
+    // Handle icon update — merge into configJson
+    if (body.icon !== undefined) {
+      let config: Record<string, unknown> = {};
+      try {
+        config = JSON.parse(existing.configJson ?? '{}');
+      } catch {}
+      config.icon = body.icon;
+      updates.configJson = JSON.stringify(config);
+    }
 
     await db.update(roleTemplates).set(updates).where(eq(roleTemplates.id, id));
     
