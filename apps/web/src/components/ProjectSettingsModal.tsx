@@ -2,7 +2,8 @@ import React, { useState, useCallback, useEffect } from 'react';
 import Modal from './Modal';
 import Select from './Select';
 import { Settings, RefreshCw, Trash2 } from 'lucide-react';
-import { useProjectRoleModels, useProjectGitConfig, useUpdateProjectGitConfigMutation, useDeleteProjectGitConfigMutation } from '../lib/hooks';
+import { useProjectRoleModels, useProjectGitConfig, useUpdateProjectGitConfigMutation, useDeleteProjectGitConfigMutation, useProjectRoleConfig, useSetProjectRoleConfigMutation, useRoleTemplates } from '../lib/hooks';
+import type { RoleConfigEntry } from '../lib/api';
 
 interface ProjectSettingsModalProps {
   isOpen: boolean;
@@ -32,6 +33,25 @@ const ROLE_CONFIG_KEYS = [
 
 const CONFIGURABLE_ROLE_KEYS = ROLE_CONFIG_KEYS.filter((r) => r.key !== 'planner');
 
+/**
+ * Returns all role keys (built-in + custom) with labels for the role-config tab.
+ * Built-in roles keep their order, custom roles are appended alphabetically.
+ */
+function getAllRoleKeys(templates: Array<{ key: string; name: string; isBuiltin: boolean }> | undefined): Array<{ key: string; label: string }> {
+  const builtinKeys = new Set(ROLE_CONFIG_KEYS.map((r) => r.key));
+  const customTemplates = (templates ?? []).filter((t) => !builtinKeys.has(t.key));
+  const seenCustom = new Set<string>();
+  const customRoles: Array<{ key: string; label: string }> = [];
+  for (const t of customTemplates) {
+    if (!seenCustom.has(t.key)) {
+      seenCustom.add(t.key);
+      customRoles.push({ key: t.key, label: t.name });
+    }
+  }
+  customRoles.sort((a, b) => a.key.localeCompare(b.key));
+  return [...ROLE_CONFIG_KEYS, ...customRoles];
+}
+
 const THINKING_LABELS: Record<string, string> = {
   off: '思考：关',
   minimal: '思考：最低',
@@ -57,7 +77,7 @@ export default function ProjectSettingsModal({
   togglePkgMut,
   setProjectRoleModelsMut,
 }: ProjectSettingsModalProps) {
-  const [projectSettingsTab, setProjectSettingsTab] = useState<'roles' | 'packages' | 'git'>('roles');
+  const [projectSettingsTab, setProjectSettingsTab] = useState<'roles' | 'packages' | 'git' | 'role-config'>('roles');
   const [editRoleModelsList, setEditRoleModelsList] = useState<Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>>>({});
   const [projectPackageSource, setProjectPackageSource] = useState('');
   const [projectPackageError, setProjectPackageError] = useState<string | null>(null);
@@ -67,6 +87,10 @@ export default function ProjectSettingsModal({
   const [gitToken, setGitToken] = useState('');
   const [gitSaveSuccess, setGitSaveSuccess] = useState<string | null>(null);
   const [gitSaveError, setGitSaveError] = useState<string | null>(null);
+  const [editRoleConfig, setEditRoleConfig] = useState<Record<string, RoleConfigEntry>>({});
+  const roleTemplatesQuery = useRoleTemplates();
+  const projectRoleConfigQuery = useProjectRoleConfig(isOpen ? projectId : null);
+  const setProjectRoleConfigMut = useSetProjectRoleConfigMutation();
 
   const projectGitConfigQuery = useProjectGitConfig(isOpen ? projectId : null);
   const updateProjectGitConfigMut = useUpdateProjectGitConfigMutation();
@@ -93,10 +117,12 @@ export default function ProjectSettingsModal({
   []);
 
   // Populate editRoleModels when the modal opens and data arrives
+  // Includes built-in roles + custom roles from templates
   useEffect(() => {
     if (isOpen && projectRoleModelsQuery.data) {
       const initial: Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>> = {};
-      for (const role of ROLE_CONFIG_KEYS) {
+      const modelRoles = (getAllRoleKeys(roleTemplatesQuery.data) as Array<{ key: string; label: string }>).filter((r) => r.key !== 'planner');
+      for (const role of modelRoles) {
         const model = projectRoleModelsQuery.data[role.key];
         if (model) {
           const models: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [
@@ -114,7 +140,7 @@ export default function ProjectSettingsModal({
       }
       setEditRoleModelsList(initial);
     }
-  }, [isOpen, projectRoleModelsQuery.data]);
+  }, [isOpen, projectRoleModelsQuery.data, roleTemplatesQuery.data]);
 
   // Populate git config when modal opens
   useEffect(() => {
@@ -127,8 +153,33 @@ export default function ProjectSettingsModal({
     }
   }, [isOpen, projectGitConfigQuery.data]);
 
+  // Populate role config when modal opens
+  // Built-in roles default to enabled, custom roles default to disabled
+  useEffect(() => {
+    if (isOpen && projectRoleConfigQuery.data) {
+      const apiConfig = projectRoleConfigQuery.data as Record<string, RoleConfigEntry | null>;
+      const merged: Record<string, RoleConfigEntry> = {};
+
+      // Built-in roles: default enabled if not in project config
+      for (const r of ROLE_CONFIG_KEYS) {
+        merged[r.key] = apiConfig[r.key] ?? { enabled: true };
+      }
+
+      // Custom roles from templates: default disabled if not in project config
+      const builtinKeys = new Set(ROLE_CONFIG_KEYS.map((r) => r.key));
+      for (const t of roleTemplatesQuery.data ?? []) {
+        if (!builtinKeys.has(t.key) && !merged[t.key]) {
+          merged[t.key] = apiConfig[t.key] ?? { enabled: false };
+        }
+      }
+
+      setEditRoleConfig(merged);
+    }
+  }, [isOpen, projectRoleConfigQuery.data, roleTemplatesQuery.data]);
+
   const wrappedOnClose = useCallback(() => {
     setEditRoleModelsList({});
+    setEditRoleConfig({});
     setProjectPackageError(null);
     setProjectPackageSuccess(null);
     setProjectPackageSource('');
@@ -217,13 +268,14 @@ export default function ProjectSettingsModal({
         <button onClick={() => setProjectSettingsTab('roles')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'roles' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>角色模型</button>
         <button onClick={() => setProjectSettingsTab('packages')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'packages' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>扩展管理</button>
         <button onClick={() => setProjectSettingsTab('git')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'git' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>Git 设置</button>
+        <button onClick={() => setProjectSettingsTab('role-config')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${projectSettingsTab === 'role-config' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>角色配置</button>
       </div>
 
       {/* 角色模型 tab */}
       {projectSettingsTab === 'roles' && (
         <div className="space-y-4">
           <div className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">角色默认模型</div>
-          {CONFIGURABLE_ROLE_KEYS.map((role) => {
+          {(getAllRoleKeys(roleTemplatesQuery.data) as Array<{ key: string; label: string }>).filter((r) => r.key !== 'planner').map((role) => {
             const models = editRoleModelsList[role.key] ?? [];
             const displayModels = models.length === 0 ? [null] : models;
             return (
@@ -525,6 +577,78 @@ export default function ProjectSettingsModal({
               className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50"
             >
               {updateProjectGitConfigMut.isPending ? '保存中…' : '保存'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 角色配置 tab */}
+      {projectSettingsTab === 'role-config' && (
+        <div className="space-y-4">
+          <div className="text-xs font-semibold text-slate-700 dark:text-slate-200 mb-2">角色启用与版本</div>
+          {getAllRoleKeys(roleTemplatesQuery.data).map((role) => {
+            const config = editRoleConfig[role.key] ?? {};
+            const roleVersions = (roleTemplatesQuery.data ?? [])
+              .filter((t) => t.key === role.key)
+              .sort((a, b) => String(b.version).localeCompare(String(a.version), undefined, { numeric: true }));
+            return (
+              <div key={role.key} className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 px-3 py-2">
+                <div className="flex items-center gap-3 flex-1">
+                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 w-24 shrink-0">{role.label}</span>
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 w-16 shrink-0">{role.key}</span>
+                  <div className="flex-1 min-w-0">
+                    {(roleVersions.length > 0) ? (
+                      <select
+                        value={config.version ?? roleVersions[0]?.version ?? ''}
+                        onChange={(e) => setEditRoleConfig((prev) => ({
+                          ...prev,
+                          [role.key]: { ...prev[role.key], version: e.target.value || undefined },
+                        }))}
+                        className="w-full px-2 py-1 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+                      >
+                        <option value="">最新版本</option>
+                        {roleVersions.map((v) => (
+                          <option key={v.id} value={v.version}>
+                            v{v.version} {v.isBuiltin ? '(内置)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="text-[10px] text-slate-400">无可用版本</span>
+                    )}
+                  </div>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer ml-3 shrink-0">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={config.enabled !== false}
+                    onChange={(e) => setEditRoleConfig((prev) => ({
+                      ...prev,
+                      [role.key]: { ...prev[role.key], enabled: e.target.checked },
+                    }))}
+                  />
+                  <div className="w-9 h-5 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+              </div>
+            );
+          })}
+          <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+            <button onClick={wrappedOnClose} className="px-3 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer">取消</button>
+            <button
+              onClick={async () => {
+                if (!projectId) return;
+                try {
+                  await setProjectRoleConfigMut.mutateAsync({ projectId, config: editRoleConfig });
+                  wrappedOnClose();
+                } catch (err) {
+                  alert(err instanceof Error ? err.message : '保存失败');
+                }
+              }}
+              disabled={setProjectRoleConfigMut.isPending}
+              className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50"
+            >
+              {setProjectRoleConfigMut.isPending ? '保存中…' : '保存'}
             </button>
           </div>
         </div>

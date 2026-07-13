@@ -1,6 +1,6 @@
 import { createDb } from '@piplus/db/client';
 import { messages, projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { PiClient } from '@piplus/pi-client';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import { getRequestContext } from '../session/request-context';
@@ -59,11 +59,41 @@ function now() {
   return new Date();
 }
 
-async function findRoleTemplate(db: RoleManagerDb, key: 'planner' | 'blank'): Promise<SessionTemplateRow> {
+async function findRoleTemplateByVersion(db: RoleManagerDb, key: string, version?: string): Promise<SessionTemplateRow> {
+  if (version) {
+    const [template] = await db
+      .select({ id: roleTemplates.id, key: roleTemplates.key, basePrompt: roleTemplates.basePrompt, name: roleTemplates.name })
+      .from(roleTemplates)
+      .where(and(eq(roleTemplates.key, key), eq(roleTemplates.version, version), isNull(roleTemplates.archivedAt)))
+      .limit(1);
+    if (template) return template;
+  }
+  // No version specified or version not found: prefer built-in, then latest
+  const [builtin] = await db
+    .select({ id: roleTemplates.id, key: roleTemplates.key, basePrompt: roleTemplates.basePrompt, name: roleTemplates.name })
+    .from(roleTemplates)
+    .where(and(eq(roleTemplates.key, key), eq(roleTemplates.isBuiltin, true), isNull(roleTemplates.archivedAt)))
+    .orderBy(desc(roleTemplates.version))
+    .limit(1);
+  if (builtin) return builtin;
+  // No built-in version found: fall back to latest any version
   const [template] = await db
     .select({ id: roleTemplates.id, key: roleTemplates.key, basePrompt: roleTemplates.basePrompt, name: roleTemplates.name })
     .from(roleTemplates)
-    .where(eq(roleTemplates.key, key))
+    .where(and(eq(roleTemplates.key, key), isNull(roleTemplates.archivedAt)))
+    .orderBy(desc(roleTemplates.version))
+    .limit(1);
+  if (!template) {
+    throw new Error(`role_template_not_found:${key}`);
+  }
+  return template;
+}
+
+async function findRoleTemplate(db: RoleManagerDb, key: string): Promise<SessionTemplateRow> {
+  const [template] = await db
+    .select({ id: roleTemplates.id, key: roleTemplates.key, basePrompt: roleTemplates.basePrompt, name: roleTemplates.name })
+    .from(roleTemplates)
+    .where(and(eq(roleTemplates.key, key), isNull(roleTemplates.archivedAt)))
     .limit(1);
 
   if (!template) {
@@ -71,6 +101,20 @@ async function findRoleTemplate(db: RoleManagerDb, key: 'planner' | 'blank'): Pr
   }
 
   return template;
+}
+
+async function getProjectRoleConfig(db: RoleManagerDb, projectId: string): Promise<Record<string, { enabled?: boolean; version?: string }>> {
+  const [project] = await db
+    .select({ roleConfigJson: projects.roleConfigJson })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .limit(1);
+  if (!project?.roleConfigJson) return {};
+  try {
+    return JSON.parse(project.roleConfigJson);
+  } catch {
+    return {};
+  }
 }
 
 function compilePrompt(input: {
@@ -378,8 +422,10 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       const [parent] = await db.select().from(sessions).where(eq(sessions.id, input.parentSessionId)).limit(1);
       if (!parent) throw new Error('parent_session_not_found');
 
-      const [template] = await db.select().from(roleTemplates).where(eq(roleTemplates.key, input.role)).limit(1);
-      if (!template) throw new Error(`role_template_not_found:${input.role}`);
+      // Version-aware role selection
+      const roleConfig = await getProjectRoleConfig(db, input.projectId);
+      const roleVersion = roleConfig[input.role]?.version;
+      const template = await findRoleTemplateByVersion(db, input.role, roleVersion);
       const [project] = await db.select({ projectPath: projects.projectPath }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
 
       const title = input.objective;

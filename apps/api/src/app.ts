@@ -9,6 +9,7 @@ import { registerProjectRoutes } from './routes/projects';
 import { registerSessionRoutes, registerSessionMutationRoutes } from './routes/sessions';
 import { registerModelRoutes } from './routes/models';
 import { registerPackagesRoutes } from './routes/packages';
+import { registerRoleTemplateRoutes } from './routes/role-templates';
 import { registerTreeRoutes } from './routes/tree';
 
 function normalizeOrigin(raw: string | undefined): string | undefined {
@@ -51,6 +52,9 @@ export function createApp() {
   registerSessionMutationRoutes(app);
   app.use('/api/v1/packages/*', requireAuth);
   registerModelRoutes(app);
+  app.use('/api/v1/role-templates', requireAuth);
+  app.use('/api/v1/role-templates/*', requireAuth);
+  registerRoleTemplateRoutes(app);
   registerPackagesRoutes(app);
 
   // Serve web static files with runtime config injection (Docker/production mode)

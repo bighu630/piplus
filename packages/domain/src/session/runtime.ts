@@ -137,7 +137,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
     .limit(1);
   const roleKey = roleTmpl?.key ?? null;
 
-  let toolDefs = await buildAllToolDefs(input.db);
+  let toolDefs = await buildAllToolDefs(input.db, project.id);
   // Planner is a root node — it coordinates children via spawn_session only.
   // It does NOT call writeback_to_parent (reports directly to user) and
   // does NOT call send_message_to_session (feature_lead/bugfix_lead interact independently).
@@ -383,4 +383,66 @@ export async function startSessionRun(input: StartSessionRunInput) {
     projectId: project.id,
     sessionId: input.sessionId,
   };
+}
+
+/**
+ * Reload session runtimes for all active sessions in a project.
+ * Called after project role configuration changes.
+ * - Idle sessions: immediately reload with new tool definitions
+ * - Running sessions: skipped — they pick up new tools on next startSessionRun
+ */
+export async function reloadProjectSessionRuntimes(db: RoleManagerDb, piClient: PiClient, projectId: string): Promise<void> {
+  const activeSessions = await db
+    .select({
+      id: sessions.id,
+      runtimeStatus: sessions.runtimeStatus,
+      piSessionLocatorJson: sessions.piSessionLocatorJson,
+      createdBy: sessions.createdBy,
+    })
+    .from(sessions)
+    .where(and(
+      eq(sessions.projectId, projectId),
+      eq(sessions.status, 'active'),
+    ));
+
+  for (const session of activeSessions) {
+    // Skip running/stopping sessions — next startSessionRun picks up fresh tools
+    if (session.runtimeStatus === 'running' || session.runtimeStatus === 'stopping') {
+      console.log('[session-runtime] skip reload — session is running', { sessionId: session.id });
+      continue;
+    }
+
+    try {
+      const toolDefs = await buildAllToolDefs(db, projectId);
+      const locator = parseLocator(session.piSessionLocatorJson);
+
+      // Query project path for ensureRuntime
+      const [proj] = await db
+        .select({ projectPath: projects.projectPath })
+        .from(projects)
+        .where(eq(projects.id, projectId))
+        .limit(1);
+
+      await piClient.ensureRuntime(session.id, {
+        locator,
+        cwd: proj?.projectPath ?? '',
+        tools: toolDefs,
+        toolHandler: async (toolName, args) => {
+          return invokePlatformTool(toolName, args, {
+            db,
+            piClient,
+            sessionId: session.id,
+            userId: session.createdBy,
+          });
+        },
+      });
+      console.log('[session-runtime] reloaded session tools', { sessionId: session.id, projectId });
+    } catch (err) {
+      // Runtime may have been reclaimed (idle cleanup) — that's fine
+      console.debug('[session-runtime] skip reload — runtime not available', {
+        sessionId: session.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }

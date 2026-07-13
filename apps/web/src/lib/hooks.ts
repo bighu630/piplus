@@ -59,6 +59,15 @@ import {
   getProjectGitConfig,
   updateProjectGitConfig,
   deleteProjectGitConfig,
+  getRoleTemplates,
+  getRoleTemplate,
+  createRoleTemplate,
+  updateRoleTemplate,
+  deleteRoleTemplate,
+  getProjectRoleConfig,
+  setProjectRoleConfig,
+  type RoleTemplateDTO,
+  type RoleConfigEntry,
 } from './api';
 
 export function useAuthSession() {
@@ -664,5 +673,79 @@ export function useSessionCommands(sessionId: string | null) {
     },
     enabled: Boolean(sessionId),
     staleTime: 0,
+  });
+}
+
+// ── Role Templates Hooks ────────────────────────────────────────────
+
+export function useRoleTemplates() {
+  return useQuery({
+    queryKey: ['role-templates'],
+    queryFn: getRoleTemplates,
+    staleTime: 10_000,
+  });
+}
+
+export function useRoleTemplate(id: string | null) {
+  return useQuery({
+    queryKey: ['role-templates', id],
+    queryFn: () => getRoleTemplate(id!),
+    enabled: Boolean(id),
+    staleTime: 10_000,
+  });
+}
+
+export function useCreateRoleTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { key: string; version: string; basePrompt?: string; name?: string; description?: string }) =>
+      createRoleTemplate(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['role-templates'] });
+    },
+  });
+}
+
+export function useUpdateRoleTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...payload }: { id: string; basePrompt?: string; name?: string; description?: string }) =>
+      updateRoleTemplate(id, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['role-templates'] });
+    },
+  });
+}
+
+export function useDeleteRoleTemplateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteRoleTemplate(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['role-templates'] });
+    },
+  });
+}
+
+// ── Project Role Config Hooks ───────────────────────────────────────
+
+export function useProjectRoleConfig(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project', 'role-config', projectId],
+    queryFn: () => getProjectRoleConfig(projectId!),
+    enabled: Boolean(projectId),
+    staleTime: 10_000,
+  });
+}
+
+export function useSetProjectRoleConfigMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, config }: { projectId: string; config: Record<string, RoleConfigEntry | null> }) =>
+      setProjectRoleConfig(projectId, config),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['project', 'role-config', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['tree'] });
+    },
   });
 }

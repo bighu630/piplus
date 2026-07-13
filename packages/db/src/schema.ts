@@ -26,6 +26,7 @@ export const projects = sqliteTable('projects', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   roleDefaultModels: text('role_default_models').notNull().default('{}'),
   gitConfigJson: text('git_config_json').notNull().default('{}'),
+  roleConfigJson: text('role_config_json').notNull().default('{}'),
 });
 
 export const roleTemplates = sqliteTable('role_templates', {

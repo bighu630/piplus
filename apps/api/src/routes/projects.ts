@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
-import { createAuditService } from '@piplus/domain';
+import { createAuditService, reloadProjectSessionRuntimes } from '@piplus/domain';
 import { messages, projects, projectTodos, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
 import { createProjectWithPlanner } from '@piplus/domain/project/service';
 import { createTopLevelSession } from '@piplus/domain/session/service';
@@ -595,6 +595,78 @@ export function registerProjectRoutes(app: Hono) {
       gitConfigJson: '{}',
       updatedAt: new Date(),
     }).where(eq(projects.id, projectId));
+
+    return c.json({ ok: true });
+  });
+
+  // GET project role config
+  app.get('/api/v1/projects/:projectId/role-config', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+
+    const [project] = await db
+      .select({ id: projects.id, createdBy: projects.createdBy, roleConfigJson: projects.roleConfigJson })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    if (project.createdBy !== userId) return c.json({ error: { code: 'FORBIDDEN', message: 'Access denied' } }, 403);
+
+    let config = {};
+    try {
+      config = JSON.parse(project.roleConfigJson ?? '{}');
+    } catch {}
+    return c.json(config);
+  });
+
+  // PUT project role config
+  app.put('/api/v1/projects/:projectId/role-config', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const projectId = c.req.param('projectId');
+    const userId = (c as any).get('userId') as string;
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Invalid JSON body' } }, 400);
+    }
+
+    const [project] = await db
+      .select({ id: projects.id, createdBy: projects.createdBy })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .limit(1);
+    if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
+    if (project.createdBy !== userId) return c.json({ error: { code: 'FORBIDDEN', message: 'Access denied' } }, 403);
+
+    // Validate body structure: each key must be an object with optional enabled and version
+    if (typeof body !== 'object' || body === null) {
+      return c.json({ error: { code: 'VALIDATION_ERROR', message: 'Body must be a JSON object mapping role keys to config objects' } }, 400);
+    }
+    for (const [roleKey, config] of Object.entries(body)) {
+      if (config !== null && typeof config === 'object') {
+        const roleCfg = config as Record<string, unknown>;
+        if (roleCfg.enabled !== undefined && typeof roleCfg.enabled !== 'boolean') {
+          return c.json({ error: { code: 'VALIDATION_ERROR', message: `enabled for '${roleKey}' must be boolean` } }, 400);
+        }
+        if (roleCfg.version !== undefined && typeof roleCfg.version !== 'string') {
+          return c.json({ error: { code: 'VALIDATION_ERROR', message: `version for '${roleKey}' must be string` } }, 400);
+        }
+      } else if (config !== null) {
+        return c.json({ error: { code: 'VALIDATION_ERROR', message: `Value for '${roleKey}' must be an object or null` } }, 400);
+      }
+    }
+
+    await db.update(projects).set({
+      roleConfigJson: JSON.stringify(body),
+      updatedAt: new Date(),
+    }).where(eq(projects.id, projectId));
+
+    // Reload session runtimes for all active sessions
+    reloadProjectSessionRuntimes(db, piClient, projectId).catch((err) => {
+      console.warn('[role-config] Failed to reload some session runtimes', { error: err.message });
+    });
 
     return c.json({ ok: true });
   });

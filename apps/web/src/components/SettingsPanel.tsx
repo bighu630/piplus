@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Settings, RefreshCw, Trash2 } from 'lucide-react';
 import Modal from './Modal';
+import { useRoleTemplates, useUpdateRoleTemplateMutation, useCreateRoleTemplateMutation, useDeleteRoleTemplateMutation } from '../lib/hooks';
 
 interface PkgMut {
   isPending: boolean;
@@ -63,10 +64,24 @@ export default function SettingsPanel({
   hideRoleLabels,
   onHideRoleLabelsChange,
 }: SettingsPanelProps) {
-  const [settingsTab, setSettingsTab] = useState<'general' | 'packages'>('general');
+  const [settingsTab, setSettingsTab] = useState<'general' | 'packages' | 'roles'>('general');
   const [packageSource, setPackageSource] = useState('');
   const [packageError, setPackageError] = useState<string | null>(null);
   const [packageSuccess, setPackageSuccess] = useState<string | null>(null);
+  const roleTemplatesQuery = useRoleTemplates();
+  const updateRoleTemplateMut = useUpdateRoleTemplateMutation();
+  const createRoleTemplateMut = useCreateRoleTemplateMutation();
+  const deleteRoleTemplateMut = useDeleteRoleTemplateMutation();
+  const [expandedRole, setExpandedRole] = useState<string | null>(null);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [editingPrompt, setEditingPrompt] = useState('');
+  const [editingDescription, setEditingDescription] = useState('');
+  const [showNewRoleForm, setShowNewRoleForm] = useState(false);
+  const [newRoleKey, setNewRoleKey] = useState('');
+  const [newRoleVersion, setNewRoleVersion] = useState('');
+  const [newRoleName, setNewRoleName] = useState('');
+  const [newRoleDescription, setNewRoleDescription] = useState('');
+  const [newRoleBasePrompt, setNewRoleBasePrompt] = useState('');
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="设置" icon={<Settings className="w-4 h-4 text-slate-500 dark:text-slate-400" />} maxWidthClassName="max-w-xl">
@@ -74,6 +89,7 @@ export default function SettingsPanel({
       <div className="sticky top-0 z-10 bg-white dark:bg-slate-900 flex border-b border-slate-200 dark:border-slate-700 -mx-1">
         <button onClick={() => setSettingsTab('general')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${settingsTab === 'general' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>常规</button>
         <button onClick={() => setSettingsTab('packages')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${settingsTab === 'packages' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>包管理</button>
+        <button onClick={() => setSettingsTab('roles')} className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${settingsTab === 'roles' ? 'border-blue-600 text-blue-700 dark:text-blue-400' : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}>角色管理</button>
       </div>
 
       {/* 常规 tab — 包含快捷键、主题、通知、模型 */}
@@ -281,6 +297,223 @@ export default function SettingsPanel({
           )}
         </div>
       )}
+      {/* 角色管理 tab */}
+      {settingsTab === 'roles' && (
+        <div className="space-y-4">
+          {/* 新建角色按钮 */}
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">角色模板</span>
+            <button
+              onClick={() => setShowNewRoleForm(true)}
+              className="px-3 py-1.5 text-[10px] font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer"
+            >
+              + 新建角色
+            </button>
+          </div>
+
+          {/* 新建角色表单 */}
+          {showNewRoleForm && (
+            <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/20 p-3 space-y-2">
+              <div className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">新建角色</div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 block mb-0.5">Key（角色标识）</label>
+                  <input value={newRoleKey} onChange={(e) => setNewRoleKey(e.target.value)} placeholder="my_custom_role" className="w-full px-2 py-1.5 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 dark:text-slate-400 block mb-0.5">版本</label>
+                  <input value={newRoleVersion} onChange={(e) => setNewRoleVersion(e.target.value)} placeholder="1.0" className="w-full px-2 py-1.5 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition" />
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 block mb-0.5">名称</label>
+                <input value={newRoleName} onChange={(e) => setNewRoleName(e.target.value)} placeholder="角色名称" className="w-full px-2 py-1.5 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition" />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 block mb-0.5">描述</label>
+                <input value={newRoleDescription} onChange={(e) => setNewRoleDescription(e.target.value)} placeholder="会显示在 spawn_session 工具中" className="w-full px-2 py-1.5 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition" />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 dark:text-slate-400 block mb-0.5">系统提示词 (Base Prompt)</label>
+                <textarea value={newRoleBasePrompt} onChange={(e) => setNewRoleBasePrompt(e.target.value)} placeholder="Enter the role's system prompt..." className="w-full h-24 px-3 py-2 text-xs font-mono border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition" />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => { setShowNewRoleForm(false); setNewRoleKey(''); setNewRoleVersion(''); setNewRoleName(''); setNewRoleDescription(''); setNewRoleBasePrompt(''); }} className="px-2 py-1 text-[10px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer">取消</button>
+                <button
+                  onClick={async () => {
+                    if (!newRoleKey || !newRoleVersion) { alert('Key 和版本为必填'); return; }
+                    try {
+                      await createRoleTemplateMut.mutateAsync({
+                        key: newRoleKey,
+                        version: newRoleVersion,
+                        basePrompt: newRoleBasePrompt,
+                        name: newRoleName || newRoleKey,
+                        description: newRoleDescription,
+                      });
+                      setShowNewRoleForm(false);
+                      setNewRoleKey('');
+                      setNewRoleVersion('');
+                      setNewRoleName('');
+                      setNewRoleDescription('');
+                      setNewRoleBasePrompt('');
+                    } catch (err) {
+                      alert(err instanceof Error ? err.message : '创建失败');
+                    }
+                  }}
+                  disabled={createRoleTemplateMut.isPending}
+                  className="px-3 py-1.5 text-[10px] font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50"
+                >
+                  {createRoleTemplateMut.isPending ? '创建中…' : '创建'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(roleTemplatesQuery.data ?? []).length === 0 ? (
+            <div className="text-xs text-slate-400 dark:text-slate-500 text-center py-4">暂无角色模板</div>
+          ) : (
+            <div className="space-y-3">
+              {/* Group by key */}
+              {Array.from(groupByKey(roleTemplatesQuery.data ?? [])).map(([key, templates]) => (
+                <div key={key} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">{key}</span>
+                      <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-2">{templates[0].name}</span>
+                    </div>
+                    <button
+                      onClick={() => setExpandedRole(key === expandedRole ? null : key)}
+                      className="text-[10px] text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                    >
+                      {expandedRole === key ? '收起' : `${templates.length} 个版本`}
+                    </button>
+                  </div>
+                  {expandedRole === key && (
+                    <div className="space-y-3">
+                      {templates.map((tpl) => (
+                        <div key={tpl.id} className="border-t border-slate-200 dark:border-slate-700 pt-2">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                              版本 {tpl.version}
+                              {tpl.isBuiltin && <span className="ml-1 text-[9px] text-amber-500">(内置)</span>}
+                            </span>
+                            <div className="flex gap-1">
+                              <button
+                                onClick={async () => {
+                                  // Create new version from this template
+                                  const newVersion = prompt('请输入新版本号:', String(Number(tpl.version) + 1));
+                                  if (!newVersion) return;
+                                  try {
+                                    await createRoleTemplateMut.mutateAsync({
+                                      key: tpl.key,
+                                      version: newVersion,
+                                      basePrompt: tpl.basePrompt,
+                                      name: tpl.name,
+                                      description: tpl.description,
+                                    });
+                                  } catch (err) {
+                                    alert(err instanceof Error ? err.message : '创建失败');
+                                  }
+                                }}
+                                className="text-[10px] text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                                title="以此版本为基础创建新版本"
+                              >
+                                新建版本
+                              </button>
+                              {!tpl.isBuiltin && (
+                                <button
+                                  onClick={async () => {
+                                    if (!confirm(`确定删除角色模板「${tpl.key} v${tpl.version}」?`)) return;
+                                    try {
+                                      await deleteRoleTemplateMut.mutateAsync(tpl.id);
+                                    } catch (err) {
+                                      alert(err instanceof Error ? err.message : '删除失败');
+                                    }
+                                  }}
+                                  className="text-[10px] text-red-500 hover:text-red-600 cursor-pointer"
+                                >
+                                  删除
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {editingTemplateId === tpl.id ? (
+                            <div>
+                              <div className="mb-2">
+                                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1 block">描述</label>
+                                <input
+                                  type="text"
+                                  value={editingDescription}
+                                  onChange={(e) => setEditingDescription(e.target.value)}
+                                  placeholder="角色简短描述，会显示在工具注册中"
+                                  className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition"
+                                />
+                              </div>
+                              <div className="mb-2">
+                                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1 block">系统提示词 (Base Prompt)</label>
+                                <textarea
+                                  value={editingPrompt}
+                                  onChange={(e) => setEditingPrompt(e.target.value)}
+                                  className="w-full h-40 px-3 py-2 text-xs font-mono border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 transition"
+                                />
+                              </div>
+                              <div className="flex justify-end gap-2 mt-1">
+                                <button onClick={() => { setEditingTemplateId(null); setEditingPrompt(''); setEditingDescription(''); }} className="px-2 py-1 text-[10px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer">取消</button>
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      await updateRoleTemplateMut.mutateAsync({ id: tpl.id, basePrompt: editingPrompt, description: editingDescription });
+                                      setEditingTemplateId(null);
+                                      setEditingPrompt('');
+                                      setEditingDescription('');
+                                    } catch (err) {
+                                      alert(err instanceof Error ? err.message : '保存失败');
+                                    }
+                                  }}
+                                  disabled={updateRoleTemplateMut.isPending}
+                                  className="px-2 py-1 text-[10px] font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded cursor-pointer disabled:opacity-50"
+                                >
+                                  {updateRoleTemplateMut.isPending ? '保存中…' : '保存'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400 mb-1">{tpl.description || '（无描述）'}</div>
+                              <div className="max-h-24 overflow-y-auto text-[11px] text-slate-600 dark:text-slate-300 whitespace-pre-wrap font-mono bg-white dark:bg-slate-900 rounded-lg p-2 border border-slate-200 dark:border-slate-700">
+                                {tpl.basePrompt.slice(0, 500)}{tpl.basePrompt.length > 500 ? '...' : ''}
+                              </div>
+                              <button
+                                onClick={() => { setEditingTemplateId(tpl.id); setEditingPrompt(tpl.basePrompt); setEditingDescription(tpl.description || ''); }}
+                                className="mt-1 text-[10px] text-blue-600 hover:text-blue-700 dark:text-blue-400 cursor-pointer"
+                              >
+                                编辑
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </Modal>
   );
+}
+
+function groupByKey(templates: Array<{ key: string; version: string; [key: string]: any }>): Map<string, any[]> {
+  const map = new Map<string, any[]>();
+  for (const t of templates) {
+    if (!map.has(t.key)) map.set(t.key, []);
+    map.get(t.key)!.push(t);
+  }
+  // Sort each group by version descending
+  for (const [key, list] of map) {
+    list.sort((a, b) => String(b.version).localeCompare(String(a.version), undefined, { numeric: true }));
+  }
+  return map;
 }

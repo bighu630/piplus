@@ -53,6 +53,13 @@ function ensureGitConfigColumn(sqlite: Database) {
   }
 }
 
+function ensureRoleConfigColumn(sqlite: Database) {
+  const columns = sqlite.prepare("SELECT name FROM pragma_table_info('projects')").all() as Array<{ name: string }>;
+  if (!columns.some((col) => col.name === 'role_config_json')) {
+    sqlite.exec("ALTER TABLE projects ADD COLUMN role_config_json TEXT NOT NULL DEFAULT '{}'");
+  }
+}
+
 function ensureSessionPinnedAtColumn(sqlite: Database) {
   const columns = sqlite.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>;
   const hasColumn = columns.some((col) => col.name === 'pinned_at');
@@ -286,6 +293,7 @@ export function createSeedDb(path: string) {
   ensureProjectPathColumns(sqlite);
   ensureRoleDefaultModelsColumn(sqlite);
   ensureGitConfigColumn(sqlite);
+  ensureRoleConfigColumn(sqlite);
   ensureMessageRequestIdColumn(sqlite);
   ensureSessionPinnedAtColumn(sqlite);
   ensureProjectPinnedAtColumn(sqlite);
