@@ -435,6 +435,18 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
         state.sent.push({ sessionId, content, requestId: reqCtx?.requestId ?? null });
         if (!firstRequestId) {
           firstRequestId = reqCtx?.requestId ?? null;
+          // Simulate child producing some output so model fallback logic doesn't fire
+          await db.insert(messages).values({
+            id: `msg_asst_${crypto.randomUUID().slice(0, 8)}`,
+            sessionId,
+            piMessageId: null,
+            messageKind: 'normal',
+            role: 'assistant',
+            contentText: '',
+            contentVersion: 1,
+            requestId: null,
+            createdAt: new Date(nowMs),
+          } as any);
           setTimeout(async () => {
             await db.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date(nowMs) }).where(eq(sessions.id, sessionId));
             nowMs += 61_000;
@@ -1182,7 +1194,21 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       async closeRuntime() { return; },
       async listAvailableModels() { return []; },
       async getCurrentModel() { return null; },
-      async sendMessage() { return { sessionId: 'child', runId: 'run' }; },
+      async sendMessage(sessionId: string) {
+        // Insert assistant message so model fallback logic doesn't fire before stopping check
+        await db.insert(messages).values({
+          id: `msg_asst_${crypto.randomUUID().slice(0, 8)}`,
+          sessionId,
+          piMessageId: null,
+          messageKind: 'normal',
+          role: 'assistant',
+          contentText: '',
+          contentVersion: 1,
+          requestId: null,
+          createdAt: new Date(),
+        } as any);
+        return { sessionId, runId: 'run' };
+      },
       async ensureRuntime() { return; },
       async injectPromptIfNeeded() { return; },
       isFirstConversation() { return false; },
