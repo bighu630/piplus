@@ -97,16 +97,27 @@ export function setPackageFiltered(
   const settingsManager = SettingsManager.create(resolvedCwd, agentDir);
 
   // Get current packages from the appropriate scope (defensive copy)
-  const scopeSettings = options?.local
+  const isProject = Boolean(options?.local);
+  const scopeSettings = isProject
     ? settingsManager.getProjectSettings()
     : settingsManager.getGlobalSettings();
-  const packages: PackageSource[] = [...(scopeSettings.packages ?? [])];
+  const rawPackages = scopeSettings.packages ?? [];
+  const packages: PackageSource[] = [...rawPackages];
+
+  console.log('[setPackageFiltered] source=%s filtered=%s local=%s packagesCount=%d', source, filtered, isProject, packages.length);
+  for (let i = 0; i < packages.length; i++) {
+    const p = packages[i];
+    const pkgSource = typeof p === 'string' ? p : p.source;
+    console.log('[setPackageFiltered]   packages[%d] type=%s source=%s', i, typeof p, pkgSource);
+  }
 
   // Find the matching package by comparing the exact source string
   const index = packages.findIndex((p) => {
     const pkgSource = typeof p === 'string' ? p : p.source;
     return pkgSource === source;
   });
+
+  console.log('[setPackageFiltered] matchIndex=%d', index);
 
   if (index === -1) return false;
 
