@@ -48,8 +48,9 @@ interface SidebarProps {
   onOpenProjectSettings?: (projectId: string) => void;
   showArchived: boolean;
   onToggleShowArchived: () => void;
-  showWorker: boolean;
-  onToggleShowWorker: () => void;
+  showCompleted: boolean;
+  onToggleShowCompleted: () => void;
+  hiddenCompletedRoles?: string[];
   treeLoading: boolean;
   creatingSession: boolean;
   /** 移动端模式：全宽展示树，无折叠/拖拽交互 */
@@ -134,8 +135,9 @@ function Sidebar({
   onOpenProjectSettings,
   showArchived,
   onToggleShowArchived,
-  showWorker,
-  onToggleShowWorker,
+  showCompleted,
+  onToggleShowCompleted,
+  hiddenCompletedRoles = [],
   treeLoading,
   creatingSession,
   isMobile,
@@ -251,7 +253,7 @@ function Sidebar({
               ? { ...s, children: filteredChildren }
               : null;
           }
-          if (s.role_template_key === 'worker' && !showWorker) {
+          if (!showCompleted && hiddenCompletedRoles?.includes(s.role_template_key)) {
             return filteredChildren.length > 0 && anyRunning(filteredChildren)
               ? { ...s, children: filteredChildren }
               : null;
@@ -279,7 +281,7 @@ function Sidebar({
         return filtered.length > 0 ? { ...p, sessions: filtered } : null;
       })
       .filter((p): p is ProjectDTO => p !== null);
-  }, [projects, sidebarSearch, showArchived, showWorker]);
+  }, [projects, sidebarSearch, showArchived, showCompleted, hiddenCompletedRoles]);
 
   // Shared comparator: blank first (no children, compact), then pinned first, then newest pinned first, then last_activity_at desc
   function sortByPinnedThenActivity(a: SessionTreeNodeDTO, b: SessionTreeNodeDTO): number {
@@ -569,12 +571,12 @@ function Sidebar({
           <label className="flex items-center gap-1.5 cursor-pointer select-none ml-auto">
             <input
               type="checkbox"
-              checked={showWorker}
-              onChange={onToggleShowWorker}
+              checked={showCompleted}
+              onChange={onToggleShowCompleted}
               className="w-3 h-3 accent-slate-600 rounded cursor-pointer dark:bg-slate-700 dark:border-slate-600"
             />
-            <span className={`text-[10px] font-semibold ${showWorker ? 'text-blue-700 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500'}`}>
-              显示已完成Worker
+            <span className={`text-[10px] font-semibold ${showCompleted ? 'text-amber-700 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}>
+              显示已完成
             </span>
           </label>
         </div>

@@ -160,13 +160,29 @@ export default function App() {
   const [editTitleValue, setEditTitleValue] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<any>(null);
-  const [showWorker, setShowWorker] = useState(() => {
-    try { return localStorage.getItem('pi-show-worker') !== 'false'; } catch { return true; }
+  const [hiddenCompletedRoles, setHiddenCompletedRoles] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('pi-hidden-completed-roles');
+      if (saved) return JSON.parse(saved) as string[];
+      // Migration from old pi-show-worker
+      const showWorker = localStorage.getItem('pi-show-worker');
+      if (showWorker === 'false') return ['worker'];
+      return [];
+    } catch { return []; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('pi-hidden-completed-roles', JSON.stringify(hiddenCompletedRoles)); } catch {}
+  }, [hiddenCompletedRoles]);
+  const [showCompleted, setShowCompleted] = useState(() => {
+    try { return localStorage.getItem('pi-show-completed') !== 'false'; } catch { return true; }
   });
   const [hideRoleLabels, setHideRoleLabels] = useState(() => {
     try { return localStorage.getItem('pi-hide-role-labels') === 'true'; } catch { return false; }
   });
 
+  useEffect(() => {
+    try { localStorage.setItem('pi-show-completed', String(showCompleted)); } catch {}
+  }, [showCompleted]);
   useEffect(() => {
     try { localStorage.setItem('pi-hide-role-labels', String(hideRoleLabels)); } catch {}
   }, [hideRoleLabels]);
@@ -565,12 +581,16 @@ export default function App() {
     });
   }, []);
 
-  const handleToggleShowWorker = useCallback(() => {
-    setShowWorker((v) => {
+  const handleToggleShowCompleted = useCallback(() => {
+    setShowCompleted((v) => {
       const next = !v;
-      try { localStorage.setItem('pi-show-worker', String(next)); } catch {}
+      try { localStorage.setItem('pi-show-completed', String(next)); } catch {}
       return next;
     });
+  }, []);
+
+  const handleHiddenCompletedRolesChange = useCallback((roles: string[]) => {
+    setHiddenCompletedRoles(roles);
   }, []);
 
   const handleTerminalMessage = useCallback((msg: { type: string; sessionId: string; data?: string; cols?: number; rows?: number }) => {
@@ -641,8 +661,9 @@ export default function App() {
           onOpenProjectSettings={handleOpenProjectSettings}
           showArchived={showArchived}
           onToggleShowArchived={handleToggleShowArchived}
-          showWorker={showWorker}
-          onToggleShowWorker={handleToggleShowWorker}
+          showCompleted={showCompleted}
+          onToggleShowCompleted={handleToggleShowCompleted}
+          hiddenCompletedRoles={hiddenCompletedRoles}
           treeLoading={treeQuery.isLoading}
           creatingSession={createSessionMut.isPending}
           isMobile={isMobile}
@@ -896,6 +917,8 @@ export default function App() {
         updatePkgMut={updatePkgMut}
         hideRoleLabels={hideRoleLabels}
         onHideRoleLabelsChange={setHideRoleLabels}
+        hiddenCompletedRoles={hiddenCompletedRoles}
+        onHiddenCompletedRolesChange={handleHiddenCompletedRolesChange}
       />
 
 

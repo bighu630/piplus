@@ -44,6 +44,8 @@ interface SettingsPanelProps {
   updatePkgMut: PkgMut;
   hideRoleLabels: boolean;
   onHideRoleLabelsChange: (v: boolean) => void;
+  hiddenCompletedRoles: string[];
+  onHiddenCompletedRolesChange: (roles: string[]) => void;
 }
 
 export default function SettingsPanel({
@@ -65,6 +67,8 @@ export default function SettingsPanel({
   updatePkgMut,
   hideRoleLabels,
   onHideRoleLabelsChange,
+  hiddenCompletedRoles,
+  onHiddenCompletedRolesChange,
 }: SettingsPanelProps) {
   const [settingsTab, setSettingsTab] = useState<'general' | 'packages' | 'roles'>('general');
   const [packageSource, setPackageSource] = useState('');
@@ -146,6 +150,37 @@ export default function SettingsPanel({
             {notificationPermissionStatus === 'unsupported' && (
               <p className="text-[11px] text-amber-600 dark:text-amber-400">当前环境不支持系统通知（需要 HTTPS 或 localhost）。</p>
             )}
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">按角色隐藏已完成会话</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">勾选的角色，其已完成（归档）的会话将在侧边栏中隐藏。（取消勾选则显示。）</div>
+              </div>
+            </div>
+            <div className="space-y-1.5 mt-2">
+              {(roleTemplatesQuery.data ?? [])
+                .filter((tpl, idx, arr) => arr.findIndex(t => t.key === tpl.key) === idx) // deduplicate by key
+                .sort((a, b) => a.key.localeCompare(b.key))
+                .map(tpl => (
+                  <label key={tpl.key} className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={hiddenCompletedRoles.includes(tpl.key)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          onHiddenCompletedRolesChange([...hiddenCompletedRoles, tpl.key]);
+                        } else {
+                          onHiddenCompletedRolesChange(hiddenCompletedRoles.filter(k => k !== tpl.key));
+                        }
+                      }}
+                      className="w-3.5 h-3.5 accent-slate-600 rounded cursor-pointer dark:bg-slate-700 dark:border-slate-600"
+                    />
+                    <span className="text-xs text-slate-700 dark:text-slate-300">{tpl.name || tpl.key}</span>
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500">({tpl.key})</span>
+                  </label>
+                ))}
+            </div>
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
