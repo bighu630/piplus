@@ -121,9 +121,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -134,15 +131,10 @@ jobs:
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
 
       - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            iambighu/piplus:latest
-            iambighu/piplus:${{ env.VERSION }}
-          build-args: |
-            APP_VERSION=${{ env.VERSION }}
+        run: |
+          docker build             --build-arg APP_VERSION=${{ env.VERSION }}             -t iambighu/piplus:${{ env.VERSION }}             -t iambighu/piplus:latest .
+          docker push iambighu/piplus:${{ env.VERSION }}
+          docker push iambighu/piplus:latest
 
   release:
     name: Create Release
@@ -161,18 +153,6 @@ jobs:
 
       - name: Download artifacts
         uses: actions/download-artifact@v6
-        with:
-          pattern: linux-amd64
-
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v6
-        with:
-          pattern: windows-amd64
-
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v6
-        with:
-          pattern: mac-*
 
       - name: Generate release notes
         run: python3 scripts/generate-release-notes.py "${{ github.ref_name }}"
