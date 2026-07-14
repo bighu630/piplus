@@ -23,6 +23,7 @@ import {
   ArrowUp,
 } from 'lucide-react';
 import { ROLE_ICONS_MAP } from '../lib/role-icons';
+import { useRoleTemplates } from '../lib/hooks';
 import { fuzzyMatch } from '../lib/fuzzy';
 const appVersion = __APP_VERSION__;
 
@@ -142,6 +143,7 @@ function Sidebar({
   onReturnToTree,
   hideRoleLabels,
 }: SidebarProps) {
+  const roleTemplatesQuery = useRoleTemplates();
   const [sidebarSearch, setSidebarSearch] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(() => {
     try {
