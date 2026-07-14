@@ -363,7 +363,7 @@ function Sidebar({
               </div>
             )}
             <div className="flex items-center space-x-1.5 min-w-0">
-              {(isPinned || !effectiveCollapsed) && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : isPinned ? 'text-amber-300 dark:text-amber-300' : 'text-slate-400'}` })}
+              {(isPinned || !effectiveCollapsed) && React.createElement(roleIcon(session.role_template_key, roleTemplatesQuery.data), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : isPinned ? 'text-amber-300 dark:text-amber-300' : 'text-slate-400'}` })}
 
             {!effectiveCollapsed && (
               <span
