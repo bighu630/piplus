@@ -23,8 +23,9 @@ import {
   ArrowUp,
 } from 'lucide-react';
 import { ROLE_ICONS_MAP } from '../lib/role-icons';
+import { useRoleTemplates } from '../lib/hooks';
 import { fuzzyMatch } from '../lib/fuzzy';
-import { version as appVersion } from '../../../../apps/desktop/package.json';
+const appVersion = __APP_VERSION__;
 
 interface SidebarProps {
   projects: ProjectDTO[];
@@ -47,8 +48,9 @@ interface SidebarProps {
   onOpenProjectSettings?: (projectId: string) => void;
   showArchived: boolean;
   onToggleShowArchived: () => void;
-  showWorker: boolean;
-  onToggleShowWorker: () => void;
+  showCompleted: boolean;
+  onToggleShowCompleted: () => void;
+  hiddenCompletedRoles?: string[];
   treeLoading: boolean;
   creatingSession: boolean;
   /** 移动端模式：全宽展示树，无折叠/拖拽交互 */
@@ -133,8 +135,9 @@ function Sidebar({
   onOpenProjectSettings,
   showArchived,
   onToggleShowArchived,
-  showWorker,
-  onToggleShowWorker,
+  showCompleted,
+  onToggleShowCompleted,
+  hiddenCompletedRoles = [],
   treeLoading,
   creatingSession,
   isMobile,
@@ -142,6 +145,7 @@ function Sidebar({
   onReturnToTree,
   hideRoleLabels,
 }: SidebarProps) {
+  const roleTemplatesQuery = useRoleTemplates();
   const [sidebarSearch, setSidebarSearch] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(() => {
     try {
@@ -249,7 +253,7 @@ function Sidebar({
               ? { ...s, children: filteredChildren }
               : null;
           }
-          if (s.role_template_key === 'worker' && !showWorker) {
+          if (!showCompleted && hiddenCompletedRoles?.includes(s.role_template_key)) {
             return filteredChildren.length > 0 && anyRunning(filteredChildren)
               ? { ...s, children: filteredChildren }
               : null;
@@ -277,7 +281,7 @@ function Sidebar({
         return filtered.length > 0 ? { ...p, sessions: filtered } : null;
       })
       .filter((p): p is ProjectDTO => p !== null);
-  }, [projects, sidebarSearch, showArchived, showWorker]);
+  }, [projects, sidebarSearch, showArchived, showCompleted, hiddenCompletedRoles]);
 
   // Shared comparator: blank first (no children, compact), then pinned first, then newest pinned first, then last_activity_at desc
   function sortByPinnedThenActivity(a: SessionTreeNodeDTO, b: SessionTreeNodeDTO): number {
@@ -361,7 +365,7 @@ function Sidebar({
               </div>
             )}
             <div className="flex items-center space-x-1.5 min-w-0">
-              {(isPinned || !effectiveCollapsed) && React.createElement(roleIcon(session.role_template_key), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : isPinned ? 'text-amber-300 dark:text-amber-300' : 'text-slate-400'}` })}
+              {(isPinned || !effectiveCollapsed) && React.createElement(roleIcon(session.role_template_key, roleTemplatesQuery.data), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : isPinned ? 'text-amber-300 dark:text-amber-300' : 'text-slate-400'}` })}
 
             {!effectiveCollapsed && (
               <span
@@ -567,12 +571,12 @@ function Sidebar({
           <label className="flex items-center gap-1.5 cursor-pointer select-none ml-auto">
             <input
               type="checkbox"
-              checked={showWorker}
-              onChange={onToggleShowWorker}
+              checked={showCompleted}
+              onChange={onToggleShowCompleted}
               className="w-3 h-3 accent-slate-600 rounded cursor-pointer dark:bg-slate-700 dark:border-slate-600"
             />
-            <span className={`text-[10px] font-semibold ${showWorker ? 'text-blue-700 dark:text-blue-400' : 'text-slate-400 dark:text-slate-500'}`}>
-              显示已完成Worker
+            <span className={`text-[10px] font-semibold ${showCompleted ? 'text-amber-700 dark:text-amber-400' : 'text-slate-400 dark:text-slate-500'}`}>
+              显示已完成
             </span>
           </label>
         </div>

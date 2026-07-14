@@ -1,24 +1,26 @@
-FROM oven/bun:latest
+FROM vimcaw/bun-git:latest
 WORKDIR /app
 
-RUN apt-get update -qq && apt-get install -y -qq git 2>&1 | tail -3 && \
-    mkdir -p /home/app && \
-    echo "app:x:1000:1000::/home/app:/bin/sh" >> /etc/passwd && \
-    echo "app:x:1000:" >> /etc/group
+# 换清华 Alpine 源 + 安装常用工具
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apk/repositories && \
+    apk add --no-cache curl python3 py3-pip ca-certificates && \
+    mkdir -p /home/app
 
-ENV HOME=/home/app
+ENV HOME=/root
 ENV API_HOST=0.0.0.0
 ENV API_PORT=3000
 ENV PIPLUS_SERVE_WEB=1
 ENV PIPLUS_WEB_DIST=/app/apps/web/dist
+# Build with: docker build --build-arg APP_VERSION=$(jq -r '.version' apps/desktop/package.json) -t piplus:latest .
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
 
 COPY . .
 
 RUN bun install && \
     cd apps/web && bunx vite build && \
-    mkdir -p /home/app/.pi/agent /home/app/.config/piplus && \
-    chown -R 1000:1000 /app /home/app
+    mkdir -p /root/.pi/agent /root/.config/piplus
 
-USER app
+# 以 root 运行
 EXPOSE 3000
 CMD ["bun", "run", "apps/api/src/index.ts"]

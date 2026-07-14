@@ -52,8 +52,17 @@ export function registerPackagesRoutes(app: Hono) {
         const userId = (c as any).get('userId') as string;
         const resolved = resolveProject(c, projectId, userId);
         if (resolved instanceof Response) return resolved;
-        const packages = listPiPackages(resolved.path);
-        return c.json({ packages });
+        const allPackages = listPiPackages(resolved.path);
+        // De-duplicate: if same source exists in both project and global scope,
+        // keep the project entry (it overrides). Project scope takes priority.
+        const seen = new Map<string, typeof allPackages[number]>();
+        for (const pkg of allPackages) {
+          const existing = seen.get(pkg.source);
+          if (!existing || pkg.scope === 'project') {
+            seen.set(pkg.source, pkg);
+          }
+        }
+        return c.json({ packages: Array.from(seen.values()) });
       }
       const packages = listPiPackages();
       // Global view: only show user-scoped packages. Project-scoped packages

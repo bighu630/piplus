@@ -6,11 +6,13 @@ import { createApp } from './app';
 
 describe('createApp docker serving', () => {
   const originalOrigin = process.env.PUBLIC_WEB_ORIGIN;
+  const originalCorsOrigins = process.env.CORS_ORIGINS;
   const originalServeWeb = process.env.PIPLUS_SERVE_WEB;
   const originalWebDist = process.env.PIPLUS_WEB_DIST;
 
   afterEach(() => {
     process.env.PUBLIC_WEB_ORIGIN = originalOrigin;
+    process.env.CORS_ORIGINS = originalCorsOrigins;
     process.env.PIPLUS_SERVE_WEB = originalServeWeb;
     process.env.PIPLUS_WEB_DIST = originalWebDist;
   });
@@ -141,5 +143,115 @@ describe('createApp docker serving', () => {
 
     expect(response.status).toBe(200);
     expect(body).toContain('{"ok":true}');
+  });
+});
+
+describe('CORS_ORIGINS env var', () => {
+  const originalCorsOrigins = process.env.CORS_ORIGINS;
+  const originalOrigin = process.env.PUBLIC_WEB_ORIGIN;
+
+  afterEach(() => {
+    process.env.CORS_ORIGINS = originalCorsOrigins;
+    process.env.PUBLIC_WEB_ORIGIN = originalOrigin;
+  });
+
+  test('CORS_ORIGINS with multiple origins allows all configured origins', async () => {
+    process.env.CORS_ORIGINS = 'https://app1.example.com,https://app2.example.com';
+    const app = createApp();
+
+    const res1 = await app.request('/health', {
+      headers: { Origin: 'https://app1.example.com' },
+    });
+    const res2 = await app.request('/health', {
+      headers: { Origin: 'https://app2.example.com' },
+    });
+
+    expect(res1.headers.get('access-control-allow-origin')).toBe('https://app1.example.com');
+    expect(res2.headers.get('access-control-allow-origin')).toBe('https://app2.example.com');
+  });
+
+  test('CORS_ORIGINS with multiple origins rejects non-matching origin', async () => {
+    process.env.CORS_ORIGINS = 'https://app1.example.com,https://app2.example.com';
+    const app = createApp();
+
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://evil.example.com' },
+    });
+
+    expect(res.headers.get('access-control-allow-origin')).not.toBe('https://evil.example.com');
+  });
+
+  test('CORS_ORIGINS=* allows any origin', async () => {
+    process.env.CORS_ORIGINS = '*';
+    const app = createApp();
+
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://random.example.com' },
+    });
+
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://random.example.com');
+  });
+
+  test('CORS_ORIGINS takes priority over PUBLIC_WEB_ORIGIN', async () => {
+    process.env.CORS_ORIGINS = 'https://app1.example.com';
+    process.env.PUBLIC_WEB_ORIGIN = 'https://old.example.com';
+    const app = createApp();
+
+    // CORS_ORIGINS origin should work
+    const resCors = await app.request('/health', {
+      headers: { Origin: 'https://app1.example.com' },
+    });
+    expect(resCors.headers.get('access-control-allow-origin')).toBe('https://app1.example.com');
+
+    // PUBLIC_WEB_ORIGIN origin should be rejected when CORS_ORIGINS is set
+    const resPublic = await app.request('/health', {
+      headers: { Origin: 'https://old.example.com' },
+    });
+    expect(resPublic.headers.get('access-control-allow-origin')).not.toBe('https://old.example.com');
+  });
+
+  test('CORS_ORIGINS="" falls back to PUBLIC_WEB_ORIGIN', async () => {
+    process.env.CORS_ORIGINS = '';
+    process.env.PUBLIC_WEB_ORIGIN = 'https://demo.example.com';
+    const app = createApp();
+
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://demo.example.com' },
+    });
+
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://demo.example.com');
+  });
+
+  test('CORS_ORIGINS="," (only commas) falls back to allow all', async () => {
+    process.env.CORS_ORIGINS = ',';
+    process.env.PUBLIC_WEB_ORIGIN = '';
+    const app = createApp();
+
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://any.example.com' },
+    });
+
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://any.example.com');
+  });
+
+  test('returns cors origin for request without origin header', async () => {
+    process.env.CORS_ORIGINS = 'https://app1.example.com';
+    const app = createApp();
+
+    const res = await app.request('/health');
+
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://app1.example.com');
+  });
+
+  test('neither CORS_ORIGINS nor PUBLIC_WEB_ORIGIN allows all', async () => {
+    delete process.env.CORS_ORIGINS;
+    delete process.env.PUBLIC_WEB_ORIGIN;
+    const app = createApp();
+
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://any.example.com' },
+    });
+
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://any.example.com');
   });
 });

@@ -16,24 +16,58 @@ function normalizeOrigin(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
+  if (trimmed === '*') return '*';
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     return trimmed.replace(/\/+$/, '');
   }
   return 'https://' + trimmed;
 }
 
+function parseCorsOrigins(): string[] | undefined {
+  const raw = process.env.CORS_ORIGINS;
+  if (raw === undefined || raw === null) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (trimmed === '*') return ['*'];
+  return trimmed.split(',')
+    .map(s => normalizeOrigin(s.trim()))
+    .filter((s): s is string => !!s);
+}
+
 export function createApp() {
   const app = new Hono();
+  const corsOrigins = parseCorsOrigins();
+  const hasWildcardCors = corsOrigins?.includes('*') ?? false;
   const configuredOrigin = normalizeOrigin(process.env.PUBLIC_WEB_ORIGIN);
+
+  let originChecker: (origin: string | undefined) => string;
+  if (corsOrigins !== undefined) {
+    // CORS_ORIGINS 设置了值（包括空字符串或 *）
+    if (hasWildcardCors || corsOrigins.length === 0) {
+      // CORS_ORIGINS=* 或 CORS_ORIGINS=",,,"（空条目被过滤后无有效 origin）→ 全部允许
+      originChecker = (origin) => origin ?? '*';
+    } else {
+      const allowedOrigins = corsOrigins;
+      originChecker = (origin) => {
+        if (!origin) return allowedOrigins[0];
+        return allowedOrigins.includes(origin) ? origin : '';
+      };
+    }
+  } else if (configuredOrigin) {
+    // 仅设置 PUBLIC_WEB_ORIGIN → 向后兼容的单一 origin 匹配
+    originChecker = (origin) => {
+      if (!origin) return configuredOrigin;
+      return origin === configuredOrigin ? configuredOrigin : '';
+    };
+  } else {
+    // 都没设置 → 全部允许
+    originChecker = (origin) => origin ?? '*';
+  }
 
   app.use(
     '*',
     cors({
-      origin: (origin) => {
-        if (!configuredOrigin) return origin ?? '*';
-        if (!origin) return configuredOrigin;
-        return origin === configuredOrigin ? configuredOrigin : '';
-      },
+      origin: originChecker,
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Content-Type', 'x-user-id', 'Authorization'],
       credentials: false,

@@ -12,6 +12,9 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, './src'),
       },
     },
+    define: {
+      __APP_VERSION__: JSON.stringify(process.env.APP_VERSION || 'dev'),
+    },
     server: {
     host: true,
       port: 3000,

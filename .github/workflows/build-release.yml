@@ -34,7 +34,7 @@ jobs:
         run: bash scripts/build-desktop.sh linux
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: linux-amd64
           path: |
@@ -63,7 +63,7 @@ jobs:
         run: bash scripts/build-desktop.sh win
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: windows-amd64
           path: |
@@ -86,7 +86,7 @@ jobs:
         run: bash scripts/build-desktop.sh mac x64
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: mac-amd64
           path: |
@@ -109,11 +109,40 @@ jobs:
         run: bash scripts/build-desktop.sh mac arm64
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: mac-arm64
           path: |
             apps/desktop/dist/piplus-*-mac-arm64.*
+
+  docker:
+    name: 'Docker Image'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            iambighu/piplus:latest
+            iambighu/piplus:${{ env.VERSION }}
+          build-args: |
+            APP_VERSION=${{ env.VERSION }}
 
   release:
     name: Create Release
@@ -131,7 +160,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
 
       - name: Generate release notes
         run: python3 scripts/generate-release-notes.py "${{ github.ref_name }}"

@@ -61,6 +61,7 @@ const THINKING_LABELS: Record<string, string> = {
   medium: '思考：中',
   high: '思考：高',
   xhigh: '思考：最高',
+  max: '思考：max',
 };
 
 export default function ProjectSettingsModal({
@@ -602,14 +603,14 @@ export default function ProjectSettingsModal({
                   <div className="flex-1 min-w-0">
                     {(roleVersions.length > 0) ? (
                       <select
-                        value={config.version ?? roleVersions[0]?.version ?? ''}
+                        value={config.version ?? ''}
                         onChange={(e) => setEditRoleConfig((prev) => ({
                           ...prev,
                           [role.key]: { ...prev[role.key], version: e.target.value || undefined },
                         }))}
                         className="w-full px-2 py-1 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
                       >
-                        <option value="">最新版本</option>
+                        <option value="">使用最新版本</option>
                         {roleVersions.map((v) => (
                           <option key={v.id} value={v.version}>
                             {v.version === '内置' ? '内置' : `v${v.version}`}

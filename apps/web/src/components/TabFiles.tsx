@@ -8,6 +8,7 @@ import hljs from 'highlight.js';
 import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import MermaidBlock from './MermaidBlock';
 import { useSessionFileTree, useSessionFileContent, useSaveSessionFileContentMutation, useDeleteSessionFileMutation } from '../lib/hooks';
+import { getApiBaseUrl } from '../lib/runtime-config';
 
 interface TabFilesProps {
   selectedSessionId: string | null;
@@ -24,6 +25,11 @@ interface TabFilesProps {
 function isMarkdownFile(filePath: string | null): boolean {
   if (!filePath) return false;
   return /\.(md|markdown)$/i.test(filePath);
+}
+
+function isImageFile(filePath: string | null): boolean {
+  if (!filePath) return false;
+  return /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(filePath);
 }
 
 function getLanguageFromPath(filePath: string | null): string {
@@ -415,7 +421,8 @@ function TabFiles({
   const queryClient = useQueryClient();
   const fileTreeQuery = useSessionFileTree(selectedSessionId);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const fileContentQuery = useSessionFileContent(selectedSessionId, selectedPath);
+  const contentQueryPath = selectedPath && !isImageFile(selectedPath) ? selectedPath : null;
+  const fileContentQuery = useSessionFileContent(selectedSessionId, contentQueryPath);
   const saveFileContentMut = useSaveSessionFileContentMutation(selectedSessionId);
   const savingFile = saveFileContentMut.isPending;
   const deleteFileMut = useDeleteSessionFileMutation(selectedSessionId);
@@ -467,12 +474,14 @@ function TabFiles({
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [draftContent, setDraftContent] = useState('');
   const [editError, setEditError] = useState<string | null>(null);
+  const [imgError, setImgError] = useState(false);
   
-  // Reset editing when selected file changes
+  // Reset editing and image error when selected file changes
   useEffect(() => {
     setEditingPath(null);
     setDraftContent('');
     setEditError(null);
+    setImgError(false);
   }, [selectedPath]);
 
   const firstFilePath = useMemo(() => {
@@ -664,12 +673,31 @@ function TabFiles({
             ) : null}
           </div>
           <div className="text-[11px] text-slate-400 shrink-0">
-            {isMarkdownFile(selectedPath) ? 'Markdown 预览' : '代码预览'}
+            {isImageFile(selectedPath) ? '图片预览' : isMarkdownFile(selectedPath) ? 'Markdown 预览' : '代码预览'}
           </div>
         </div>
 
         <div className="flex-1 min-h-0 p-5">
-          {contentLoading ? (
+          {selectedPath && isImageFile(selectedPath) ? (
+            <div className="h-full flex items-center justify-center rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 overflow-hidden">
+              <div className="flex flex-col items-center w-full h-full overflow-auto p-4">
+                {imgError ? (
+                  <div className="flex items-center justify-center text-xs text-red-500 h-full">
+                    图片加载失败
+                  </div>
+                ) : (
+                  <img
+                    src={`${getApiBaseUrl()}/api/v1/sessions/${selectedSessionId}/files/image?path=${encodeURIComponent(selectedPath!)}&token=${typeof window !== 'undefined' ? (localStorage.getItem('piplus_token') ?? '') : ''}`}
+                    alt={selectedPath!}
+                    className="max-w-full max-h-full object-contain"
+                    style={{ background: 'repeating-conic-gradient(rgba(0,0,0,0.03) 0% 25%, transparent 0% 50%) 0px 0px / 20px 20px' }}
+                    onError={() => setImgError(true)}
+                    onLoad={() => setImgError(false)}
+                  />
+                )}
+              </div>
+            </div>
+          ) : contentLoading ? (
             <div className="h-full flex items-center justify-center text-xs text-slate-400">文件内容加载中…</div>
           ) : contentError ? (
             <div className="h-full flex items-center justify-center text-xs text-red-500 px-4 text-center">{contentError}</div>

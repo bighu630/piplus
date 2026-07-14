@@ -15,6 +15,8 @@ bun run build:bundle
 cd "$OLDPWD"
 
 # ── 2. Web build (desktop) ──────────────────────────────────
+# Export version for Vite define injection
+export APP_VERSION=$(jq -r '.version' apps/desktop/package.json)
 echo "[2/5] Building web for desktop ..."
 cd apps/web
 bun run build:desktop
@@ -26,7 +28,7 @@ cd apps/desktop
 bun run build
 cd "$OLDPWD"
 
-VERSION=$(jq -r '.version' apps/desktop/package.json)
+VERSION="${APP_VERSION}"
 echo "  → Version: $VERSION"
 
 TARGET="${1:-linux}"
