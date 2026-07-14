@@ -159,8 +159,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v6
+        with:
+          pattern: linux-amd64
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v6
+        with:
+          pattern: windows-amd64
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: mac-*
 
       - name: Generate release notes
         run: python3 scripts/generate-release-notes.py "${{ github.ref_name }}"
