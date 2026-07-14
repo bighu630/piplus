@@ -61,6 +61,7 @@ const THINKING_LABELS: Record<string, string> = {
   medium: '思考：中',
   high: '思考：高',
   xhigh: '思考：最高',
+  max: '思考：max',
 };
 
 export default function ProjectSettingsModal({

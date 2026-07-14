@@ -1,11 +1,11 @@
 services:
   piplus:
-    image: piplus:0.2.4
+    image: piplus:0.2.5
     environment:
-      HOME: /home/app
+      HOME: /root
       API_HOST: 0.0.0.0
       API_PORT: 3000
-      DATABASE_URL: file:/home/app/.config/piplus/piplus.sqlite
+      DATABASE_URL: file:/root/.config/piplus/piplus.sqlite
       PUBLIC_WEB_ORIGIN: piplus.whosworld.fun
       # Alternatively, use CORS_ORIGINS for multiple origins (comma-separated):
       # CORS_ORIGINS: http://localhost:3002,https://piplus.whosworld.fun
@@ -14,5 +14,5 @@ services:
     ports:
       - "3008:3000"
     volumes:
-      - /data/piplus_data/pi/agent:/home/app/.pi/agent
-      - /data/piplus_data/piplus:/home/app/.config/piplus
+      - /data/piplus_data/pi/agent:/root/.pi/agent
+      - /data/piplus_data/piplus:/root/.config/piplus

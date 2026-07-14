@@ -1227,6 +1227,7 @@ function TabChat({
                   medium: '思考：中',
                   high: '思考：高',
                   xhigh: '思考：最高',
+                  max: '思考：max',
                 })[opt.value] ?? opt.label}
                 placeholder="思考层级"
                 dropdownMaxHeight="max-h-56"

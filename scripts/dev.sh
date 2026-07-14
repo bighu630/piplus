@@ -101,7 +101,7 @@ fi
 # ── launch API ────────────────────────────────────────────
 echo "[piplus] starting API on port ${API_PORT} ..."
 if [ "$MODE" = "production" ]; then
-  bun run apps/api/src/index.ts 2>&1
+  DISPLAY=:1 bun run apps/api/src/index.ts 2>&1
 else
   bun run apps/api/src/index.ts > >(sed 's/^/[api] /' | tee -a "$PIPLUS_LOG_DIR/api.log") 2>&1 &
   API_PID=$!
