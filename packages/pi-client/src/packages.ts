@@ -127,9 +127,13 @@ export function setPackageFiltered(
     if (index !== -1) {
       // Package exists in this scope
       if (typeof packages[index] === 'string') return false; // already enabled
-      // Remove the object form — package inherits from other scope (global/project)
-      // or add back as plain string if there's no other scope entry
-      packages.splice(index, 1);
+      if (isProject) {
+        // Project scope: remove the object form → inherits from global settings
+        packages.splice(index, 1);
+      } else {
+        // Global scope: replace object with plain string (no other scope to fall back to)
+        packages[index] = source;
+      }
     } else {
       // Not in this scope — add as plain string (project override for global package)
       packages.push(source);
