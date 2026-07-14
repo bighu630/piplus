@@ -4,7 +4,7 @@ import { getServerConfig } from '../server-config';
 
 export async function requireAuth(c: Context, next: Next) {
   const header = c.req.header('Authorization') ?? '';
-  const token = header.replace(/^Bearer\s+/i, '');
+  const token = header.replace(/^Bearer\s+/i, '') || c.req.query('token') || '';
 
   if (token && verifyToken(token)) {
     c.set('userId', 'local-user');

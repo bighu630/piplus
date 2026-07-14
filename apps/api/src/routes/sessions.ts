@@ -64,6 +64,18 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp
 const MAX_FILE_TREE_DEPTH = 6;
 const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
 const MAX_FILE_WRITE_BYTES = 1024 * 1024;
+const IMAGE_MIME_MAP: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+};
+const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+
 const TEXT_FILE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.txt', '.css', '.scss', '.sass', '.less', '.html', '.htm', '.mdx', '.jsonc', '.postcss',
   '.yml', '.yaml', '.xml', '.svg', '.sh', '.bash', '.zsh', '.env', '.toml', '.ini', '.conf', '.config', '.sql', '.py', '.rb', '.pyi', '.kts', '.scala', '.zig', '.dart', '.lua', '.r', '.jl', '.ex', '.exs', '.erl', '.hrl', '.clj', '.cljs', '.graphql', '.gql', '.proto',
@@ -927,6 +939,52 @@ export function registerSessionRoutes(app: Hono) {
     const truncated = buffer.byteLength > MAX_FILE_CONTENT_BYTES;
     const content = buffer.subarray(0, MAX_FILE_CONTENT_BYTES).toString('utf8');
     return c.json({ session_id: sessionId, path: relativePath, content, truncated });
+  });
+
+  app.get('/api/v1/sessions/:sessionId/files/image', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const relativePath = String(c.req.query('path') ?? '').trim();
+    if (!relativePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'File path is required' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    const absolutePath = resolveSafeFilePath(cwd, relativePath);
+    if (!absolutePath) {
+      return c.json({ error: { code: 'INVALID_PATH', message: 'Path is outside project root' } }, 400);
+    }
+
+    const ext = path.extname(absolutePath).toLowerCase();
+    const mimeType = IMAGE_MIME_MAP[ext];
+    if (!mimeType) {
+      return c.json({ error: { code: 'UNSUPPORTED_IMAGE_TYPE', message: 'File type is not supported as image' } }, 400);
+    }
+
+    let fileStat;
+    try {
+      fileStat = await stat(absolutePath);
+    } catch {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'File not found' } }, 404);
+    }
+
+    if (!fileStat.isFile()) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'File not found' } }, 404);
+    }
+
+    if (fileStat.size > MAX_IMAGE_SIZE_BYTES) {
+      return c.json({ error: { code: 'FILE_TOO_LARGE', message: 'Image file exceeds maximum allowed size' } }, 413);
+    }
+
+    const buffer = await readFile(absolutePath);
+    return c.newResponse(buffer, 200, {
+      'Content-Type': mimeType,
+      'Content-Length': String(buffer.byteLength),
+      'Cache-Control': 'private, max-age=3600',
+    });
   });
 
   /**
