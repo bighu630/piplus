@@ -96,20 +96,14 @@ export function setPackageFiltered(
   const resolvedCwd = options?.cwd ?? process.cwd();
   const settingsManager = SettingsManager.create(resolvedCwd, agentDir);
 
-  // Get current packages from the appropriate scope (defensive copy)
   const isProject = Boolean(options?.local);
+
+  // Get packages from the TARGET scope only (global or project).
+  // Project-scoped toggles create project-level overrides without touching globals.
   const scopeSettings = isProject
     ? settingsManager.getProjectSettings()
     : settingsManager.getGlobalSettings();
-  const rawPackages = scopeSettings.packages ?? [];
-  const packages: PackageSource[] = [...rawPackages];
-
-  console.log('[setPackageFiltered] source=%s filtered=%s local=%s packagesCount=%d', source, filtered, isProject, packages.length);
-  for (let i = 0; i < packages.length; i++) {
-    const p = packages[i];
-    const pkgSource = typeof p === 'string' ? p : p.source;
-    console.log('[setPackageFiltered]   packages[%d] type=%s source=%s', i, typeof p, pkgSource);
-  }
+  const packages: PackageSource[] = [...(scopeSettings.packages ?? [])];
 
   // Find the matching package by comparing the exact source string
   const index = packages.findIndex((p) => {
@@ -117,24 +111,33 @@ export function setPackageFiltered(
     return pkgSource === source;
   });
 
-  console.log('[setPackageFiltered] matchIndex=%d', index);
-
-  if (index === -1) return false;
-
-  const current = packages[index];
-
   if (filtered) {
-    // Disable: convert string to object form with empty resource arrays
-    if (typeof current !== 'string') return false; // already filtered
-    packages[index] = { source, extensions: [], skills: [], prompts: [], themes: [] };
+    // Disable: store as object with empty resource arrays
+    const disabledEntry: PackageSource = { source, extensions: [], skills: [], prompts: [], themes: [] };
+    if (index !== -1) {
+      // Package exists in this scope — replace in place
+      if (typeof packages[index] !== 'string') return false; // already disabled
+      packages[index] = disabledEntry;
+    } else {
+      // Not in this scope — add as new entry (project override for global package)
+      packages.push(disabledEntry);
+    }
   } else {
-    // Enable: convert object form back to plain string
-    if (typeof current === 'string') return false; // already enabled
-    packages[index] = source;
+    // Enable
+    if (index !== -1) {
+      // Package exists in this scope
+      if (typeof packages[index] === 'string') return false; // already enabled
+      // Remove the object form — package inherits from other scope (global/project)
+      // or add back as plain string if there's no other scope entry
+      packages.splice(index, 1);
+    } else {
+      // Not in this scope — add as plain string (project override for global package)
+      packages.push(source);
+    }
   }
 
-  // Persist
-  if (options?.local) {
+  // Persist to the target scope
+  if (isProject) {
     settingsManager.setProjectPackages(packages);
   } else {
     settingsManager.setPackages(packages);
