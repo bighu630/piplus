@@ -194,4 +194,6 @@ packages/
 
 <div align="center">
   <sub>Built for <a href="https://pi.dev">Pi Coding Agent</a> · 本地优先 · 多角色协作 · 畅快开发</sub>
+  <br/>
+  <sub><a href="LICENSE">MIT License</a> · Copyright © 2026 bighu630</sub>
 </div>
