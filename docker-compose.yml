@@ -1,6 +1,6 @@
 services:
   piplus:
-    image: piplus:0.2.5
+    image: iambighu/piplus:0.2.6
     environment:
       HOME: /root
       API_HOST: 0.0.0.0

@@ -330,14 +330,10 @@ function TabChat({
     if (!streamingContent || !isNearBottomRef.current) return;
     const container = scrollContainerRef.current;
     if (!container) return;
-
-    const nearBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < container.clientHeight / 3;
-    if (nearBottom) {
-      container.scrollTop = container.scrollHeight - container.clientHeight;
-      setIsNearBottom(true);
-      isNearBottomRef.current = true;
-    }
+    // 注意：这里不做渲染后的 nearBottom 检查。用户渲染前就在底部 → 直接跟随
+    container.scrollTop = container.scrollHeight - container.clientHeight;
+    setIsNearBottom(true);
+    isNearBottomRef.current = true;
   }, [streamingContent]);
 
   useEffect(() => {
@@ -356,17 +352,18 @@ function TabChat({
       }
     }
 
-    if (streamingContent || lastChangeTypeRef.current === 'prepend' || !isNearBottom) {
+    if (streamingContent || lastChangeTypeRef.current === 'prepend') {
       return;
     }
 
-    const userAtBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < container.clientHeight / 3;
-
-    if (userAtBottom) {
-      scrollToBottom('smooth');
-      setIsNearBottom(true);
+    // 仅当渲染前用户就在底部时才跟随
+    if (!isNearBottomRef.current) {
+      return;
     }
+
+    scrollToBottom('smooth');
+    setIsNearBottom(true);
+    isNearBottomRef.current = true;
   }, [displayMessages, streamingContent, selectedSessionId]);
 
   // Subscribe to WS stream events
