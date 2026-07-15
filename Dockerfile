@@ -3,7 +3,7 @@ WORKDIR /app
 
 # 换清华 Alpine 源 + 安装常用工具
 RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apk/repositories && \
-    apk add --no-cache curl python3 py3-pip ca-certificates && \
+    apk add --no-cache curl python3 py3-pip ca-certificates bash && \
     mkdir -p /home/app
 
 ENV HOME=/root
