@@ -10,7 +10,7 @@ import { registerWebSocketRoutes, socketHub } from '../ws/server';
 import { createEvent } from '../ws/protocol';
 import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
-import { createAuditService, startSessionRun } from '@piplus/domain';
+import { createAuditService, findRoleTemplateByVersion, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
 import { readdir, readFile, appendFile, access, stat, writeFile, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -349,16 +349,35 @@ export function registerSessionRoutes(app: Hono) {
     const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
     if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
-    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
+    const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, roleConfigJson: projects.roleConfigJson }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
-    const [template] = await db.select({ key: roleTemplates.key, basePrompt: roleTemplates.basePrompt }).from(roleTemplates).where(eq(roleTemplates.id, session.roleTemplateId)).limit(1);
-    if (!template || template.key !== 'planner' || session.depth !== 0) {
+    if (session.depth !== 0) {
       return c.json({ error: { code: 'NOT_PLANNER_ROOT', message: 'Only top-level planner sessions are supported' } }, 400);
     }
 
     if (session.runtimeStatus !== 'idle') {
       return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+    }
+
+    // Version-aware template lookup: read project roleConfigJson for planner version
+    let roleVersion: string | undefined;
+    try {
+      const roleConfig = JSON.parse(project.roleConfigJson ?? '{}');
+      roleVersion = roleConfig['planner']?.version;
+    } catch {
+      // If roleConfigJson is malformed, fall back to session's original template
+    }
+
+    let template: { key: string; basePrompt: string; name: string } | null = null;
+    try {
+      template = await findRoleTemplateByVersion(db, 'planner', roleVersion);
+    } catch {
+      // Template not found — no planner template available for this version
+    }
+
+    if (!template) {
+      return c.json({ error: { code: 'NOT_PLANNER_ROOT', message: 'No planner role template found for the configured version' } }, 400);
     }
 
     const prompt = template.basePrompt || session.compiledPrompt;

@@ -59,7 +59,7 @@ function now() {
   return new Date();
 }
 
-async function findRoleTemplateByVersion(db: RoleManagerDb, key: string, version?: string): Promise<SessionTemplateRow> {
+export async function findRoleTemplateByVersion(db: RoleManagerDb, key: string, version?: string): Promise<SessionTemplateRow> {
   if (version) {
     const [template] = await db
       .select({ id: roleTemplates.id, key: roleTemplates.key, basePrompt: roleTemplates.basePrompt, name: roleTemplates.name })
