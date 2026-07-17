@@ -18,6 +18,7 @@ import {
   Archive,
   GitMerge,
 } from 'lucide-react';
+import DiffViewer from './DiffViewer';
 import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
 import Select from './Select';
@@ -97,6 +98,88 @@ function sanitizeStreamingContent(content: string): string {
     return content.slice(0, lastFenceIdx).trimEnd();
   }
   return content;
+}
+
+/** Extract file path and edit content from write/edit tool call args */
+function parseWriteEditArgs(
+  toolName: string,
+  parsedArgs: Record<string, unknown>,
+): { path?: string; oldText?: string; newText: string } | null {
+  if (toolName === 'write') {
+    const path = typeof parsedArgs.path === 'string' ? parsedArgs.path : undefined;
+    const content = typeof parsedArgs.content === 'string' ? parsedArgs.content : '';
+    return { path, newText: content };
+  }
+
+  if (toolName === 'edit') {
+    const path = typeof parsedArgs.path === 'string' ? parsedArgs.path : undefined;
+    const edits = parsedArgs.edits;
+    if (Array.isArray(edits) && edits.length > 0) {
+      // Combine all edits into one diff view
+      const oldParts: string[] = [];
+      const newParts: string[] = [];
+      for (const edit of edits) {
+        if (edit && typeof edit === 'object') {
+          const e = edit as Record<string, unknown>;
+          if (typeof e.oldText === 'string') oldParts.push(e.oldText);
+          if (typeof e.newText === 'string') newParts.push(e.newText);
+        }
+      }
+      if (newParts.length > 0) {
+        return {
+          path,
+          oldText: oldParts.join('\n'),
+          newText: newParts.join('\n'),
+        };
+      }
+    }
+    // Fallback: direct oldText/newText in args
+    if (typeof parsedArgs.oldText === 'string' && typeof parsedArgs.newText === 'string') {
+      return {
+        path,
+        oldText: parsedArgs.oldText,
+        newText: parsedArgs.newText,
+      };
+    }
+    return null;
+  }
+
+  return null;
+}
+
+/** Inline component for write/edit diff view inside tool call cards */
+function DiffViewerInline({
+  toolName,
+  parsedArgs,
+  argsStr,
+}: {
+  toolName: string;
+  parsedArgs: Record<string, unknown>;
+  argsStr: string;
+}) {
+  const parsed = React.useMemo(
+    () => parseWriteEditArgs(toolName, parsedArgs),
+    [toolName, parsedArgs],
+  );
+
+  if (!parsed) {
+    return (
+      <div className="px-3 py-2">
+        <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+          {argsStr}
+        </pre>
+      </div>
+    );
+  }
+
+  return (
+    <DiffViewer
+      oldText={parsed.oldText}
+      newText={parsed.newText}
+      filename={parsed.path}
+      viewType={toolName === 'write' ? 'write' : 'edit'}
+    />
+  );
 }
 
 function TabChat({
@@ -587,31 +670,43 @@ function TabChat({
                       </span>
                     </div>
                     {isExpanded && argsStr && (
-                      <div className="border-t border-amber-200 dark:border-amber-800 px-3 py-2">
-                        {(toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs ? (
-                          <table className="w-full text-[11px] font-mono leading-relaxed">
-                            <tbody>
-                              {Object.entries(parsedArgs).map(([key, value]) => (
-                                <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
-                                  <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
-                                    {key}
-                                  </td>
-                                  <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
-                                    {typeof value === 'object' && value !== null
-                                      ? JSON.stringify(value)
-                                      : String(value)}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                      <div className="border-t border-amber-200 dark:border-amber-800">
+                        {(toolName === 'write' || toolName === 'edit') && parsedArgs ? (
+                          <DiffViewerInline
+                            toolName={toolName}
+                            parsedArgs={parsedArgs}
+                            argsStr={argsStr}
+                          />
+                        ) : (toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs ? (
+                          <div className="px-3 py-2">
+                            <table className="w-full text-[11px] font-mono leading-relaxed">
+                              <tbody>
+                                {Object.entries(parsedArgs).map(([key, value]) => (
+                                  <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
+                                    <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
+                                      {key}
+                                    </td>
+                                    <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
+                                      {typeof value === 'object' && value !== null
+                                        ? JSON.stringify(value)
+                                        : String(value)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                         ) : (
-                          <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-                            {argsStr}
-                          </pre>
-                        )}
-                      </div>
-                    )}
+                          <div className="px-3 py-2">
+                            <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                              {argsStr}
+                            </pre>
+                          </div>
+                        )
+                      }
+                    </div>
+                  )
+                  }
                   </div>
                   <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
                     {new Date(msg.created_at).toLocaleTimeString()}
