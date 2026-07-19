@@ -19,3 +19,4 @@ tsconfig.tsbuildinfo
 /.superpowers/
 /apps/desktop/bun-bin/bun
 /apps/web/tsconfig.tsbuildinfo
+pty-libs/

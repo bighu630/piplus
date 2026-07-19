@@ -101,8 +101,24 @@ elif [ "$TARGET" = "mac" ] || [ "$TARGET" = "linux" ]; then
   echo "  → bun bundled from $BUN_SOURCE"
 fi
 
-# ── 5. Package ──────────────────────────────────────────────
-echo "[5/5] Packaging${TARGET:+ for $TARGET} ..."
+# ── 5. Copy pty native libs (electron-builder can't read bun's .bun cache) ──
+# bun-pty native libs are pre-compiled and shipped with the npm package.
+# electron-builder's extraResources fails on bun's virtual filesystem,
+# so we copy them to apps/desktop/pty-libs/ first.
+echo "[5/5] Copying bun-pty native libs ..."
+PTY_SRC=$(cd apps/api && node -e "console.log(require('path').dirname(require.resolve('bun-pty/package.json'))+'/rust-pty/target/release')" 2>/dev/null || true)
+if [ -n "$PTY_SRC" ] && [ -d "$PTY_SRC" ]; then
+  mkdir -p apps/desktop/pty-libs
+  cp -r "$PTY_SRC"/* apps/desktop/pty-libs/
+  echo "  ✅ Copied bun-pty native libs to apps/desktop/pty-libs/"
+  ls apps/desktop/pty-libs/ 2>/dev/null | head -10 || true
+else
+  echo "  ⚠️  bun-pty native libs not found"
+  find apps/api/node_modules -name "librust_pty.so" 2>/dev/null | head -3 || true
+fi
+
+# ── 6. Package ──────────────────────────────────────────────
+echo "[6/6] Packaging${TARGET:+ for $TARGET} ..."
 cd apps/desktop
 
 # 清理上次产物
@@ -110,6 +126,10 @@ case "$TARGET" in
   linux) rm -rf dist/linux-unpacked dist/*.AppImage dist/*.deb dist/*.rpm ;;
   mac)   rm -rf dist/mac dist/*.dmg ;;
   win)   rm -rf dist/win-unpacked dist/*.exe ;;
+esac
+
+# 清理旧 pty-libs 并重新复制（确保是最新版本）
+rm -rf ../api/dist/pty-libs pty-libs
 esac
 
 case "$TARGET" in

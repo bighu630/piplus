@@ -16,6 +16,8 @@ extraResources:
     to: web-dist
   - from: ../migrations
     to: migrations
+  - from: pty-libs
+    to: api-dist/rust-pty/target/release
   - from: bun-bin
     to: bun-bin
     filter:
