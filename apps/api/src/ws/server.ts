@@ -88,10 +88,12 @@ export function registerWebSocketRoutes(app: Hono) {
             .where(and(eq(sessions.id, sessionId), eq(projects.createdBy, (ws as any).__userId ?? 'local-user')))
             .limit(1);
           if (row) {
+            console.log('[ws] terminal_start: found session', sessionId, 'path:', row.projectPath);
             // Security: restrict cwd to allowed workspace paths
             const allowedPrefixes = ['/workspace', '/data/code'].filter(Boolean);
             const isAllowed = allowedPrefixes.some(prefix => row.projectPath.startsWith(prefix));
             if (isAllowed) {
+              console.log('[ws] terminal_start: cwd allowed, starting...');
               terminalManager.start(sessionId, row.projectPath, cols, rows);
               // Track this terminal session for this connection
               let sessions = connectionTerminals.get(ws);
@@ -100,7 +102,11 @@ export function registerWebSocketRoutes(app: Hono) {
                 connectionTerminals.set(ws, sessions);
               }
               sessions.add(sessionId);
+            } else {
+              console.log('[ws] terminal_start: cwd DENIED:', row.projectPath);
             }
+          } else {
+            console.log('[ws] terminal_start: no row for session', sessionId);
           }
         } catch (err) {
           console.error('[Terminal] Failed to start terminal:', err);
