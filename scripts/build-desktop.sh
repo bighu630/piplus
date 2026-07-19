@@ -106,6 +106,7 @@ fi
 # electron-builder's extraResources fails on bun's virtual filesystem,
 # so we copy them to apps/desktop/pty-libs/ first.
 echo "[5/5] Copying bun-pty native libs ..."
+rm -rf apps/desktop/pty-libs
 PTY_SRC=$(cd apps/api && node -e "console.log(require('path').dirname(require.resolve('bun-pty/package.json'))+'/rust-pty/target/release')" 2>/dev/null || true)
 if [ -n "$PTY_SRC" ] && [ -d "$PTY_SRC" ]; then
   mkdir -p apps/desktop/pty-libs
@@ -128,8 +129,7 @@ case "$TARGET" in
   win)   rm -rf dist/win-unpacked dist/*.exe ;;
 esac
 
-# 清理旧 pty-libs 并重新复制（确保是最新版本）
-rm -rf ../api/dist/pty-libs pty-libs
+# pty-libs 已在步骤 5 中复制，此处无需重复清理
 
 case "$TARGET" in
   linux)
