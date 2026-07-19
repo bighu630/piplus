@@ -14,23 +14,34 @@ export class TerminalManager {
   }
 
   start(sessionId: string, projectPath: string, cols: number, rows: number): void {
-    if (this.sessions.has(sessionId)) return;
+    if (this.sessions.has(sessionId)) {
+      console.log('[pty] already running for', sessionId);
+      return;
+    }
 
     const shell = process.platform === 'win32' ? 'cmd.exe' : 'bash';
-    const term = spawn(shell, [], {
-      name: 'xterm-color',
-      cols,
-      rows,
-      cwd: projectPath,
-    });
-    term.onData((data: string) => {
-      this.onOutput(sessionId, data);
-    });
-    term.onExit(({ exitCode }: { exitCode: number }) => {
-      this.sessions.delete(sessionId);
-      this.onExit(sessionId, exitCode);
-    });
-    this.sessions.set(sessionId, term);
+    console.log('[pty] spawning', { shell, sessionId, projectPath, cols, rows });
+    try {
+      const term = spawn(shell, [], {
+        name: 'xterm-color',
+        cols,
+        rows,
+        cwd: projectPath,
+      });
+      console.log('[pty] spawned OK, pid:', term.pid);
+      term.onData((data: string) => {
+        console.log('[pty] data from', sessionId, 'len:', data.length);
+        this.onOutput(sessionId, data);
+      });
+      term.onExit(({ exitCode }: { exitCode: number }) => {
+        console.log('[pty] exit for', sessionId, 'code:', exitCode);
+        this.sessions.delete(sessionId);
+        this.onExit(sessionId, exitCode);
+      });
+      this.sessions.set(sessionId, term);
+    } catch (err) {
+      console.log('[pty] spawn ERROR:', err);
+    }
   }
 
   write(sessionId: string, data: string): void {
