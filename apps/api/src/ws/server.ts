@@ -90,7 +90,7 @@ export function registerWebSocketRoutes(app: Hono) {
           if (row) {
             console.log('[ws] terminal_start: found session', sessionId, 'path:', row.projectPath);
             // Security: restrict cwd to allowed workspace paths
-            const allowedPrefixes = ['/workspace', '/data/code'].filter(Boolean);
+            const allowedPrefixes = ['/workspace', '/data/code', process.env.HOME ?? ''].filter(Boolean);
             const isAllowed = allowedPrefixes.some(prefix => row.projectPath.startsWith(prefix));
             if (isAllowed) {
               console.log('[ws] terminal_start: cwd allowed, starting...');
