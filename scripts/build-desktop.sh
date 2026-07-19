@@ -9,7 +9,7 @@ echo "  ╚═══════════════════════
 echo ""
 
 # ── 1. API bundle ──────────────────────────────────────────
-echo "[1/5] Building API bundle ..."
+echo "[1/6] Building API bundle ..."
 cd apps/api
 bun run build:bundle
 cd "$OLDPWD"
@@ -17,13 +17,13 @@ cd "$OLDPWD"
 # ── 2. Web build (desktop) ──────────────────────────────────
 # Export version for Vite define injection
 export APP_VERSION=$(jq -r '.version' apps/desktop/package.json)
-echo "[2/5] Building web for desktop ..."
+echo "[2/6] Building web for desktop ..."
 cd apps/web
 bun run build:desktop
 cd "$OLDPWD"
 
 # ── 3. Desktop compile ──────────────────────────────────────
-echo "[3/5] Building desktop main/preload ..."
+echo "[3/6] Building desktop main/preload ..."
 cd apps/desktop
 bun run build
 cd "$OLDPWD"
@@ -35,7 +35,7 @@ TARGET="${1:-linux}"
 ARCH="${2:-}"
 
 # ── 4. Prepare bundled bun ──────────────────────────────────
-echo "[4/5] Preparing bundled bun ..."
+echo "[4/6] Preparing bundled bun ..."
 
 # Clean up any previous bun-bin
 rm -rf apps/desktop/bun-bin
@@ -105,7 +105,7 @@ fi
 # bun-pty native libs are pre-compiled and shipped with the npm package.
 # electron-builder's extraResources fails on bun's virtual filesystem,
 # so we copy them to apps/desktop/pty-libs/ first.
-echo "[5/5] Copying bun-pty native libs ..."
+echo "[5/6] Copying bun-pty native libs ..."
 rm -rf apps/desktop/pty-libs
 PTY_SRC=$(cd apps/api && node -e "console.log(require('path').dirname(require.resolve('bun-pty/package.json'))+'/rust-pty/target/release')" 2>/dev/null || true)
 if [ -n "$PTY_SRC" ] && [ -d "$PTY_SRC" ]; then
