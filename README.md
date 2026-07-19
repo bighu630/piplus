@@ -45,6 +45,8 @@
 
 下载对应平台的最新包，从 [Releases](https://github.com/bighu630/piplus/releases) 获取。
 
+登陆密码： 'piplus-local'
+
 **Linux：**
 ```bash
 chmod +x piplus-*.AppImage
