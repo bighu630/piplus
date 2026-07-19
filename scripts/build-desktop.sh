@@ -130,7 +130,6 @@ esac
 
 # 清理旧 pty-libs 并重新复制（确保是最新版本）
 rm -rf ../api/dist/pty-libs pty-libs
-esac
 
 case "$TARGET" in
   linux)
