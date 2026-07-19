@@ -617,12 +617,16 @@ export default function App() {
         terminalRef.current?.write(`\r\n\x1b[1;31m[进程退出，代码: ${code}]\x1b[0m\r\n`);
         // Auto-restart pty after brief delay so output can be seen
         setTimeout(() => {
-          terminalRef.current?.restart?.();
+          sendRaw({
+            kind: 'client',
+            type: 'terminal_start',
+            payload: { sessionId, cols: 80, rows: 24 },
+          });
         }, 500);
       }
     });
     return unsub;
-  }, [subscribeToMessages, selectedSessionId]);
+  }, [subscribeToMessages, selectedSessionId, sendRaw]);
 
   if (!isLoggedIn) {
     return (
