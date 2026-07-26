@@ -13,6 +13,12 @@ echo "[1/6] Building API bundle ..."
 cd apps/api
 bun run build:bundle
 cd "$OLDPWD"
+if [ ! -f "apps/api/dist/index.js" ]; then
+  echo "  ❌ ERROR: API dist not found at apps/api/dist/index.js"
+  echo "     Step 1 (API build) may have silently failed."
+  exit 1
+fi
+echo "  ✅ API dist verified."
 
 # ── 2. Web build (desktop) ──────────────────────────────────
 # Export version for Vite define injection
@@ -21,12 +27,24 @@ echo "[2/6] Building web for desktop ..."
 cd apps/web
 bun run build:desktop
 cd "$OLDPWD"
+if [ ! -f "apps/web/dist/index.html" ]; then
+  echo "  ❌ ERROR: Web dist not found at apps/web/dist/index.html"
+  echo "     Step 2 (Web build) may have silently failed."
+  exit 1
+fi
+echo "  ✅ Web dist verified."
 
 # ── 3. Desktop compile ──────────────────────────────────────
 echo "[3/6] Building desktop main/preload ..."
 cd apps/desktop
 bun run build
 cd "$OLDPWD"
+if [ ! -f "apps/desktop/dist/main/index.js" ] || [ ! -f "apps/desktop/dist/preload/index.js" ]; then
+  echo "  ❌ ERROR: Desktop dist not found at apps/desktop/dist/main/index.js or apps/desktop/dist/preload/index.js"
+  echo "     Step 3 (Desktop compile) may have silently failed."
+  exit 1
+fi
+echo "  ✅ Desktop dist verified."
 
 VERSION="${APP_VERSION}"
 echo "  → Version: $VERSION"
@@ -116,6 +134,39 @@ if [ -n "$PTY_SRC" ] && [ -d "$PTY_SRC" ]; then
 else
   echo "  ⚠️  bun-pty native libs not found"
   find apps/api/node_modules -name "librust_pty.so" 2>/dev/null | head -3 || true
+fi
+echo "  Verifying all extraResources sources before packaging..."
+MISSING=""
+WARNINGS=""
+[ -f "apps/api/dist/index.js" ] || MISSING="$MISSING  - apps/api/dist/index.js\n"
+[ -f "apps/web/dist/index.html" ] || MISSING="$MISSING  - apps/web/dist/index.html\n"
+[ -f "apps/desktop/dist/main/index.js" ] || MISSING="$MISSING  - apps/desktop/dist/main/index.js\n"
+[ -f "apps/desktop/dist/preload/index.js" ] || MISSING="$MISSING  - apps/desktop/dist/preload/index.js\n"
+[ -d "apps/migrations" ] || MISSING="$MISSING  - apps/migrations/\n"
+[ -d "apps/desktop/assets" ] || MISSING="$MISSING  - apps/desktop/assets/\n"
+# bun-bin check: require bun.exe on windows, bun otherwise
+if [ "$TARGET" = "win" ]; then
+  [ -f "apps/desktop/bun-bin/bun.exe" ] || MISSING="$MISSING  - apps/desktop/bun-bin/bun.exe\n"
+else
+  [ -f "apps/desktop/bun-bin/bun" ] || MISSING="$MISSING  - apps/desktop/bun-bin/bun\n"
+fi
+# pty-libs is optional (Step 5 warns but continues)
+[ -d "apps/desktop/pty-libs" ] || WARNINGS="$WARNINGS  ⚠️  pty-libs not found (terminal features may be unavailable)\n"
+
+if [ -n "$WARNINGS" ]; then
+  echo "  ⚠️  Warnings (non-fatal):"
+  printf "%b" "$WARNINGS"
+fi
+if [ -n "$MISSING" ]; then
+  echo "  ❌ ERROR: The following extraResources sources are missing:"
+  printf "%b" "$MISSING"
+  echo "     electron-builder will silently skip missing sources, producing an incomplete package."
+  exit 1
+fi
+if [ -n "$WARNINGS" ]; then
+  echo "  ✅ Critical extraResources sources verified (see warnings above)."
+else
+  echo "  ✅ All extraResources sources verified."
 fi
 
 # ── 6. Package ──────────────────────────────────────────────
