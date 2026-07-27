@@ -3,8 +3,8 @@ import {
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
-  AuthStorage,
   ModelRegistry,
+  ModelRuntime,
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
@@ -26,8 +26,8 @@ import type {
 import type { PiSessionLocator } from './locator';
 
 const runtimeRegistry = new RuntimeRegistry();
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
+const modelRuntime = await ModelRuntime.create();
+const modelRegistry = new ModelRegistry(modelRuntime);
 
 function getOrCreateSession(sessionId: string) {
   return runtimeRegistry.ensure(sessionId);
@@ -279,7 +279,7 @@ export function createPiClient(): PiClient {
         cwd,
         sessionManager: SessionManager.create(cwd),
         model,
-        modelRegistry,
+        modelRuntime,
       });
       const locator: PiSessionLocator = {
         piSessionId: session.sessionId,
@@ -341,7 +341,7 @@ export function createPiClient(): PiClient {
         const options: Parameters<typeof createAgentSession>[0] = {
           cwd: runtimeCwd,
           sessionManager,
-          modelRegistry,
+          modelRuntime,
         };
 
         if (sessionContext.model) {
@@ -470,7 +470,7 @@ export function createPiClient(): PiClient {
           cwd: runtimeCwd,
           resourceLoader: loader,
           sessionManager,
-          modelRegistry,
+          modelRuntime,
         };
 
         if (sessionContext.model) {
@@ -851,7 +851,7 @@ export function createPiClient(): PiClient {
         cwd: session.cwd,
         resourceLoader: loader,
         sessionManager,
-        modelRegistry,
+        modelRuntime,
       };
 
       if (sessionContext.model) {
@@ -1041,7 +1041,7 @@ export function createPiClient(): PiClient {
         headers: m.headers,
         compat: m.compat as any,
       }));
-      modelRegistry.registerProvider(providerName, {
+      modelRuntime.registerProvider(providerName, {
         api: config.api as any,
         baseUrl: config.baseUrl,
         apiKey: config.apiKey,
@@ -1052,15 +1052,15 @@ export function createPiClient(): PiClient {
     },
 
     async setProviderApiKey(provider, apiKey) {
-      authStorage.set(provider, { type: 'api_key', key: apiKey });
+      await modelRuntime.setRuntimeApiKey(provider, apiKey);
     },
 
     async removeProviderApiKey(provider) {
-      authStorage.remove(provider);
+      await modelRuntime.removeRuntimeApiKey(provider);
     },
 
     async getProviderAuthStatus(provider) {
-      return authStorage.getAuthStatus(provider);
+      return modelRuntime.getProviderAuthStatus(provider);
     },
 
     isFirstConversation(sessionId) {

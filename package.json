@@ -24,6 +24,6 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.79.10"
+    "@earendil-works/pi-coding-agent": "^0.82.1"
   }
 }

@@ -166,6 +166,23 @@ describe('session routes', () => {
     const projectBody = await projectRes.json();
     const sessionId = projectBody.sessionId as string;
 
+    // Switch to a text-only model (no image support).
+    // The default model may report image support in newer SDK versions.
+    const modelsRes = await app.request('/api/v1/models', {
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    const modelsBody = await modelsRes.json();
+    const textOnlyModel = (modelsBody.models as Array<{ provider: string; id: string; input?: string[] }>).find(
+      (m) => Array.isArray(m.input) && !m.input.includes('image'),
+    );
+    if (textOnlyModel) {
+      await app.request(`/api/v1/sessions/${sessionId}/model`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
+      });
+    }
+
     const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
