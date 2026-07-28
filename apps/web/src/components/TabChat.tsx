@@ -588,9 +588,9 @@ function TabChat({
   }, [isRunning, displayMessages]);
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative">
+    <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative overflow-x-hidden">
       {/* Messages */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-4 space-y-6">
         {/* Sentinel for IntersectionObserver auto-load */}
         <div ref={sentinelRef} className="h-0.5" />
 
@@ -647,13 +647,13 @@ function TabChat({
               : null;
 
             return (
-              <div key={msg.id} className="flex justify-start items-start w-full">
+              <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
                 {isThisToolRunning && (
                   <div className="mr-2 pt-2 shrink-0">
                     <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
                   </div>
                 )}
-                <div className="flex flex-col items-start max-w-full flex-1">
+                <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
                   <div
                     className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
                   >
@@ -770,8 +770,8 @@ function TabChat({
                   };
 
             return (
-              <div key={msg.id} className="flex justify-start items-start w-full">
-                <div className="flex flex-col items-start max-w-full flex-1">
+              <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+                <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
                   <div className={`${colorScheme.bg} ${colorScheme.border} rounded-xl overflow-hidden`}>
                     <div className="px-3 py-2 flex items-center gap-2">
                       <Terminal className={`w-3.5 h-3.5 ${colorScheme.icon} shrink-0`} />
