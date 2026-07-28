@@ -160,6 +160,7 @@ export default function App() {
   const [editTitleValue, setEditTitleValue] = useState('');
   const titleInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<any>(null);
+  const lastRestoredSessionRef = useRef<string | null>(null);
   const [hiddenCompletedRoles, setHiddenCompletedRoles] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('pi-hidden-completed-roles');
@@ -267,6 +268,8 @@ export default function App() {
   // Restore session runtime when entering a session
   useEffect(() => {
     if (!selectedSessionId) return;
+    if (selectedSessionId === lastRestoredSessionRef.current) return;
+    lastRestoredSessionRef.current = selectedSessionId;
     import('./lib/api').then(({ restoreSessionRuntime }) => {
       restoreSessionRuntime(selectedSessionId).catch(() => {});
     });
@@ -287,14 +290,12 @@ export default function App() {
   const setNativeApiKeyMut = useSetNativeProviderApiKeyMutation();
   const setProjectRoleModelsMut = useSetProjectRoleModelsMutation();
   const projectRoleModelsQuery = useProjectRoleModels(showProjectSettings ? selectedProjectId : null);
-  const packagesQuery = usePackages();
   const projectPackagesQuery = usePackages(showProjectSettings ? selectedProjectId : null);
   const projectPackagesUpdatesQuery = usePackageUpdates(showProjectSettings ? selectedProjectId : null);
   const installPkgMut = useInstallPackageMutation();
   const removePkgMut = useRemovePackageMutation();
   const updatePkgMut = useUpdatePackagesMutation();
   const togglePkgMut = useTogglePackageMutation();
-  const packagesUpdatesQuery = usePackageUpdates();
 
   const createProjectMut = useCreateProjectMutation();
   const createSessionMut = useCreateSessionMutation();
@@ -388,16 +389,14 @@ export default function App() {
   }, [logoutMutation]);
 
   const handleSelectSession = useCallback((projectId: string, sessionId: string) => {
-    setSelectedProjectId(projectId);
-    setSelectedSessionId(sessionId);
-    setActiveTab('chat');
-    setEditingTitle(false);
-    setEditTitleValue('');
-    if (isMobile) setShowMobileSidebar(false);
-    const targetPath = getSessionPath(sessionId);
-    if (window.location.pathname !== targetPath) {
-      window.history.pushState(null, '', targetPath);
-    }
+    startTransition(() => {
+      setSelectedProjectId(projectId);
+      setSelectedSessionId(sessionId);
+      setActiveTab('chat');
+      setEditingTitle(false);
+      setEditTitleValue('');
+      if (isMobile) setShowMobileSidebar(false);
+    });
   }, [isMobile]);
 
 
@@ -406,7 +405,9 @@ export default function App() {
     if (!selectedProjectId) return;
     try {
       const result = await createSessionMut.mutateAsync({ projectId: selectedProjectId });
-      setSelectedSessionId(result.session_id);
+      startTransition(() => {
+        setSelectedSessionId(result.session_id);
+      });
       await treeQuery.refetch();
     } catch {}
   }, [selectedProjectId, createSessionMut, treeQuery]);
@@ -543,8 +544,10 @@ export default function App() {
   }, [deleteProjectMut]);
 
   const handleOpenProjectSettings = useCallback((projectId: string) => {
-    setSelectedProjectId(projectId);
-    setShowProjectSettings(true);
+    startTransition(() => {
+      setSelectedProjectId(projectId);
+      setShowProjectSettings(true);
+    });
   }, []);
 
 
@@ -661,7 +664,7 @@ export default function App() {
           onArchiveSession={handleArchiveSession}
           onDeleteProject={handleDeleteProject}
           onLogout={handleLogout}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenSettings={() => startTransition(() => setShowSettings(true))}
           onOpenProjectSettings={handleOpenProjectSettings}
           showArchived={showArchived}
           onToggleShowArchived={handleToggleShowArchived}
@@ -902,47 +905,48 @@ export default function App() {
         setProjectRoleModelsMut={setProjectRoleModelsMut}
       />
 
-      <SettingsPanel
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-        sendShortcutMode={sendShortcutMode}
-        onSendShortcutModeChange={setSendShortcutMode}
-        theme={theme}
-        onThemeChange={setTheme}
-        systemNotificationsEnabled={systemNotificationsEnabled}
-        onToggleSystemNotifications={handleToggleSystemNotifications}
-        notificationPermissionStatus={notificationPermissionStatus ?? ''}
-        onOpenProviderModal={handleOpenProviderModal}
-        installPkgMut={installPkgMut}
-        packagesQuery={packagesQuery}
-        packagesUpdatesQuery={packagesUpdatesQuery}
-        togglePkgMut={togglePkgMut}
-        removePkgMut={removePkgMut}
-        updatePkgMut={updatePkgMut}
-        hideRoleLabels={hideRoleLabels}
-        onHideRoleLabelsChange={setHideRoleLabels}
-        hiddenCompletedRoles={hiddenCompletedRoles}
-        onHiddenCompletedRolesChange={handleHiddenCompletedRolesChange}
-      />
+      {showSettings && (
+        <SettingsPanel
+          isOpen={showSettings}
+          onClose={() => setShowSettings(false)}
+          sendShortcutMode={sendShortcutMode}
+          onSendShortcutModeChange={setSendShortcutMode}
+          theme={theme}
+          onThemeChange={setTheme}
+          systemNotificationsEnabled={systemNotificationsEnabled}
+          onToggleSystemNotifications={handleToggleSystemNotifications}
+          notificationPermissionStatus={notificationPermissionStatus ?? ''}
+          onOpenProviderModal={handleOpenProviderModal}
+          installPkgMut={installPkgMut}
+          togglePkgMut={togglePkgMut}
+          removePkgMut={removePkgMut}
+          updatePkgMut={updatePkgMut}
+          hideRoleLabels={hideRoleLabels}
+          onHideRoleLabelsChange={setHideRoleLabels}
+          hiddenCompletedRoles={hiddenCompletedRoles}
+          onHiddenCompletedRolesChange={handleHiddenCompletedRolesChange}
+        />
+      )}
 
 
 
-      <ProjectSettingsModal
-        isOpen={showProjectSettings}
-        onClose={() => setShowProjectSettings(false)}
-        projectId={selectedProjectId}
-        modelsQueryData={modelsQuery.data ?? []}
-        packagesQueryData={packagesQuery.data ?? []}
-        projectPackagesQueryData={projectPackagesQuery.data ?? []}
-        projectPackagesUpdatesQueryData={projectPackagesUpdatesQuery.data}
-        projectPackagesUpdatesRefetch={projectPackagesUpdatesQuery.refetch}
-        projectPackagesRefetch={projectPackagesQuery.refetch}
-        installPkgMut={installPkgMut}
-        removePkgMut={removePkgMut}
-        updatePkgMut={updatePkgMut}
-        togglePkgMut={togglePkgMut}
-        setProjectRoleModelsMut={setProjectRoleModelsMut}
-      />
+      {showProjectSettings && (
+        <ProjectSettingsModal
+          isOpen={showProjectSettings}
+          onClose={() => setShowProjectSettings(false)}
+          projectId={selectedProjectId}
+          modelsQueryData={modelsQuery.data ?? []}
+          projectPackagesQueryData={projectPackagesQuery.data ?? []}
+          projectPackagesUpdatesQueryData={projectPackagesUpdatesQuery.data}
+          projectPackagesUpdatesRefetch={projectPackagesUpdatesQuery.refetch}
+          projectPackagesRefetch={projectPackagesQuery.refetch}
+          installPkgMut={installPkgMut}
+          removePkgMut={removePkgMut}
+          updatePkgMut={updatePkgMut}
+          togglePkgMut={togglePkgMut}
+          setProjectRoleModelsMut={setProjectRoleModelsMut}
+        />
+      )}
 
       <ProviderModal
         isOpen={showProviderModal}

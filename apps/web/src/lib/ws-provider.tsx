@@ -77,7 +77,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
             if (message.phase === 'complete') {
               Promise.all([
-                queryClient.refetchQueries({ queryKey: ['session', 'messages', currentSessionId] }),
+                queryClient.invalidateQueries({ queryKey: ['session', 'messages', currentSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'commands', currentSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'info', currentSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'context-usage', currentSessionId] }),
@@ -117,7 +117,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               setLocalRuntimeStatusBySession(prev => ({ ...prev, [eventSessionId]: status }));
             }
 
-            queryClient.refetchQueries({ queryKey: ['tree'] });
+            queryClient.invalidateQueries({ queryKey: ['tree'] });
 
             if (status === 'running') {
               if (eventSessionId === currentSessionId) {

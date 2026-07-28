@@ -287,9 +287,9 @@ function TabChat({
     const pendingImageSignature = imageSignature(pm.content_blocks);
     const hasConfirmedMatch = allMessages.some((m) =>
       m.role === 'user'
-      && m.content_text === pm.content_text
+      && (m.content_text ?? '') === (pm.content_text ?? '')
       && imageSignature(m.content_blocks) === pendingImageSignature
-      && Math.abs(new Date(m.created_at).getTime() - new Date(pm.created_at).getTime()) < 60_000,
+      && Math.abs(new Date(m.created_at).getTime() - new Date(pm.created_at).getTime()) < 300_000,
     );
     const hasPendingMatch = allMessages.some((m) => m.id === pm.id);
     if (!hasConfirmedMatch && !hasPendingMatch) {
@@ -521,6 +521,8 @@ function TabChat({
     setPendingUserMessages((prev) => [...prev, optimisticMessage]);
     try {
       await onSend(content, attachments);
+      // 发送成功后立即移除暂存消息，避免 query 返回前重复展示
+      setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
     } catch {
       setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       throw new Error('send_failed');

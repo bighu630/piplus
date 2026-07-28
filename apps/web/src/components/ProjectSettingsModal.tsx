@@ -10,7 +10,6 @@ interface ProjectSettingsModalProps {
   onClose: () => void;
   projectId: string | null;
   modelsQueryData: any;
-  packagesQueryData: any;
   projectPackagesQueryData: any;
   projectPackagesUpdatesQueryData: any;
   projectPackagesUpdatesRefetch: () => void;
@@ -69,7 +68,6 @@ export default function ProjectSettingsModal({
   onClose,
   projectId,
   modelsQueryData,
-  packagesQueryData,
   projectPackagesQueryData,
   projectPackagesUpdatesQueryData,
   projectPackagesUpdatesRefetch,
