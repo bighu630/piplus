@@ -1,0 +1,10 @@
+{
+  "name": "piplus-desktop-tauri",
+  "version": "0.2.9",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "cargo check"
+  }
+}
