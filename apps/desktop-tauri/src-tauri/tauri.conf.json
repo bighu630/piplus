@@ -3,7 +3,7 @@
   "version": "0.2.10",
   "identifier": "com.piplus.desktop",
   "build": {
-    "frontendDist": "../external/web-dist",
+    "frontendDist": "external/web-dist",
     "devUrl": "http://localhost:3000",
     "beforeDevCommand": "",
     "beforeBuildCommand": ""

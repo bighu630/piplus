@@ -173,7 +173,7 @@ pub fn start_sidecar(config: SidecarConfig) -> std::io::Result<SidecarHandle> {
         bun_path, api_entry, api_cwd
     );
 
-    let web_dist = config.web_dist_dir.unwrap_or_else(|| {
+    let web_dist = config.web_dist_dir.clone().unwrap_or_else(|| {
         if config.dev_mode {
             config
                 .repo_root
@@ -181,7 +181,12 @@ pub fn start_sidecar(config: SidecarConfig) -> std::io::Result<SidecarHandle> {
                 .map(|r| r.join("apps").join("web").join("dist").to_string_lossy().to_string())
                 .unwrap_or_else(|| "apps/web/dist".to_string())
         } else {
-            "external/web-dist".to_string()
+            // In production (AppImage), use absolute path from resource_dir
+            config
+                .resource_dir
+                .as_ref()
+                .map(|r| r.join("external").join("web-dist").to_string_lossy().to_string())
+                .unwrap_or_else(|| "external/web-dist".to_string())
         }
     });
 
