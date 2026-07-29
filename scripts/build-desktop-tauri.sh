@@ -164,6 +164,69 @@ cd "$OLDPWD"
 
 BINARY_PATH="apps/desktop-tauri/src-tauri/target/${RELEASE:+release}${RELEASE:-debug}/piplus-desktop"
 
+# ── 7. Rename artifacts to match Electron naming convention ──
+if [ -n "$RELEASE" ]; then
+  echo "[7/7] Renaming artifacts (Electron naming + -tauri suffix) ..."
+  BUNDLE_DIR="apps/desktop-tauri/src-tauri/target/release/bundle"
+  VERSION="${APP_VERSION}"
+  
+  # Determine arch label
+  ARCH_LABEL=$(uname -m)
+  case "$ARCH_LABEL" in
+    x86_64)  ARCH_LABEL="amd64" ;;
+    aarch64) ARCH_LABEL="arm64" ;;
+  esac
+  
+  # Rename deb
+  if [ -f "$BUNDLE_DIR/deb/"*.deb ]; then
+    OLD_DEB=$(ls $BUNDLE_DIR/deb/*.deb | head -1)
+    NEW_DEB="$BUNDLE_DIR/deb/piplus-${VERSION}-linux-${ARCH_LABEL}-tauri.deb"
+    mv "$OLD_DEB" "$NEW_DEB"
+    echo "  → $(basename $NEW_DEB)"
+  fi
+  
+  # Rename rpm
+  if [ -f "$BUNDLE_DIR/rpm/"*.rpm ]; then
+    OLD_RPM=$(ls $BUNDLE_DIR/rpm/*.rpm | head -1)
+    NEW_RPM="$BUNDLE_DIR/rpm/piplus-${VERSION}-linux-${ARCH_LABEL}-tauri.rpm"
+    mv "$OLD_RPM" "$NEW_RPM"
+    echo "  → $(basename $NEW_RPM)"
+  fi
+  
+  # Rename AppImage
+  if [ -f "$BUNDLE_DIR/appimage/"*.AppImage ]; then
+    OLD_APPIMAGE=$(ls $BUNDLE_DIR/appimage/*.AppImage | head -1)
+    NEW_APPIMAGE="$BUNDLE_DIR/appimage/piplus-${VERSION}-linux-${ARCH_LABEL}-tauri.AppImage"
+    mv "$OLD_APPIMAGE" "$NEW_APPIMAGE"
+    echo "  → $(basename $NEW_APPIMAGE)"
+  fi
+  
+  # Rename DMG (macOS)
+  if [ -d "$BUNDLE_DIR/dmg" ] && [ -f "$BUNDLE_DIR/dmg/"*.dmg ]; then
+    OLD_DMG=$(ls $BUNDLE_DIR/dmg/*.dmg | head -1)
+    NEW_DMG="$BUNDLE_DIR/dmg/piplus-${VERSION}-mac-${ARCH_LABEL}-tauri.dmg"
+    mv "$OLD_DMG" "$NEW_DMG"
+    echo "  → $(basename $NEW_DMG)"
+  fi
+  
+  # Rename Windows installers
+  if [ -d "$BUNDLE_DIR/nsis" ] && [ -f "$BUNDLE_DIR/nsis/"*.exe ]; then
+    OLD_EXE=$(ls $BUNDLE_DIR/nsis/*.exe | head -1)
+    NEW_EXE="$BUNDLE_DIR/nsis/piplus-${VERSION}-win-${ARCH_LABEL}-tauri.exe"
+    mv "$OLD_EXE" "$NEW_EXE"
+    echo "  → $(basename $NEW_EXE)"
+  fi
+  
+  if [ -d "$BUNDLE_DIR/msi" ] && [ -f "$BUNDLE_DIR/msi/"*.msi ]; then
+    OLD_MSI=$(ls $BUNDLE_DIR/msi/*.msi | head -1)
+    NEW_MSI="$BUNDLE_DIR/msi/piplus-${VERSION}-win-${ARCH_LABEL}-tauri.msi"
+    mv "$OLD_MSI" "$NEW_MSI"
+    echo "  → $(basename $NEW_MSI)"
+  fi
+  
+  echo "  ✅ Artifacts renamed."
+fi
+
 echo ""
 echo "  ✅ Build complete."
 echo "  Target:    ${TARGET}"
