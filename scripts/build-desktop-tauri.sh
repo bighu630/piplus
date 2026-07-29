@@ -88,6 +88,8 @@ fi
 # e.g., "external/bun-bin/bun" → "external/bun-bin/bun-x86_64-unknown-linux-gnu"
 cp "$BUN_SOURCE" "apps/desktop-tauri/src-tauri/external/bun-bin/bun-${TARGET_TRIPLE}"
 chmod +x "apps/desktop-tauri/src-tauri/external/bun-bin/bun-${TARGET_TRIPLE}"
+# Also create a symlink without target triple for runtime resolution
+ln -sf "bun-${TARGET_TRIPLE}" "apps/desktop-tauri/src-tauri/external/bun-bin/bun"
 echo "  ✅ bun bundled as bun-${TARGET_TRIPLE} from $BUN_SOURCE"
 
 # Copy pty native libs (from API dist after build:bundle)
