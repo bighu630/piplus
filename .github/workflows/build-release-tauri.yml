@@ -27,7 +27,7 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libfuse2t64 \
+            libfuse2 \
             icnsutils \
             graphicsmagick \
             rpm
