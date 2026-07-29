@@ -152,21 +152,35 @@ else
   echo "     Run 'cargo tauri icon <source-png>' manually to generate icons."
 fi
 
-# ── 6. Cargo build ──────────────────────────────────────────
-echo "[6/6] Running cargo build${RELEASE:+ --release} ..."
+# ── 6. Filter non-native pty libs ────────────────────────────
+echo "[6/7] Filtering non-native pty libs ..."
+PTY_DIR="apps/desktop-tauri/src-tauri/external/api-dist/rust-pty/target/release"
+if [ -d "$PTY_DIR" ]; then
+  rm -f "$PTY_DIR"/*arm64* "$PTY_DIR"/*musl* "$PTY_DIR"/*.dylib "$PTY_DIR"/*.dll 2>/dev/null
+  echo "  ✅ Filtered non-native pty libs from api-dist"
+fi
+PTY_DIR2="apps/desktop-tauri/src-tauri/external/pty-libs"
+if [ -d "$PTY_DIR2" ]; then
+  rm -f "$PTY_DIR2"/*arm64* "$PTY_DIR2"/*musl* "$PTY_DIR2"/*.dylib "$PTY_DIR2"/*.dll 2>/dev/null
+  echo "  ✅ Filtered non-native pty libs from pty-libs"
+fi
+
+# ── 7. Cargo build ──────────────────────────────────────────
+echo "[7/7] Running cargo tauri build${RELEASE:+ --release} ..."
 cd apps/desktop-tauri/src-tauri
-if [ -n "$RELEASE" ]; then
-  cargo build --release
+
+if [ "$TARGET" = "linux" ] && [ -n "$RELEASE" ]; then
+  NO_STRIP=1 cargo tauri build
 else
-  cargo build
+  cargo tauri build
 fi
 cd "$OLDPWD"
 
 BINARY_PATH="apps/desktop-tauri/src-tauri/target/${RELEASE:+release}${RELEASE:-debug}/piplus-desktop"
 
-# ── 7. Rename artifacts to match Electron naming convention ──
+# ── 8. Rename artifacts to match Electron naming convention ──
 if [ -n "$RELEASE" ]; then
-  echo "[7/7] Renaming artifacts (Electron naming + -tauri suffix) ..."
+  echo "[8/8] Renaming artifacts (Electron naming + -tauri suffix) ..."
   BUNDLE_DIR="apps/desktop-tauri/src-tauri/target/release/bundle"
   VERSION="${APP_VERSION}"
   
