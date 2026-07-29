@@ -74,16 +74,21 @@ else
 fi
 
 # Copy bun binary
+# Tauri v2 externalBin appends target triple suffix, so we need to name it correctly
 echo "  → Copying bun binary ..."
+TARGET_TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
 BUN_SOURCE="${PIPLUS_BUN_SOURCE:-$(command -v bun || true)}"
 if [ -z "$BUN_SOURCE" ] || [ ! -f "$BUN_SOURCE" ]; then
   echo "  ❌ Could not locate a bun executable to bundle."
   echo "     Ensure 'bun' is on PATH, or set PIPLUS_BUN_SOURCE=/path/to/bun"
   exit 1
 fi
-cp "$BUN_SOURCE" apps/desktop-tauri/src-tauri/external/bun-bin/bun
-chmod +x apps/desktop-tauri/src-tauri/external/bun-bin/bun
-echo "  ✅ bun bundled from $BUN_SOURCE"
+
+# Tauri v2 looks for externalBin paths with target triple suffix appended
+# e.g., "external/bun-bin/bun" → "external/bun-bin/bun-x86_64-unknown-linux-gnu"
+cp "$BUN_SOURCE" "apps/desktop-tauri/src-tauri/external/bun-bin/bun-${TARGET_TRIPLE}"
+chmod +x "apps/desktop-tauri/src-tauri/external/bun-bin/bun-${TARGET_TRIPLE}"
+echo "  ✅ bun bundled as bun-${TARGET_TRIPLE} from $BUN_SOURCE"
 
 # Copy pty native libs (from API dist after build:bundle)
 echo "  → Copying bun-pty native libs ..."
@@ -111,7 +116,7 @@ WARNINGS=""
 # Tauri external resources
 [ -f "apps/desktop-tauri/src-tauri/external/api-dist/index.js" ] || MISSING="$MISSING  - apps/desktop-tauri/src-tauri/external/api-dist/index.js\n"
 [ -f "apps/desktop-tauri/src-tauri/external/web-dist/index.html" ] || MISSING="$MISSING  - apps/desktop-tauri/src-tauri/external/web-dist/index.html\n"
-[ -f "apps/desktop-tauri/src-tauri/external/bun-bin/bun" ] || MISSING="$MISSING  - apps/desktop-tauri/src-tauri/external/bun-bin/bun\n"
+[ -f "apps/desktop-tauri/src-tauri/external/bun-bin/bun" ] || [ -f "apps/desktop-tauri/src-tauri/external/bun-bin/bun-$(rustc -vV 2>/dev/null | grep host | awk '{print $2}')" ] || MISSING="$MISSING  - apps/desktop-tauri/src-tauri/external/bun-bin/bun\n"
 [ -d "apps/migrations" ] || WARNINGS="$WARNINGS  ⚠️  apps/migrations/ not found\n"
 
 # Icons check
