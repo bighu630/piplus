@@ -975,7 +975,12 @@ function TabChat({
                   </div>
                 ) : (
                   <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
-                    <div className="markdown-body">
+                    {msg.content_text?.startsWith('</think>') ? (
+                      <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-3 my-2 text-slate-600 dark:text-slate-400 rounded-r-lg text-[13px] leading-relaxed whitespace-pre-wrap">
+                        {msg.content_text.replace('</think>', '').trim()}
+                      </blockquote>
+                    ) : (
+                      <div className="markdown-body">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         rehypePlugins={[[rehypeHighlight, { detect: false }]]}
@@ -1067,8 +1072,9 @@ function TabChat({
                         {msg.content_text}
                       </ReactMarkdown>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
+              )}
                 <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-2 px-1 font-mono">
                   {new Date(msg.created_at).toLocaleTimeString()}
                 </span>

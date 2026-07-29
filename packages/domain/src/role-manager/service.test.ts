@@ -204,6 +204,7 @@ describe('role manager service', () => {
       createdBy: 'user_seed',
       role: 'reviewer',
       objective: 'review the API boundary',
+      title: 'API Review',
       scope: 'apps/api/src/routes',
       task: 'identify any input validation gaps',
       constraints: ['keep it short', 'do not mention tree structure'],
@@ -213,7 +214,7 @@ describe('role manager service', () => {
     const [child] = await db.select().from(sessions).where(eq(sessions.id, result.sessionId)).limit(1);
 
     expect(piClient.state.createSessionInput).toEqual({
-      title: 'review the API boundary',
+      title: 'API Review',
       prompt: child?.compiledPrompt,
       cwd: '',
       model: { provider: 'anthropic', id: 'claude-sonnet-4-20250514' },
@@ -251,6 +252,7 @@ describe('role manager service', () => {
       createdBy: 'user_seed',
       role: 'worker',
       objective: 'work task',
+      title: 'Default Model Task',
       constraints: [],
     });
 
@@ -278,6 +280,7 @@ describe('role manager service', () => {
       createdBy: 'user_seed',
       role: 'worker',
       objective: 'work task',
+      title: 'Fallback Task',
       constraints: [],
     });
 
@@ -303,6 +306,7 @@ describe('role manager service', () => {
       createdBy: 'user_seed',
       role: 'worker',
       objective: 'finish the task',
+      title: 'Finish Task',
       constraints: ['be factual'],
     });
 

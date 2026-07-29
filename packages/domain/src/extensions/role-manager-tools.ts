@@ -38,6 +38,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
         type: 'object',
         properties: {
           role: { type: 'string', description: 'Role key (must be one of the available roles listed above)' },
+          title: { type: 'string', description: 'A short, descriptive title for the child session (shown in sidebar). Use a concise name rather than a full objective — the objective parameter captures the goal.' },
           objective: { type: 'string', description: 'The outcome this child session should achieve' },
           scope: { type: 'string', description: 'The codebase area or boundary it should stay within (optional)' },
           task: { type: 'string', description: 'The specific task to execute (optional)' },
@@ -51,7 +52,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
             description: 'Optional extra restrictions',
           },
         },
-        required: ['role', 'objective'],
+        required: ['role', 'objective', 'title'],
       },
     },
     {
@@ -168,6 +169,7 @@ export async function invokeRoleManagerTool(
       parentSessionId: ctx.sessionId,
       createdBy: ctx.userId,
       role,
+      title: String(args.title ?? ''),
       objective: String(args.objective ?? ''),
       scope: args.scope ? String(args.scope) : undefined,
       task: args.task ? String(args.task) : undefined,

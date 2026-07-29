@@ -32,6 +32,7 @@ export type SpawnSessionInput = {
   createdBy: string;
   role: string;
   objective: string;
+  title: string;
   scope?: string;
   task?: string;
   parentSuppliedPrompt?: string;
@@ -428,7 +429,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       const template = await findRoleTemplateByVersion(db, input.role, roleVersion);
       const [project] = await db.select({ projectPath: projects.projectPath }).from(projects).where(eq(projects.id, input.projectId)).limit(1);
 
-      const title = input.objective;
+      const title = input.title;
       const compiledPrompt = compilePrompt({
         roleBasePrompt: template.basePrompt,
         objective: input.objective,

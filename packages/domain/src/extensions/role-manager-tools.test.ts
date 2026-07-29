@@ -70,9 +70,14 @@ describe('role manager tools', () => {
 
     expect(props.role).toBeDefined();
     expect(props.objective).toBeDefined();
+    expect(props.title).toBeDefined();
     expect(props.scope).toBeDefined();
     expect(props.task).toBeDefined();
     expect(props.constraints).toBeDefined();
+    const required = (spawn!.parameters as Record<string, unknown>).required as string[];
+    expect(required).toContain('title');
+    expect(required).toContain('objective');
+    expect(required).toContain('role');
   });
 
 
@@ -184,6 +189,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     const result = await invokeRoleManagerTool('spawn_session', {
       role: 'worker',
       objective: 'fix runtime status',
+      title: 'Fix Runtime Status',
       scope: 'apps/api',
       task: 'reuse the normal state transition',
       constraints: ['be precise'],
@@ -348,6 +354,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     const result = await invokeRoleManagerTool('spawn_session', {
       role: 'worker',
       objective: 'fix runtime status',
+      title: 'Fix Runtime Status Wait',
       scope: 'apps/api',
       task: 'reuse the normal state transition',
       constraints: ['be precise'],
@@ -522,6 +529,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       const result = await invokeRoleManagerTool('spawn_session', {
         role: 'worker',
         objective: 'wait for reminder',
+        title: 'Wait Reminder',
         wait: true,
       }, {
         db,
@@ -1271,6 +1279,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     const waitPromise = invokeRoleManagerTool('spawn_session', {
       role: 'worker',
       objective: 'long running task',
+      title: 'Long Running Task',
       wait: true,
     }, {
       db,

@@ -62,19 +62,48 @@ export function registerProjectRoutes(app: Hono) {
     if (mode === 'git_clone') {
       if (!repoUrl) return c.json({ error: { code: 'INVALID_URL', message: 'Repository URL is required' } }, 400);
       const root = getServerConfig().projectsRoot;
-      const repoName = repoUrl.split('/').pop()?.replace('.git', '') ?? 'repo';
+      const isSsh = repoUrl.startsWith('git@') || repoUrl.startsWith('ssh://');
+      const repoName = (() => {
+        const cleaned = repoUrl.replace(/\.git$/, '');
+        if (isSsh) {
+          return cleaned.split(':').pop()?.split('/').pop() ?? 'repo';
+        }
+        return cleaned.split('/').pop() ?? 'repo';
+      })();
       const targetPath = join(root, repoName);
       if (existsSync(targetPath)) {
         return c.json({ error: { code: 'PATH_EXISTS', message: 'Target directory already exists' } }, 409);
       }
       const cloneArgs = ['git', 'clone', repoUrl, targetPath];
-      if (gitConfig?.token) {
+      if (gitConfig?.token && !isSsh) {
         const encoded = Buffer.from(`token:${gitConfig.token}`).toString('base64');
         cloneArgs.splice(1, 0, '-c', `http.extraheader=AUTHORIZATION: Basic ${encoded}`);
       }
-      const proc = Bun.spawnSync(cloneArgs, { stdout: 'pipe', stderr: 'pipe' });
+      const env: Record<string, string> = {};
+      if (isSsh) {
+        env.GIT_SSH_COMMAND = 'ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes';
+      }
+      const procEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (v !== undefined) procEnv[k] = v;
+      }
+      Object.assign(procEnv, env);
+      const proc = Bun.spawnSync(cloneArgs, {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: procEnv,
+        timeout: 120_000,
+      });
       if (proc.exitCode !== 0) {
-        return c.json({ error: { code: 'CLONE_FAILED', message: 'Git clone failed' } }, 500);
+        const stderr = new TextDecoder().decode(proc.stderr).trim();
+        const isDev = (process.env.NODE_ENV || 'development') !== 'production';
+        return c.json({
+          error: {
+            code: 'CLONE_FAILED',
+            message: 'Git clone failed',
+            ...(isDev ? { details: stderr || 'Unknown error (no stderr output)' } : {}),
+          },
+        }, 500);
       }
       const result = await createProjectWithPlanner(db, piClient, repoName, userId, targetPath, 'git_clone', repoUrl, plannerModel, gitConfigJson);
       await createAuditService(db).record(userId, "project.created", "project", result.projectId, { name: repoName, path: targetPath, sourceType: 'git_clone', sourceUrl: repoUrl });
