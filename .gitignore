@@ -21,7 +21,3 @@ tsconfig.tsbuildinfo
 /apps/web/tsconfig.tsbuildinfo
 pty-libs/
 
-# Tauri build artifacts
-apps/desktop-tauri/src-tauri/target/
-apps/desktop-tauri/src-tauri/external/
-apps/desktop-tauri/external/
