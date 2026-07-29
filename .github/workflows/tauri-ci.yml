@@ -62,8 +62,9 @@ jobs:
           mkdir -p apps/desktop-tauri/src-tauri/external/{api-dist,web-dist,migrations,bun-bin,pty-libs}
           echo "placeholder" > apps/desktop-tauri/src-tauri/external/api-dist/index.js
           echo "<!DOCTYPE html><html><body></body></html>" > apps/desktop-tauri/src-tauri/external/web-dist/index.html
-          cp $(which bun) apps/desktop-tauri/src-tauri/external/bun-bin/bun
-          chmod +x apps/desktop-tauri/src-tauri/external/bun-bin/bun
+          TARGET_TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
+          cp $(which bun) apps/desktop-tauri/src-tauri/external/bun-bin/bun-${TARGET_TRIPLE}
+          chmod +x apps/desktop-tauri/src-tauri/external/bun-bin/bun-${TARGET_TRIPLE}
 
       - name: Cargo check
         run: |
@@ -118,8 +119,9 @@ jobs:
           mkdir -p apps/desktop-tauri/src-tauri/external/{api-dist,web-dist,migrations,bun-bin,pty-libs}
           echo "placeholder" > apps/desktop-tauri/src-tauri/external/api-dist/index.js
           echo "<!DOCTYPE html><html><body></body></html>" > apps/desktop-tauri/src-tauri/external/web-dist/index.html
-          cp $(which bun) apps/desktop-tauri/src-tauri/external/bun-bin/bun
-          chmod +x apps/desktop-tauri/src-tauri/external/bun-bin/bun
+          TARGET_TRIPLE=$(rustc -vV | grep host | awk '{print $2}')
+          cp $(which bun) apps/desktop-tauri/src-tauri/external/bun-bin/bun-${TARGET_TRIPLE}
+          chmod +x apps/desktop-tauri/src-tauri/external/bun-bin/bun-${TARGET_TRIPLE}
 
       - name: Cargo check
         run: |
