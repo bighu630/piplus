@@ -8,6 +8,7 @@ on:
       - 'apps/api/**'
       - 'apps/web/**'
       - 'scripts/build-desktop-tauri.sh'
+      - '.github/workflows/tauri-ci.yml'
   push:
     branches: [dev, main]
     paths:
@@ -15,6 +16,8 @@ on:
       - 'apps/api/**'
       - 'apps/web/**'
       - 'scripts/build-desktop-tauri.sh'
+      - '.github/workflows/tauri-ci.yml'
+  workflow_dispatch:
 
 jobs:
   check-linux:
