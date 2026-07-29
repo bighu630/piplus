@@ -975,85 +975,11 @@ function TabChat({
                   </div>
                 ) : (
                   <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
-                    {msg.content_text?.includes('</think>') ? (() => {
-                      const idx = msg.content_text!.indexOf('</think>');
-                      const think = msg.content_text!.slice(0, idx + '</think>'.length).trim();
-                      const response = msg.content_text!.slice(idx + '</think>'.length).trim();
-                      const cleanThink = think.replace(/<\/?thinking>|<\/?think>/gi, '').trim();
-                      return (
-                        <>
-                          <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-3 my-2 text-slate-600 dark:text-slate-400 rounded-r-lg text-[13px] leading-relaxed whitespace-pre-wrap">
-                            {think}
-                          </blockquote>
-                          {response && (
-                            <div className="markdown-body mt-2">
-                              <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[[rehypeHighlight, { detect: false }]]}
-                                components={{
-                                  pre({ children }) {
-                                    return <pre className="code-block">{children}</pre>;
-                                  },
-                                  code({ className, children, ...props }: any) {
-                                    const match = /language-(\w+)/.exec(className || '');
-                                    const codeText = extractCodeText(children).replace(/\n$/, '');
-                                    const isInline = !className;
-                                    if (!isInline) {
-                                      const language = match ? match[1] : 'code';
-                                      const blockId = `${msg.id}-${language}-${codeText}`;
-                                      return (
-                                        <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 relative font-mono text-xs shadow-3xs max-w-full">
-                                          <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
-                                            <span className="text-[10px] font-mono font-bold uppercase tracking-wider">{language}</span>
-                                            <button
-                                              type="button"
-                                              onClick={() => handleCopyCode(codeText, blockId)}
-                                              className="flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 px-2.5 py-1 rounded text-[11px] text-slate-600 dark:text-slate-300 font-sans cursor-pointer transition-colors"
-                                            >
-                                              {copiedId === blockId ? (
-                                                <><Check className="w-3 h-3 text-green-600" /><span className="text-green-600 font-medium">Copied</span></>
-                                              ) : (
-                                                <><Copy className="w-3 h-3" /><span>Copy</span></>
-                                              )}
-                                            </button>
-                                          </div>
-                                          <pre className="p-4 overflow-x-auto text-[11.5px] leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950">
-                                            <code className={className}>{children}</code>
-                                          </pre>
-                                        </div>
-                                      );
-                                    }
-                                    return (
-                                      <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold" {...props}>{children}</code>
-                                    );
-                                  },
-                                  p({ children, ...props }) {
-                                    return <p className="text-slate-700 dark:text-slate-300 leading-relaxed my-2 text-[13.5px]" {...props}>{children}</p>;
-                                  },
-                                  ul({ children, ...props }) {
-                                    return <ul className="list-disc pl-5 my-2 text-xs text-slate-700 dark:text-slate-300 space-y-1" {...props}>{children}</ul>;
-                                  },
-                                  ol({ children, ...props }) {
-                                    return <ol className="list-decimal pl-5 my-2 text-xs text-slate-700 dark:text-slate-300 space-y-1" {...props}>{children}</ol>;
-                                  },
-                                  blockquote({ children, ...props }) {
-                                    return <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-1.5 my-3 italic text-slate-600 dark:text-slate-400 rounded-r-lg" {...props}>{children}</blockquote>;
-                                  },
-                                  table({ children, ...props }) { return <div className="overflow-x-auto my-3 rounded-lg border border-slate-200 dark:border-slate-700"><table className="min-w-full text-xs border-collapse" {...props}>{children}</table></div>; },
-                                  thead({ children, ...props }) { return <thead className="bg-slate-50 dark:bg-slate-800" {...props}>{children}</thead>; },
-                                  tbody({ children, ...props }) { return <tbody className="divide-y divide-slate-200 dark:divide-slate-700" {...props}>{children}</tbody>; },
-                                  tr({ children, ...props }) { return <tr className="even:bg-slate-50/50 dark:even:bg-slate-800/50" {...props}>{children}</tr>; },
-                                  th({ children, ...props }) { return <th className="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[12px]" {...props}>{children}</th>; },
-                                  td({ children, ...props }) { return <td className="px-3 py-2 text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 text-[12px]" {...props}>{children}</td>; },
-                                }}
-                              >
-                                {response}
-                              </ReactMarkdown>
-                            </div>
-                          )}
-                        </>
-                      );
-                    })() : (
+                    {msg.content_text?.includes('</think>') ? (
+                      <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-3 my-2 text-slate-600 dark:text-slate-400 rounded-r-lg text-[13px] leading-relaxed whitespace-pre-wrap">
+                        {msg.content_text.replace(/<\/?think>|<\/?thinking>/gi, '').trim()}
+                      </blockquote>
+                    ) : (
                       <div className="markdown-body">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
