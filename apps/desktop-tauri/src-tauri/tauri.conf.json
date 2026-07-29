@@ -1,6 +1,6 @@
 {
   "productName": "piplus",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "identifier": "com.piplus.desktop",
   "build": {
     "frontendDist": "../external/web-dist",
