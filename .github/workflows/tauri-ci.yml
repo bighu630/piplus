@@ -1,0 +1,132 @@
+name: Tauri CI Check
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'apps/desktop-tauri/**'
+      - 'apps/api/**'
+      - 'apps/web/**'
+      - 'scripts/build-desktop-tauri.sh'
+  push:
+    branches: [dev, main]
+    paths:
+      - 'apps/desktop-tauri/**'
+      - 'apps/api/**'
+      - 'apps/web/**'
+      - 'scripts/build-desktop-tauri.sh'
+
+jobs:
+  check-linux:
+    name: 'Tauri Check (Linux)'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg-dev \
+            patchelf
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            apps/desktop-tauri/src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('apps/desktop-tauri/src-tauri/Cargo.lock') }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prepare resources
+        run: |
+          mkdir -p apps/desktop-tauri/src-tauri/external/{api-dist,web-dist,migrations,bun-bin,pty-libs}
+          echo "placeholder" > apps/desktop-tauri/src-tauri/external/api-dist/index.js
+          echo "<!DOCTYPE html><html><body></body></html>" > apps/desktop-tauri/src-tauri/external/web-dist/index.html
+          cp $(which bun) apps/desktop-tauri/src-tauri/external/bun-bin/bun
+          chmod +x apps/desktop-tauri/src-tauri/external/bun-bin/bun
+
+      - name: Cargo check
+        run: |
+          cd apps/desktop-tauri/src-tauri
+          cargo check --all-targets
+
+      - name: Cargo build (debug)
+        run: |
+          cd apps/desktop-tauri/src-tauri
+          cargo build
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: tauri-linux-debug
+          path: apps/desktop-tauri/src-tauri/target/debug/piplus-desktop
+          retention-days: 7
+
+  check-mac:
+    name: 'Tauri Check (macOS)'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            apps/desktop-tauri/src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('apps/desktop-tauri/src-tauri/Cargo.lock') }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prepare resources
+        run: |
+          mkdir -p apps/desktop-tauri/src-tauri/external/{api-dist,web-dist,migrations,bun-bin,pty-libs}
+          echo "placeholder" > apps/desktop-tauri/src-tauri/external/api-dist/index.js
+          echo "<!DOCTYPE html><html><body></body></html>" > apps/desktop-tauri/src-tauri/external/web-dist/index.html
+          cp $(which bun) apps/desktop-tauri/src-tauri/external/bun-bin/bun
+          chmod +x apps/desktop-tauri/src-tauri/external/bun-bin/bun
+
+      - name: Cargo check
+        run: |
+          cd apps/desktop-tauri/src-tauri
+          cargo check --all-targets
+
+      - name: Cargo build (debug)
+        run: |
+          cd apps/desktop-tauri/src-tauri
+          cargo build
