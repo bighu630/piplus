@@ -6,9 +6,39 @@ import { messages, projects, sessions } from '@piplus/db/schema';
 import { and, eq, like } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
 import { startSessionRun } from '../session/runtime';
-import { setRequestContext, getRequestContext } from '../session/request-context';
+import { setRequestContext, getRequestContext, setCrossProjectWait, clearCrossProjectWait } from '../session/request-context';
+import { getSubagentTimeoutMs } from '../settings/service';
 
 const WRITEBACK_REMINDER_INTERVAL_MS = 15 * 1000;
+const MAX_WRITEBACK_REMINDERS = 2;
+
+/**
+ * 决定对空闲子会话的下一步动作（纯函数，便于测试）。
+ * 语义与 wait 循环保持一致：先查间隔（间隔未到 → null，即使已达上限也不触发 failed），
+ * 再查上限（达上限 → failed），否则返回 remind。
+ * 发送给子代理的 reminder 文案统一为英文：子代理多为英文系统提示，中文指令可能被忽略；
+ * 返回给父代理的 failed 消息保持中文（那是给父代理看的）。
+ */
+export function decideReminderAction(params: {
+  reminderCount: number;
+  lastReminderAt: number;
+  now: number;
+  hasNoOutput: boolean;
+}): { action: 'remind'; message: string } | { action: 'failed'; message: string; error: string } | null {
+  const { reminderCount, lastReminderAt, now, hasNoOutput } = params;
+  if (now - lastReminderAt < WRITEBACK_REMINDER_INTERVAL_MS) return null;
+  if (reminderCount >= MAX_WRITEBACK_REMINDERS) {
+    return hasNoOutput
+      ? { action: 'failed', message: '子会话执行失败：模型未产生任何输出', error: '模型未产生任何输出' }
+      : { action: 'failed', message: '子会话多次提醒后仍未写回结果', error: '子会话未写回结果' };
+  }
+  return {
+    action: 'remind',
+    message: hasNoOutput
+      ? 'You have not produced any output yet. Please continue working on the task, and call `writeback_to_parent` with the result when done.'
+      : 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.',
+  };
+}
 
 function labelForRole(key: string) {
   const map: Record<string, string> = {
@@ -466,13 +496,13 @@ async function waitForChildWriteback(
   childSessionId: string,
   requestId: string,
 ): Promise<unknown> {
-  const timeoutMs = 10 * 60 * 1000;
+  const timeoutMs = await getSubagentTimeoutMs(ctx.db);
   const pollIntervalMs = 2000;
-  const deadline = Date.now() + timeoutMs;
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : null;
   let lastReminderAt = Date.now();
   let reminderCount = 0;
 
-  while (Date.now() < deadline) {
+  while (deadline === null || Date.now() < deadline) {
     const [parent] = await ctx.db
       .select({ runtimeStatus: sessions.runtimeStatus })
       .from(sessions)
@@ -502,6 +532,21 @@ async function waitForChildWriteback(
         status: 'cancelled',
         session_id: childSessionId,
         message: '父会话正在停止，已取消等待子会话结果',
+      };
+    }
+
+    // 父会话被自身 safety timeout 中止后 runtimeStatus 变为 'idle'，
+    // 但本 wait 循环仍在后台轮询（zombie）。检测到 idle 立即取消。
+    if (parent.runtimeStatus === 'idle') {
+      console.log('[role-manager-tools] waitForChildWriteback parent idle', {
+        parentSessionId: ctx.sessionId,
+        childSessionId,
+        requestId,
+      });
+      return {
+        status: 'cancelled',
+        session_id: childSessionId,
+        message: '父会话已停止，已取消等待子会话结果',
       };
     }
 
@@ -668,28 +713,42 @@ async function waitForChildWriteback(
         continue;
       }
 
-      console.log('[role-manager-tools] waitForChildWriteback child failed (no output, no candidates)', {
+      // No candidates left — don't fail immediately; fall through to the
+      // reminder flow below so the child gets a chance to keep going.
+      console.log('[role-manager-tools] waitForChildWriteback child idle, no output, no candidates — falling through to reminder', {
         childSessionId,
         requestId,
         reminderCount,
       });
-      return {
-        status: 'failed',
-        session_id: childSessionId,
-        message: '子会话执行失败：模型未产生任何输出',
-        error: '模型未产生任何输出',
-      };
     }
 
-    if (child?.runtimeStatus === 'idle' && now - lastReminderAt >= WRITEBACK_REMINDER_INTERVAL_MS) {
-      lastReminderAt = now;
-      reminderCount++;
-      const reminder = 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.';
-      console.log('[role-manager-tools] waitForChildWriteback reminder', {
-        childSessionId,
-        requestId,
-      });
-      await startChildSessionRun(ctx, childSessionId, reminder, requestId, ctx.onSessionCreated);
+    if (child?.runtimeStatus === 'idle') {
+      const decision = decideReminderAction({ reminderCount, lastReminderAt, now, hasNoOutput });
+      if (decision) {
+        if (decision.action === 'failed') {
+          console.log('[role-manager-tools] waitForChildWriteback reminders exhausted', {
+            childSessionId,
+            requestId,
+            reminderCount,
+            hasNoOutput,
+          });
+          return {
+            status: 'failed',
+            session_id: childSessionId,
+            message: decision.message,
+            error: decision.error,
+          };
+        }
+        lastReminderAt = now;
+        reminderCount++;
+        console.log('[role-manager-tools] waitForChildWriteback reminder', {
+          childSessionId,
+          requestId,
+          reminderCount,
+          hasNoOutput,
+        });
+        await startChildSessionRun(ctx, childSessionId, decision.message, requestId, ctx.onSessionCreated);
+      }
     }
 
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
@@ -716,82 +775,103 @@ async function waitForCrossProjectReply(
   ctx: RoleManagerToolContext,
   requestId: string,
 ): Promise<unknown> {
-  const timeoutMs = 10 * 60 * 1000;
+  const timeoutMs = await getSubagentTimeoutMs(ctx.db);
   const pollIntervalMs = 2000;
-  const deadline = Date.now() + timeoutMs;
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : null;
 
-  while (Date.now() < deadline) {
-    // Check if the asking session is still active
-    const [session] = await ctx.db
-      .select({ runtimeStatus: sessions.runtimeStatus })
-      .from(sessions)
-      .where(eq(sessions.id, ctx.sessionId))
-      .limit(1);
+  // 标记本会话正在等待跨项目回复：目标项目会话是顶层会话（无 parentSessionId），
+  // runtime 的 safety timeout 查不到子会话，需用内存标记实现豁免。
+  // try/finally 保证所有出口（cancelled/completed/timeout/异常）都清除标记。
+  setCrossProjectWait(ctx.sessionId, requestId);
+  try {
+    while (deadline === null || Date.now() < deadline) {
+      // Check if the asking session is still active
+      const [session] = await ctx.db
+        .select({ runtimeStatus: sessions.runtimeStatus })
+        .from(sessions)
+        .where(eq(sessions.id, ctx.sessionId))
+        .limit(1);
 
-    if (!session) {
-      console.log('[role-manager-tools] waitForCrossProjectReply session missing', {
-        sessionId: ctx.sessionId,
-        requestId,
-      });
-      return {
-        status: 'cancelled',
-        message: '当前会话不存在，已取消等待跨项目回复',
-      };
-    }
-
-    if (session.runtimeStatus === 'stopping') {
-      console.log('[role-manager-tools] waitForCrossProjectReply session stopping', {
-        sessionId: ctx.sessionId,
-        requestId,
-      });
-      return {
-        status: 'cancelled',
-        message: '当前会话正在停止，已取消等待跨项目回复',
-      };
-    }
-
-    const [reply] = await ctx.db
-      .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
-      .from(messages)
-      .where(
-        and(
-          eq(messages.sessionId, ctx.sessionId),
-          eq(messages.messageKind, 'cross_project_reply'),
-          eq(messages.requestId, requestId),
-        ),
-      )
-      .limit(1);
-
-    if (reply) {
-      let blocks = null;
-      if (reply.blocksJson) {
-        try {
-          blocks = JSON.parse(reply.blocksJson);
-        } catch {
-          /* ignore */
-        }
+      if (!session) {
+        console.log('[role-manager-tools] waitForCrossProjectReply session missing', {
+          sessionId: ctx.sessionId,
+          requestId,
+        });
+        return {
+          status: 'cancelled',
+          message: '当前会话不存在，已取消等待跨项目回复',
+        };
       }
-      console.log('[role-manager-tools] waitForCrossProjectReply matched', {
-        sessionId: ctx.sessionId,
-        requestId,
-      });
-      return {
-        status: 'completed',
-        summary: reply.summary,
-        blocks,
-      };
+
+      if (session.runtimeStatus === 'stopping') {
+        console.log('[role-manager-tools] waitForCrossProjectReply session stopping', {
+          sessionId: ctx.sessionId,
+          requestId,
+        });
+        return {
+          status: 'cancelled',
+          message: '当前会话正在停止，已取消等待跨项目回复',
+        };
+      }
+
+      // 当前会话被自身 safety timeout 中止后 runtimeStatus 变为 'idle'，
+      // 但本 wait 循环仍在后台轮询（zombie）。检测到 idle 立即取消。
+      if (session.runtimeStatus === 'idle') {
+        console.log('[role-manager-tools] waitForCrossProjectReply session idle', {
+          sessionId: ctx.sessionId,
+          requestId,
+        });
+        return {
+          status: 'cancelled',
+          message: '当前会话已停止，已取消等待跨项目回复',
+        };
+      }
+
+      const [reply] = await ctx.db
+        .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.sessionId, ctx.sessionId),
+            eq(messages.messageKind, 'cross_project_reply'),
+            eq(messages.requestId, requestId),
+          ),
+        )
+        .limit(1);
+
+      if (reply) {
+        let blocks = null;
+        if (reply.blocksJson) {
+          try {
+            blocks = JSON.parse(reply.blocksJson);
+          } catch {
+            /* ignore */
+          }
+        }
+        console.log('[role-manager-tools] waitForCrossProjectReply matched', {
+          sessionId: ctx.sessionId,
+          requestId,
+        });
+        return {
+          status: 'completed',
+          summary: reply.summary,
+          blocks,
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
 
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    console.log('[role-manager-tools] waitForCrossProjectReply timeout', {
+      sessionId: ctx.sessionId,
+      requestId,
+    });
+
+    return {
+      status: 'timeout',
+      message: `目标项目未在 ${timeoutMs / 60000} 分钟内回复，已超时`,
+    };
+  } finally {
+    clearCrossProjectWait(ctx.sessionId);
   }
-
-  console.log('[role-manager-tools] waitForCrossProjectReply timeout', {
-    sessionId: ctx.sessionId,
-    requestId,
-  });
-
-  return {
-    status: 'timeout',
-    message: '目标项目未在 10 分钟内回复，已超时',
-  };
 }

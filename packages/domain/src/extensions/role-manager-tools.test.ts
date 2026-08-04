@@ -3,8 +3,8 @@ import { and, eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
 import { messages, projects, sessions } from '@piplus/db/schema';
-import { getRequestContext } from '../session/request-context';
-import { buildRoleManagerToolDefs, invokeRoleManagerTool } from './role-manager-tools';
+import { getRequestContext, isCrossProjectWaiting, clearCrossProjectWait } from '../session/request-context';
+import { buildRoleManagerToolDefs, decideReminderAction, invokeRoleManagerTool } from './role-manager-tools';
 
 function makeDbPath() {
   return `/tmp/piplus-role-tools-${crypto.randomUUID()}.sqlite`;
@@ -332,7 +332,8 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       title: 'Parent',
       titleSource: 'default',
       status: 'active',
-      runtimeStatus: 'idle',
+      // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
+      runtimeStatus: 'running',
       currentModelProvider: 'anthropic',
       currentModelId: 'claude-sonnet-4-20250514',
       lastActivityAt: now,
@@ -507,7 +508,8 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       title: 'Parent',
       titleSource: 'default',
       status: 'active',
-      runtimeStatus: 'idle',
+      // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
+      runtimeStatus: 'running',
       currentModelProvider: 'anthropic',
       currentModelId: 'claude-sonnet-4-20250514',
       lastActivityAt: now,
@@ -751,7 +753,8 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       title: 'Source Poll',
       titleSource: 'default',
       status: 'active',
-      runtimeStatus: 'idle',
+      // 询问方会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
+      runtimeStatus: 'running',
       currentModelProvider: null,
       currentModelId: null,
       lastActivityAt: now,
@@ -1141,7 +1144,8 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       title: 'Source Stop',
       titleSource: 'default',
       status: 'active',
-      runtimeStatus: 'idle',
+      // 询问方会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
+      runtimeStatus: 'running',
       currentModelProvider: null,
       currentModelId: null,
       lastActivityAt: now,
@@ -1258,7 +1262,8 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       title: 'Parent',
       titleSource: 'default',
       status: 'active',
-      runtimeStatus: 'idle',
+      // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
+      runtimeStatus: 'running',
       currentModelProvider: 'anthropic',
       currentModelId: 'claude-sonnet-4-20250514',
       lastActivityAt: now,
@@ -1296,5 +1301,436 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       status: 'cancelled',
       message: '父会话正在停止，已取消等待子会话结果',
     });
+  });
+
+  test('spawn_session wait=true cancels when parent session becomes idle (zombie guard)', async () => {
+    const dbPath = makeDbPath();
+    createSeedDb(dbPath);
+    const db = createDb(`file:${dbPath}`);
+
+    const piClient = {
+      async createSession(input: { title?: string; prompt: string; cwd?: string; model?: { provider: string; id: string } }) {
+        const sessionId = `pi_${crypto.randomUUID().slice(0, 8)}`;
+        return {
+          sessionId,
+          locator: {
+            piSessionId: sessionId,
+            sessionFile: `/tmp/${sessionId}.jsonl`,
+          },
+          model: input.model ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` } : undefined,
+        };
+      },
+      async restoreRuntime() { return; },
+      async subscribeSession() { return () => {}; },
+      async getHistory() { return { messages: [], nextCursor: null }; },
+      async stopSession() { return { status: 'stopped' as const }; },
+      async closeRuntime() { return; },
+      async listAvailableModels() { return []; },
+      async getCurrentModel() { return null; },
+      async sendMessage(sessionId: string) {
+        // Insert assistant message so model fallback logic doesn't fire before the idle check
+        await db.insert(messages).values({
+          id: `msg_asst_${crypto.randomUUID().slice(0, 8)}`,
+          sessionId,
+          piMessageId: null,
+          messageKind: 'normal',
+          role: 'assistant',
+          contentText: '',
+          contentVersion: 1,
+          requestId: null,
+          createdAt: new Date(),
+        } as any);
+        return { sessionId, runId: 'run' };
+      },
+      async ensureRuntime() { return; },
+      async injectPromptIfNeeded() { return; },
+      isFirstConversation() { return false; },
+      getRuntimeState() { return null; },
+      async bindToolRuntime() { return; },
+      async setSessionModel(_sessionId: string, _locator: unknown, modelRef: { provider: string; id: string }) {
+        return { provider: modelRef.provider, id: modelRef.id, label: `${modelRef.provider}/${modelRef.id}` };
+      },
+    } as any;
+
+    const parentProjectId = 'project_role_tools_wait_idle';
+    const parentSessionId = 'session_parent_tools_wait_idle';
+    const now = new Date();
+    await db.insert(projects).values({
+      id: parentProjectId,
+      name: 'Role Tools Project',
+      createdBy: 'user_seed',
+      status: 'active',
+      projectPath: '',
+      sourceType: 'existing',
+      sourceUrl: '',
+      archivedAt: null,
+      archivedBy: null,
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    await db.insert(sessions).values({
+      id: parentSessionId,
+      projectId: parentProjectId,
+      parentSessionId: null,
+      rootSessionId: parentSessionId,
+      depth: 0,
+      roleTemplateId: 'rt_planner',
+      piSessionId: 'pi_parent',
+      piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_parent', sessionFile: '/tmp/pi-parent.jsonl' }),
+      requestedByMessageId: null,
+      title: 'Parent',
+      titleSource: 'default',
+      status: 'active',
+      runtimeStatus: 'running',
+      currentModelProvider: 'anthropic',
+      currentModelId: 'claude-sonnet-4-20250514',
+      lastActivityAt: now,
+      lastRunAt: null,
+      lastStopAt: null,
+      lastRuntimeError: null,
+      createdBy: 'user_seed',
+      archivedAt: null,
+      archivedBy: null,
+      createdAt: now,
+      updatedAt: now,
+      roleBasePromptSnapshot: 'base',
+      userSuppliedPrompt: '',
+      parentSuppliedPrompt: '',
+      compiledPrompt: 'compiled',
+    } as any);
+
+    const waitPromise = invokeRoleManagerTool('spawn_session', {
+      role: 'worker',
+      objective: 'long running task',
+      title: 'Long Running Task',
+      wait: true,
+    }, {
+      db,
+      piClient,
+      sessionId: parentSessionId,
+      userId: 'user_seed',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 模拟父会话被自身 safety timeout 中止：runtimeStatus 从 running 变为 idle
+    await db.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date() }).where(eq(sessions.id, parentSessionId));
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      message: '父会话已停止，已取消等待子会话结果',
+    });
+  });
+
+  test('cross_project_ask - cancels when source session becomes idle (zombie guard)', async () => {
+    const dbPath = makeDbPath();
+    createSeedDb(dbPath);
+    const db = createDb(`file:${dbPath}`);
+
+    const piClient = {
+      async createSession(input: { title?: string; prompt: string; cwd?: string; model?: { provider: string; id: string } }) {
+        const sessionId = `pi_${crypto.randomUUID().slice(0, 8)}`;
+        return {
+          sessionId,
+          locator: {
+            piSessionId: sessionId,
+            sessionFile: `/tmp/${sessionId}.jsonl`,
+          },
+          model: input.model ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` } : undefined,
+        };
+      },
+      async restoreRuntime() { return; },
+      subscribeSession() { return () => {}; },
+      async getHistory() { return { messages: [], nextCursor: null }; },
+      async stopSession() { return { status: 'stopped' as const }; },
+      async closeRuntime() { return; },
+      async listAvailableModels() { return []; },
+      async getCurrentModel() { return null; },
+      async sendMessage() { return { sessionId: 'child', runId: 'run' }; },
+      async ensureRuntime() { return; },
+      async injectPromptIfNeeded() { return; },
+      isFirstConversation() { return false; },
+      getRuntimeState() { return null; },
+      async bindToolRuntime() { return; },
+      async setSessionModel() { return { provider: 'test', id: 'test', label: 'test/test' } },
+    } as any;
+
+    const sourceProjectId = 'project_source_idle';
+    const sourceSessionId = 'session_source_idle';
+    const targetProjectId = 'project_target_idle';
+    const now = new Date();
+
+    await db.insert(projects).values({
+      id: sourceProjectId,
+      name: 'Source Idle',
+      createdBy: 'user_seed',
+      status: 'active',
+      projectPath: '',
+      sourceType: 'existing',
+      sourceUrl: '',
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    await db.insert(projects).values({
+      id: targetProjectId,
+      name: 'Target Idle',
+      createdBy: 'user_seed',
+      status: 'active',
+      projectPath: '',
+      sourceType: 'existing',
+      sourceUrl: '',
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    await db.insert(sessions).values({
+      id: sourceSessionId,
+      projectId: sourceProjectId,
+      parentSessionId: null,
+      rootSessionId: sourceSessionId,
+      depth: 0,
+      roleTemplateId: 'rt_planner',
+      piSessionId: 'pi_source_idle',
+      piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_source_idle', sessionFile: '/tmp/pi-source-idle.jsonl' }),
+      title: 'Source Idle',
+      titleSource: 'default',
+      status: 'active',
+      runtimeStatus: 'running',
+      currentModelProvider: null,
+      currentModelId: null,
+      lastActivityAt: now,
+      lastRunAt: null,
+      lastStopAt: null,
+      lastRuntimeError: null,
+      createdBy: 'user_seed',
+      archivedAt: null,
+      archivedBy: null,
+      createdAt: now,
+      updatedAt: now,
+      roleBasePromptSnapshot: 'base',
+      userSuppliedPrompt: '',
+      parentSuppliedPrompt: '',
+      compiledPrompt: 'compiled',
+    } as any);
+
+    const waitPromise = invokeRoleManagerTool('cross_project_ask', {
+      projectName: 'Target Idle',
+      question: 'Are you there?',
+    }, {
+      db,
+      piClient,
+      sessionId: sourceSessionId,
+      userId: 'user_seed',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 模拟当前会话被自身 safety timeout 中止：runtimeStatus 从 running 变为 idle
+    await db.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date() }).where(eq(sessions.id, sourceSessionId));
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      message: '当前会话已停止，已取消等待跨项目回复',
+    });
+  });
+
+  test('cross_project_ask clears cross-project wait marker after completion', async () => {
+    const dbPath = makeDbPath();
+    createSeedDb(dbPath);
+    const db = createDb(`file:${dbPath}`);
+
+    const piClient = {
+      async createSession(input: { title?: string; prompt: string; cwd?: string; model?: { provider: string; id: string } }) {
+        const sessionId = `pi_${crypto.randomUUID().slice(0, 8)}`;
+        return {
+          sessionId,
+          locator: {
+            piSessionId: sessionId,
+            sessionFile: `/tmp/${sessionId}.jsonl`,
+          },
+          model: input.model ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` } : undefined,
+        };
+      },
+      async restoreRuntime() { return; },
+      subscribeSession() { return () => {}; },
+      async getHistory() { return { messages: [], nextCursor: null }; },
+      async stopSession() { return { status: 'stopped' as const }; },
+      async closeRuntime() { return; },
+      async listAvailableModels() { return []; },
+      async getCurrentModel() { return null; },
+      async sendMessage() { return { sessionId: 'child', runId: 'run' }; },
+      async ensureRuntime() { return; },
+      async injectPromptIfNeeded() { return; },
+      isFirstConversation() { return false; },
+      getRuntimeState() { return null; },
+      async bindToolRuntime() { return; },
+      async setSessionModel() { return { provider: 'test', id: 'test', label: 'test/test' } },
+    } as any;
+
+    const sourceProjectId = 'project_source_marker';
+    const sourceSessionId = 'session_source_marker';
+    const targetProjectId = 'project_target_marker';
+    const targetProjectName = 'Target Marker';
+    const now = new Date();
+
+    await db.insert(projects).values({
+      id: sourceProjectId,
+      name: 'Source Marker',
+      createdBy: 'user_seed',
+      status: 'active',
+      projectPath: '',
+      sourceType: 'existing',
+      sourceUrl: '',
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    await db.insert(projects).values({
+      id: targetProjectId,
+      name: targetProjectName,
+      createdBy: 'user_seed',
+      status: 'active',
+      projectPath: '',
+      sourceType: 'existing',
+      sourceUrl: '',
+      lastActivityAt: now,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    await db.insert(sessions).values({
+      id: sourceSessionId,
+      projectId: sourceProjectId,
+      parentSessionId: null,
+      rootSessionId: sourceSessionId,
+      depth: 0,
+      roleTemplateId: 'rt_planner',
+      piSessionId: 'pi_source_marker',
+      piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_source_marker', sessionFile: '/tmp/pi-source-marker.jsonl' }),
+      title: 'Source Marker',
+      titleSource: 'default',
+      status: 'active',
+      // 询问方会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
+      runtimeStatus: 'running',
+      currentModelProvider: null,
+      currentModelId: null,
+      lastActivityAt: now,
+      lastRunAt: null,
+      lastStopAt: null,
+      lastRuntimeError: null,
+      createdBy: 'user_seed',
+      archivedAt: null,
+      archivedBy: null,
+      createdAt: now,
+      updatedAt: now,
+      roleBasePromptSnapshot: 'base',
+      userSuppliedPrompt: '',
+      parentSuppliedPrompt: '',
+      compiledPrompt: 'compiled',
+    } as any);
+
+    // 不 await，直接启动：tool 走到 waitForCrossProjectReply 后设置内存标记并开始轮询
+    const p = invokeRoleManagerTool('cross_project_ask', {
+      projectName: targetProjectName,
+      question: '你好，请帮我看一下这个代码？',
+      briefDescription: '代码审查请求',
+    }, {
+      db,
+      piClient,
+      sessionId: sourceSessionId,
+      userId: 'user_seed',
+    });
+
+    try {
+      // wait 循环已开始，标记应已设置
+      await Bun.sleep(150);
+      expect(isCrossProjectWaiting(sourceSessionId)).toBe(true);
+
+      // 直接向源会话插入回复（requestId 从目标会话的 crossProjectSourceJson 读取），
+      // 让 wait 循环轮询到后以 completed 结束。
+      const [targetSession] = await db
+        .select({ id: sessions.id, crossProjectSourceJson: sessions.crossProjectSourceJson })
+        .from(sessions)
+        .where(eq(sessions.projectId, targetProjectId))
+        .limit(1);
+      expect(targetSession).toBeDefined();
+      const source = JSON.parse(targetSession!.crossProjectSourceJson!);
+      await db.insert(messages).values({
+        id: `msg_reply_${crypto.randomUUID().slice(0, 8)}`,
+        sessionId: sourceSessionId,
+        piMessageId: null,
+        messageKind: 'cross_project_reply',
+        sourceSessionId: targetSession!.id,
+        role: 'assistant',
+        contentText: '这是来自目标项目的回复',
+        contentBlocksJson: null,
+        contentVersion: 1,
+        requestId: source.requestId,
+        createdAt: new Date(),
+      } as any);
+
+      const result = await p;
+      expect(result).toMatchObject({
+        status: 'completed',
+        summary: '这是来自目标项目的回复',
+      });
+
+      // finally 应已清除标记
+      expect(isCrossProjectWaiting(sourceSessionId)).toBe(false);
+    } finally {
+      // 断言失败时也要清理，避免模块级单例 Map 残留污染其他测试
+      clearCrossProjectWait(sourceSessionId);
+      await p.catch(() => {});
+    }
+  });
+});
+
+describe('decideReminderAction', () => {
+  test('returns null when the reminder interval has not elapsed', () => {
+    expect(decideReminderAction({ reminderCount: 0, lastReminderAt: 0, now: 14_999, hasNoOutput: false })).toBeNull();
+    expect(decideReminderAction({ reminderCount: 2, lastReminderAt: 0, now: 14_999, hasNoOutput: false })).toBeNull();
+  });
+
+  test('returns remind when interval elapsed and reminders remain (no output → English message)', () => {
+    const result = decideReminderAction({ reminderCount: 0, lastReminderAt: 0, now: 15_000, hasNoOutput: true });
+    expect(result).toEqual({
+      action: 'remind',
+      message: 'You have not produced any output yet. Please continue working on the task, and call `writeback_to_parent` with the result when done.',
+    });
+  });
+
+  test('returns remind when interval elapsed and reminders remain (normal → English reminder)', () => {
+    const result = decideReminderAction({ reminderCount: 1, lastReminderAt: 0, now: 15_000, hasNoOutput: false });
+    expect(result).toEqual({
+      action: 'remind',
+      message: 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.',
+    });
+  });
+
+  test('returns failed when interval elapsed and reminders exhausted', () => {
+    const withOutput = decideReminderAction({ reminderCount: 2, lastReminderAt: 0, now: 15_000, hasNoOutput: false });
+    expect(withOutput).toEqual({
+      action: 'failed',
+      message: '子会话多次提醒后仍未写回结果',
+      error: '子会话未写回结果',
+    });
+
+    const noOutput = decideReminderAction({ reminderCount: 2, lastReminderAt: 0, now: 15_000, hasNoOutput: true });
+    expect(noOutput).toEqual({
+      action: 'failed',
+      message: '子会话执行失败：模型未产生任何输出',
+      error: '模型未产生任何输出',
+    });
+  });
+
+  test('returns null when reminders exhausted but interval not elapsed (keeps waiting)', () => {
+    expect(decideReminderAction({ reminderCount: 2, lastReminderAt: 0, now: 14_000, hasNoOutput: false })).toBeNull();
+    expect(decideReminderAction({ reminderCount: 5, lastReminderAt: 0, now: 14_000, hasNoOutput: true })).toBeNull();
   });
 });

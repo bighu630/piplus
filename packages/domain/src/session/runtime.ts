@@ -1,10 +1,10 @@
 import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import type { PiClient, PiImageInput, PiSessionStreamEvent } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
-import { setRequestContext, clearRequestContext } from './request-context';
+import { setRequestContext, clearRequestContext, isCrossProjectWaiting, clearCrossProjectWait } from './request-context';
 
 const NON_WORKER_IDLE_RUNTIME_TTL_MS = 30 * 60 * 1000;
 
@@ -253,6 +253,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
       await persistRuntimeError(input.db, input.sessionId, runtimeError);
     }
     clearRequestContext(input.sessionId);
+    clearCrossProjectWait(input.sessionId);
     await markSessionIdle(input.db, input.sessionId, new Date(), runtimeError);
     await input.onRuntimeStatusChange?.({
       sessionId: input.sessionId,
@@ -275,13 +276,57 @@ export async function startSessionRun(input: StartSessionRunInput) {
     }
   };
 
-  const resetTimeout = () => {
-    if (!timeoutHandle || cleanupDone) return;
-    clearTimeout(timeoutHandle);
+  // Safety timeout: fires when the session produces no stream events for
+  // safetyTimeoutMs. Exempted while a direct child session is still running —
+  // a parent waiting on spawn_session produces no events of its own, but the
+  // child's activity means the agent is not stuck.
+  const scheduleTimeoutCheck = () => {
+    if (cleanupDone) return;
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
     timeoutStartedAt = Date.now();
     timeoutHandle = setTimeout(() => {
-      void doCleanup(new Error('session_run_timeout'));
+      void (async () => {
+        if (cleanupDone) return;
+        const startedAt = timeoutStartedAt;
+        try {
+          // Exempt while any direct child session is active (running/stopping)
+          const [activeChild] = await input.db
+            .select({ id: sessions.id })
+            .from(sessions)
+            .where(and(eq(sessions.parentSessionId, input.sessionId), ne(sessions.runtimeStatus, 'idle')))
+            .limit(1);
+          if (activeChild) {
+            console.log('[session-runtime] safety timeout exempted — child session running', { sessionId: input.sessionId, childSessionId: activeChild.id });
+            // Child still active: restart the countdown and skip cleanup
+            scheduleTimeoutCheck();
+            return;
+          }
+        } catch (queryErr) {
+          // If the exemption query fails, fall through and enforce the timeout
+          console.error('[session-runtime] safety timeout exemption query failed', { sessionId: input.sessionId, queryErr });
+        }
+        // Exempt while waiting for a cross-project reply: the target project's
+        // session is a top-level session (no parentSessionId), so the child
+        // query above can't see it — use the in-memory wait marker instead.
+        if (isCrossProjectWaiting(input.sessionId)) {
+          console.log('[session-runtime] safety timeout exempted — waiting for cross-project reply', { sessionId: input.sessionId });
+          // Still waiting for the cross-project reply: restart the countdown and skip cleanup
+          scheduleTimeoutCheck();
+          return;
+        }
+        // A stream event may have reset the timer while we were querying —
+        // the fresh timer handles the check, don't clean up from a stale pass.
+        if (timeoutStartedAt !== startedAt) return;
+        await doCleanup(new Error('session_run_timeout'));
+      })();
     }, safetyTimeoutMs);
+  };
+
+  const resetTimeout = () => {
+    if (!timeoutHandle || cleanupDone) return;
+    scheduleTimeoutCheck();
   };
 
   await markSessionRunning(input.db, input.sessionId, startedAt);
@@ -301,10 +346,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
   // Start the safety timeout before setting up the stream subscription,
   // so that any early events can reset the timer immediately.
-  timeoutStartedAt = Date.now();
-  timeoutHandle = setTimeout(() => {
-    void doCleanup(new Error('session_run_timeout'));
-  }, safetyTimeoutMs);
+  scheduleTimeoutCheck();
 
   // Activity-based timeout: reset on every stream event so the safety
   // timeout only fires when the agent is truly stuck (no events at all).

@@ -66,6 +66,8 @@ import {
   deleteRoleTemplate,
   getProjectRoleConfig,
   setProjectRoleConfig,
+  getSettings,
+  putSettings,
   type RoleTemplateDTO,
   type RoleConfigEntry,
 } from './api';
@@ -746,6 +748,26 @@ export function useSetProjectRoleConfigMutation() {
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['project', 'role-config', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['tree'] });
+    },
+  });
+}
+
+// ── Settings Hooks ────────────────────────────────────────────────
+
+export function useSettings() {
+  return useQuery({
+    queryKey: ['settings'],
+    queryFn: getSettings,
+    staleTime: 10_000,
+  });
+}
+
+export function useUpdateSettingsMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Record<string, number | string>) => putSettings(patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
 }

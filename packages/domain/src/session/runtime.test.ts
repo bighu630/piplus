@@ -6,6 +6,7 @@ import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/sch
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
 import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup } from './runtime';
+import { setCrossProjectWait, clearCrossProjectWait } from './request-context';
 
 function makeDbPath() {
   return `/tmp/piplus-session-runtime-${crypto.randomUUID()}.sqlite`;
@@ -473,5 +474,155 @@ describe('startSessionRun', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(state.closeRuntimeCalls).not.toContain('session_test_runtime');
+  });
+
+  test('safety timeout is exempted while a direct child session is running', async () => {
+    // Parent session with role_worker; child session inserted as still running
+    const { db } = await setupSession({ sessionId: 'session_parent', roleTemplateId: 'role_worker' });
+    const now = new Date();
+
+    await db.insert(sessions).values({
+      id: 'session_child',
+      projectId: 'project_test_runtime',
+      parentSessionId: 'session_parent',
+      rootSessionId: 'session_parent',
+      depth: 1,
+      roleTemplateId: 'role_worker',
+      piSessionId: 'pi_session_child',
+      piSessionLocatorJson: stringifyLocator({ piSessionId: 'pi_session_child', sessionFile: '/tmp/pi-child.jsonl' }),
+      requestedByMessageId: null,
+      title: 'Child Session',
+      titleSource: 'default',
+      status: 'active',
+      runtimeStatus: 'running',
+      currentModelProvider: null,
+      currentModelId: null,
+      lastActivityAt: now,
+      lastRunAt: now,
+      lastStopAt: null,
+      lastRuntimeError: null,
+      createdBy: 'user_seed',
+      archivedAt: null,
+      archivedBy: null,
+      createdAt: now,
+      updatedAt: now,
+      roleBasePromptSnapshot: 'base',
+      userSuppliedPrompt: '',
+      parentSuppliedPrompt: '',
+      compiledPrompt: 'compiled',
+    } as any);
+
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — session stays running with no stream events
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+
+    await startSessionRun({
+      db,
+      piClient: pendingClient,
+      sessionId: 'session_parent',
+      userId: 'user_seed',
+      content: 'x',
+      safetyTimeoutMs: 150,
+      onStreamEvent: async () => {},
+      onRuntimeStatusChange: async () => {},
+    });
+
+    // Wait past the safety timeout — parent must stay running (child active)
+    await Bun.sleep(400);
+
+    const [parent] = await db.select().from(sessions).where(eq(sessions.id, 'session_parent')).limit(1);
+    expect(parent?.runtimeStatus).toBe('running');
+    expect(parent?.lastRuntimeError).toBeNull();
+    // No cleanup ran — stream subscription still active
+    expect(state.unsubscribed).not.toContain('session_parent');
+
+    // Child goes idle — countdown resumes and the timeout finally fires
+    await db.update(sessions)
+      .set({ runtimeStatus: 'idle', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_child'));
+
+    await Bun.sleep(400);
+
+    const [parentAfter] = await db.select().from(sessions).where(eq(sessions.id, 'session_parent')).limit(1);
+    expect(parentAfter?.runtimeStatus).toBe('idle');
+    // session_run_timeout is an internal safety timeout — not surfaced to the user
+    expect(parentAfter?.lastRuntimeError).toBeNull();
+    expect(state.unsubscribed).toContain('session_parent');
+  });
+
+  test('cross-project wait marker exempts safety timeout', async () => {
+    // 临时 db + parent session；sendMessage 永不 resolve（无 stream 事件）
+    const { db } = await setupSession({ sessionId: 'session_cross_wait' });
+
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — session stays running with no stream events
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+
+    try {
+      // 标记本会话正在等待跨项目回复（目标会话是顶层会话，DB 查不到子会话）
+      setCrossProjectWait('session_cross_wait', 'req_test');
+
+      await startSessionRun({
+        db,
+        piClient: pendingClient,
+        sessionId: 'session_cross_wait',
+        userId: 'user_seed',
+        content: 'x',
+        safetyTimeoutMs: 150,
+        onStreamEvent: async () => {},
+        onRuntimeStatusChange: async () => {},
+      });
+
+      // Wait past the safety timeout — the marker exempts the parent
+      await Bun.sleep(400);
+
+      const [parent] = await db.select().from(sessions).where(eq(sessions.id, 'session_cross_wait')).limit(1);
+      expect(parent?.runtimeStatus).toBe('running');
+      expect(parent?.lastRuntimeError).toBeNull();
+      // No cleanup ran — stream subscription still active
+      expect(state.unsubscribed).not.toContain('session_cross_wait');
+
+      // Marker cleared — countdown resumes and the timeout finally fires
+      clearCrossProjectWait('session_cross_wait');
+
+      await Bun.sleep(400);
+
+      const [parentAfter] = await db.select().from(sessions).where(eq(sessions.id, 'session_cross_wait')).limit(1);
+      expect(parentAfter?.runtimeStatus).toBe('idle');
+      // session_run_timeout is an internal safety timeout — not surfaced to the user
+      expect(parentAfter?.lastRuntimeError).toBeNull();
+      expect(state.unsubscribed).toContain('session_cross_wait');
+    } finally {
+      // 即使断言失败也要清理标记，避免模块级单例 Map 残留污染其他测试
+      clearCrossProjectWait('session_cross_wait');
+    }
+  });
+
+  test('safety timeout fires normally when no child session is running', async () => {
+    const { db } = await setupSession();
+
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — no stream activity, only the timeout can end the run
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+
+    await startSessionRun({
+      db,
+      piClient: pendingClient,
+      sessionId: 'session_test_runtime',
+      userId: 'user_seed',
+      content: 'x',
+      safetyTimeoutMs: 150,
+      onStreamEvent: async () => {},
+      onRuntimeStatusChange: async () => {},
+    });
+
+    // Wait past the safety timeout — no children, so the timeout must fire
+    await Bun.sleep(400);
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_test_runtime')).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+    // session_run_timeout is an internal safety timeout — not surfaced to the user
+    expect(session?.lastRuntimeError).toBeNull();
+    expect(state.unsubscribed).toContain('session_test_runtime');
   });
 });

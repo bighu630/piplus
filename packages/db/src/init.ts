@@ -100,6 +100,17 @@ function ensureProjectTodosTable(sqlite: Database) {
   }
 }
 
+function ensureSettingsTable(sqlite: Database) {
+  const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'").all();
+  if (tables.length === 0) {
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+)`);
+  }
+}
+
 function ensureModelFallbacksColumn(sqlite: Database) {
   const columns = sqlite.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>;
   if (!columns.some((col) => col.name === 'model_fallbacks_json')) {
@@ -331,6 +342,7 @@ export function createSeedDb(path: string) {
   ensureSessionPinnedAtColumn(sqlite);
   ensureProjectPinnedAtColumn(sqlite);
   ensureProjectTodosTable(sqlite);
+  ensureSettingsTable(sqlite);
   ensureBuiltinRows(sqlite);
   ensureModelFallbacksColumn(sqlite);
   ensureSessionWorktreePathColumn(sqlite);

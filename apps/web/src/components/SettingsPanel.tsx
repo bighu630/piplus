@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Settings, RefreshCw, Trash2 } from 'lucide-react';
 import Modal from './Modal';
-import { usePackages, usePackageUpdates, useRoleTemplates, useUpdateRoleTemplateMutation, useCreateRoleTemplateMutation, useDeleteRoleTemplateMutation } from '../lib/hooks';
+import { usePackages, usePackageUpdates, useRoleTemplates, useUpdateRoleTemplateMutation, useCreateRoleTemplateMutation, useDeleteRoleTemplateMutation, useSettings, useUpdateSettingsMutation } from '../lib/hooks';
 
 import RoleManager from './RoleManager';
 
@@ -62,6 +62,22 @@ export default function SettingsPanel({
   const updateRoleTemplateMut = useUpdateRoleTemplateMutation();
   const createRoleTemplateMut = useCreateRoleTemplateMutation();
   const deleteRoleTemplateMut = useDeleteRoleTemplateMutation();
+  const settingsQuery = useSettings();
+  const updateSettingsMut = useUpdateSettingsMutation();
+  const [subagentTimeout, setSubagentTimeout] = useState('');
+  const [subagentTimeoutTouched, setSubagentTimeoutTouched] = useState(false);
+  const [subagentTimeoutSaved, setSubagentTimeoutSaved] = useState(false);
+  const [subagentTimeoutError, setSubagentTimeoutError] = useState<string | null>(null);
+
+  // Sync input from server value when settings arrive (string → number).
+  // 仅当输入框未被用户触碰时同步，避免覆盖用户正在编辑的值。
+  useEffect(() => {
+    if (subagentTimeoutTouched) return;
+    const raw = settingsQuery.data?.subagent_timeout_minutes;
+    if (raw !== undefined && raw.trim() !== '' && !Number.isNaN(Number(raw))) {
+      setSubagentTimeout(String(Number(raw)));
+    }
+  }, [settingsQuery.data, subagentTimeoutTouched]);
 
 
   return (
@@ -123,6 +139,51 @@ export default function SettingsPanel({
             )}
             {notificationPermissionStatus === 'unsupported' && (
               <p className="text-[11px] text-amber-600 dark:text-amber-400">当前环境不支持系统通知（需要 HTTPS 或 localhost）。</p>
+            )}
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
+            <div>
+              <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">子代理超时</div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400">spawn_session 等待子代理返回的最长时间。0 = 永不超时，一直等到子代理结束。</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={subagentTimeout}
+                onChange={(e) => {
+                  setSubagentTimeout(e.target.value);
+                  setSubagentTimeoutTouched(true);
+                  setSubagentTimeoutError(null);
+                  setSubagentTimeoutSaved(false);
+                }}
+                placeholder="分钟"
+                className="flex-1 px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition placeholder:text-slate-400"
+              />
+              <button
+                onClick={async () => {
+                  setSubagentTimeoutError(null);
+                  setSubagentTimeoutSaved(false);
+                  try {
+                    await updateSettingsMut.mutateAsync({ subagent_timeout_minutes: Number(subagentTimeout) });
+                    setSubagentTimeoutSaved(true);
+                    setSubagentTimeoutTouched(false);
+                  } catch (err) {
+                    setSubagentTimeoutError(err instanceof Error ? err.message : '保存失败');
+                  }
+                }}
+                disabled={updateSettingsMut.isPending || !/^\d+$/.test(subagentTimeout)}
+                className="px-4 py-2 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50 shrink-0"
+              >
+                {updateSettingsMut.isPending ? '保存中…' : '保存'}
+              </button>
+            </div>
+            {subagentTimeoutError && (
+              <p className="text-[11px] text-red-600 dark:text-red-400">{subagentTimeoutError}</p>
+            )}
+            {subagentTimeoutSaved && (
+              <p className="text-[11px] text-green-700 dark:text-green-400">已保存</p>
             )}
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">

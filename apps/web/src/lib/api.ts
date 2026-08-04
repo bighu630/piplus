@@ -564,3 +564,16 @@ export function setProjectRoleConfig(projectId: string, config: Record<string, R
     body: JSON.stringify(config),
   });
 }
+
+// ── Settings ──────────────────────────────────────────────────────
+
+export function getSettings() {
+  return request<Record<string, string>>('/api/v1/settings');
+}
+
+export function putSettings(patch: Record<string, number | string>) {
+  return request<Record<string, string>>('/api/v1/settings', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+}

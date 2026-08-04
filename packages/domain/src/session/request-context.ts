@@ -29,3 +29,21 @@ export function getRequestContext(sessionId: string): RequestContextEntry | unde
 export function clearRequestContext(sessionId: string) {
   ctx.delete(sessionId);
 }
+
+type CrossProjectWaitEntry = { requestId: string; startedAt: number };
+const crossProjectWait = new Map<string, CrossProjectWaitEntry>();
+
+/** 标记某会话正在等待跨项目回复（in-flight cross-project ask）。 */
+export function setCrossProjectWait(sessionId: string, requestId: string) {
+  crossProjectWait.set(sessionId, { requestId, startedAt: Date.now() });
+}
+
+/** 清除跨项目等待标记（wait 结束或会话清理时调用）。 */
+export function clearCrossProjectWait(sessionId: string) {
+  crossProjectWait.delete(sessionId);
+}
+
+/** 查询某会话是否正在等待跨项目回复。 */
+export function isCrossProjectWaiting(sessionId: string): boolean {
+  return crossProjectWait.has(sessionId);
+}

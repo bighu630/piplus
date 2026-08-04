@@ -137,6 +137,12 @@ export const auditEvents = sqliteTable('audit_events', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 });
 
+export const settings = sqliteTable('settings', {
+  key: text('key').primaryKey().notNull(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
 export const schema = {
   users,
   projects,
@@ -147,6 +153,7 @@ export const schema = {
   sessionSyncStates,
   projectTodos,
   auditEvents,
+  settings,
 };
 
 // --- better-auth tables ---
