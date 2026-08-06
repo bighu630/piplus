@@ -279,15 +279,16 @@ export default function ProjectSettingsModal({
           {(getAllRoleKeys(roleTemplatesQuery.data) as Array<{ key: string; label: string }>).filter((r) => r.key !== 'planner').map((role) => {
             const models = editRoleModelsList[role.key] ?? [];
             const displayModels = models.length === 0 ? [null] : models;
+            const roleEnabled = editRoleConfig[role.key]?.enabled !== false;
             return (
               <div key={role.key}>
                 {displayModels.map((model, idx) => {
                   const modelKey = model ? `${model.provider}/${model.id}` : '';
                   const levels = getModelThinkingLevels(modelKey);
                   return (
-                    <div key={idx} className="flex items-center gap-3 mb-2">
+                    <div key={idx} inert={!roleEnabled} className={`flex items-center gap-3 mb-2${roleEnabled ? '' : ' opacity-50 grayscale select-none pointer-events-none'}`}>
                       <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{idx === 0 ? role.label : ''}</span>
-                      <div className="flex-1">
+                      <div className={`flex-1${roleEnabled ? '' : ' relative'}`}>
                         <Select
                           value={modelKey}
                           onChange={(v) => handleEditRoleModelChange(role.key, idx, v)}
@@ -301,6 +302,11 @@ export default function ProjectSettingsModal({
                           searchable
                           className="w-full"
                         />
+                        {!roleEnabled && (
+                          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-50/70 dark:bg-slate-950/70">
+                            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">角色未启用</span>
+                          </div>
+                        )}
                       </div>
                       {levels.length > 0 && (
                         <div className="w-28 shrink-0">
