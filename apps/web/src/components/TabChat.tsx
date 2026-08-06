@@ -1,10 +1,6 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO } from '@piplus/shared';
 import type { SessionMessageImageAttachment } from '../lib/api';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
-import rehypeHighlight from 'rehype-highlight';
 import {
   Copy,
   Check,
@@ -19,12 +15,13 @@ import {
   GitMerge,
 } from 'lucide-react';
 import DiffViewer from './DiffViewer';
+import MarkdownRenderer from './MarkdownRenderer';
 import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
 import ChatInput from './ChatInput';
-import { useWebSocket } from '../lib/ws-provider';
+import { useChatStream, useWebSocket } from '../lib/ws-provider';
 
 interface ModelOption {
   provider: string;
@@ -41,7 +38,6 @@ interface TabChatProps {
   onStop: () => void;
   sending: boolean;
   runtimeStatus: string;
-  sessionTitle?: string;
   selectedSessionId?: string | null;
   sendShortcutMode?: 'enter' | 'mod_enter';
   models?: ModelOption[];
@@ -60,15 +56,6 @@ interface TabChatProps {
   thinkingLevelOptions?: string[];
   onThinkingLevelSelect?: (level: string) => void;
   isMobile?: boolean;
-}
-
-function extractCodeText(node: unknown): string {
-  if (typeof node === 'string') return node;
-  if (Array.isArray(node)) return node.map(extractCodeText).join('');
-  if (node && typeof node === 'object' && 'props' in node) {
-    return extractCodeText((node as any).props.children);
-  }
-  return '';
 }
 
 function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessageDTO[]): boolean {
@@ -191,7 +178,6 @@ function TabChat({
   onStop,
   sending,
   runtimeStatus,
-  sessionTitle,
   selectedSessionId,
   sendShortcutMode,
   models,
@@ -211,7 +197,7 @@ function TabChat({
   onThinkingLevelSelect,
   isMobile,
 }: TabChatProps) {
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
   const [previewImage, setPreviewImage] = useState<ChatImageContentBlockDTO | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -221,14 +207,10 @@ function TabChat({
   const prevScrollHeightRef = useRef<number | null>(null);
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
   const sessionJustSwitchedRef = useRef(false);
-  const prevSessionIdRef = useRef<string | null>(null);
-  const [streamNote, setStreamNote] = useState('');
-  const [streamingContent, setStreamingContent] = useState('');
-  const streamingContentRef = useRef('');
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
-  const [pendingAssistantContent, setPendingAssistantContent] = useState<string | null>(null);
-  const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
-  const { subscribeToStream, subscribeToRuntimeErrors, connected: wsConnected } = useWebSocket();
+  const { connected: wsConnected, clearStreamRuntimeErrors } = useWebSocket();
+  // 流式快照统一由 ws-provider 按 sessionId 管理（80ms 节流），本组件只消费
+  const { phase, streamingContent, streamNote, runtimeErrors } = useChatStream(selectedSessionId ?? null);
 
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
@@ -255,6 +237,8 @@ function TabChat({
     (msg.content_blocks ?? []).filter((block) => block.type === 'text');
 
   // 将刚完成的 streaming 内容作为占位消息加入，避免 query 刷新前的闪白
+  // 由快照推导：仅 complete 阶段保留内容，展示到被真实消息确认或下一轮流开始
+  const pendingAssistantContent = phase === 'complete' && streamingContent ? streamingContent : null;
   // 用 useMemo 判断当前 pending 内容是否已被真实消息确认
   const pendingAssistantConfirmed = useMemo(() => {
     if (!pendingAssistantContent) return false;
@@ -262,13 +246,6 @@ function TabChat({
       m.role === 'assistant' && m.content_text === pendingAssistantContent,
     );
   }, [messages, pendingAssistantContent]);
-
-  // 当真实消息已包含 pending 内容时，清除它
-  useEffect(() => {
-    if (pendingAssistantConfirmed) {
-      setPendingAssistantContent(null);
-    }
-  }, [pendingAssistantConfirmed]);
 
   const allMessages = [...messages];
   // Append pending user messages that haven't been confirmed.
@@ -392,13 +369,11 @@ function TabChat({
     }
   }, [runtimeStatus, messages.length]);
 
-  // Clear stream state when runtime transitions from running to idle
+  // 运行结束（running→idle）时清空暂存用户消息；流式快照由 ws-provider 自行重置
   const prevRuntimeStatus = useRef(runtimeStatus);
   useEffect(() => {
     if (runtimeStatus === 'idle' && prevRuntimeStatus.current === 'running') {
-      setStreamNote('');
       setPendingUserMessages([]);
-      setPendingAssistantContent(null);
     }
     prevRuntimeStatus.current = runtimeStatus;
   }, [runtimeStatus]);
@@ -449,54 +424,13 @@ function TabChat({
     isNearBottomRef.current = true;
   }, [displayMessages, streamingContent, selectedSessionId]);
 
-  // Subscribe to WS stream events
-  useEffect(() => {
-    return subscribeToStream((message: any) => {
-      const delta = message.payload?.delta ?? '';
-      if (message.phase === 'start') {
-        setStreamingContent('');
-        setRuntimeErrors([]);
-        setStreamNote(`${message.phase}${delta ? ' · streaming' : ''}`);
-      } else if (message.phase === 'delta') {
-        setStreamingContent((prev) => {
-          const next = prev + delta;
-          streamingContentRef.current = next;
-          return next;
-        });
-      } else if (message.phase === 'complete') {
-        setStreamNote('');
-        setPendingUserMessages([]);
-        // 保存流式内容，在 query 刷新前作为占位消息显示
-        setPendingAssistantContent(streamingContentRef.current);
-        setStreamingContent('');
-      } else if (message.phase === 'error') {
-        const errorText = message.payload?.error ?? 'Unknown agent loop error';
-        setRuntimeErrors([{ runId: message.payload?.stream_id ?? 'unknown', error: errorText }]);
-        setStreamingContent('');
-      }
-    });
-  }, [subscribeToStream]);
-
-  // Clear streaming state when switching sessions
-  useEffect(() => {
-    setStreamingContent('');
-    setStreamNote('');
-    setPendingUserMessages([]);
-    setRuntimeErrors([]);
-    setPendingAssistantContent(null);
-    streamingContentRef.current = '';
-  }, [selectedSessionId]);
-
-  // Subscribe to runtime errors from ws-provider
-  useEffect(() => {
-    return subscribeToRuntimeErrors(({ error }) => {
-      setRuntimeErrors([{ runId: 'runtime-status', error }]);
-    });
-  }, [subscribeToRuntimeErrors]);
+  // 流式订阅已迁移至 useChatStream：ws-provider 按 sessionId 累积快照（含切会话自动切换），
+  // 不再需要本地订阅 effect 与切会话清空逻辑
 
   // Internal send handler that manages pending user messages
   const handleSendInternal = useCallback(async (content: string, attachments: SessionMessageImageAttachment[]) => {
-    setRuntimeErrors([]);
+    // 发送新消息时清除旧运行时错误（基线行为，迁移到 provider 快照后经 context 方法恢复）
+    clearStreamRuntimeErrors(selectedSessionId ?? null);
     const optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const imageBlocks: ChatImageContentBlockDTO[] = attachments.map((attachment) => ({
       type: 'image',
@@ -521,33 +455,55 @@ function TabChat({
     setPendingUserMessages((prev) => [...prev, optimisticMessage]);
     try {
       await onSend(content, attachments);
-      // 发送成功后立即移除暂存消息，避免 query 返回前重复展示
-      setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      // 成功后不移除：等待 messages query 轮询拉到真实消息后由 reconcile 确认，
+      // 避免 POST 返回与 refetch 完成之间的窗口期用户消息闪白（60s 兜底见下方 effect）
     } catch {
       setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       throw new Error('send_failed');
     }
-  }, [onSend]);
+  }, [onSend, clearStreamRuntimeErrors, selectedSessionId]);
 
-  const handleCopyCode = async (text: string, id: string) => {
+  // 兜底：乐观消息 60s 未被真实消息确认则强制移除（正常由 refetch/1.5s 轮询确认）
+  useEffect(() => {
+    if (pendingUserMessages.length === 0) return;
+    const timers = pendingUserMessages.map((pm) =>
+      setTimeout(() => {
+        setPendingUserMessages((prev) => prev.filter((m) => m.id !== pm.id));
+      }, 60_000),
+    );
+    return () => timers.forEach((t) => clearTimeout(t));
+  }, [pendingUserMessages]);
+
+  // 切换会话时清空乐观消息（跨会话 reconcile 不匹配，避免 A 的乐观消息渲染进 B）
+  useEffect(() => {
+    setPendingUserMessages([]);
+  }, [selectedSessionId]);
+
+  // 通用复制逻辑：navigator.clipboard 优先，fallback textarea + execCommand
+  const copyText = async (text: string) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+  };
+
+  // 单条消息复制：成功显示 Check 图标 2 秒后恢复
+  const handleCopyMessage = async (msgId: string, text: string) => {
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-      setCopiedId(id);
-      setTimeout(() => setCopiedId(null), 2000);
+      await copyText(text);
+      setCopiedMessageId(msgId);
+      setTimeout(() => setCopiedMessageId(null), 2000);
     } catch {
-      setCopiedId(null);
+      setCopiedMessageId(null);
     }
   };
 
@@ -794,53 +750,7 @@ function TabChat({
                     {spawnSummary ? (
                       <div className={`border-t ${colorScheme.borderT} px-4 py-3`}>
                         <div className="text-slate-800 dark:text-slate-200 w-full">
-                          <div className="markdown-body">
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              rehypePlugins={[[rehypeHighlight, { detect: false }]]}
-                              components={{
-                                p({ children }) {
-                                  return <p className="text-slate-700 dark:text-slate-300 leading-relaxed my-1.5 text-[13.5px]">{children}</p>;
-                                },
-                                ul({ children }) {
-                                  return <ul className="list-disc pl-5 my-1.5 text-xs text-slate-700 dark:text-slate-300 space-y-0.5">{children}</ul>;
-                                },
-                                ol({ children }) {
-                                  return <ol className="list-decimal pl-5 my-1.5 text-xs text-slate-700 dark:text-slate-300 space-y-0.5">{children}</ol>;
-                                },
-                                code({ className, children, ...codeProps }: any) {
-                                  const isInline = !className;
-                                  if (isInline) {
-                                    return <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold" {...codeProps}>{children}</code>;
-                                  }
-                                  return <code className={`${className ?? ''} text-[11.5px]`} {...codeProps}>{children}</code>;
-                                },
-                                pre({ children }) {
-                                  return <pre className="code-block my-2 overflow-x-auto text-[11.5px] leading-relaxed">{children}</pre>;
-                                },
-                                blockquote({ children }) {
-                                  return <blockquote className="border-l-3 border-indigo-300 dark:border-indigo-700 pl-3 py-1 my-2 text-slate-600 dark:text-slate-400 text-xs">{children}</blockquote>;
-                                },
-                                h1({ children }) {
-                                  return <h1 className="text-base font-bold my-2 text-slate-800 dark:text-slate-200">{children}</h1>;
-                                },
-                                h2({ children }) {
-                                  return <h2 className="text-sm font-bold my-1.5 text-slate-800 dark:text-slate-200">{children}</h2>;
-                                },
-                                h3({ children }) {
-                                  return <h3 className="text-sm font-semibold my-1 text-slate-800 dark:text-slate-200">{children}</h3>;
-                                },
-                                a({ children, href, ...aProps }: any) {
-                                  return <a href={href} className="underline underline-offset-2 text-indigo-600 dark:text-indigo-400" target="_blank" rel="noopener noreferrer" {...aProps}>{children}</a>;
-                                },
-                                hr() {
-                                  return <hr className="border-slate-200 dark:border-slate-700 my-2" />;
-                                },
-                              }}
-                            >
-                              {spawnSummary}
-                            </ReactMarkdown>
-                          </div>
+                          <MarkdownRenderer content={spawnSummary} variant="compact" />
                         </div>
                       </div>
                     ) : msg.content_text ? (
@@ -860,7 +770,7 @@ function TabChat({
           }
 
           return (
-            <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start w-full min-w-0`}>
+            <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start w-full min-w-0 group`}>
               <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0 ${isUser ? 'max-w-[85%]' : 'max-w-full flex-1'}`}>
                 {isUser ? (
                   <div className="space-y-2 max-w-full">
@@ -885,91 +795,7 @@ function TabChat({
                     )}
                     {(msg.content_text || textBlocks(msg).length > 0) && (
                       <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed break-words overflow-hidden">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm, remarkBreaks]}
-                          rehypePlugins={[[rehypeHighlight, { detect: false }]]}
-                          components={{
-                            pre({ children }) {
-                              return <pre className="overflow-x-auto">{children}</pre>;
-                            },
-                            code({ className, children, ...codeProps }: any) {
-                              const match = /language-(\w+)/.exec(className || '');
-                              const isInline = !className;
-                              if (!isInline) {
-                                const language = match ? match[1] : 'code';
-                                return (
-                                  <div className="my-2 border border-blue-400/40 rounded-xl overflow-hidden bg-blue-700/60 text-white max-w-full">
-                                    <div className="bg-blue-800/60 px-3 py-1 flex items-center border-b border-blue-400/30">
-                                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-blue-200">{language}</span>
-                                    </div>
-                                    <pre className="p-3 overflow-x-auto text-[11.5px] leading-relaxed text-white/90">
-                                      <code className={className}>{children}</code>
-                                    </pre>
-                                  </div>
-                                );
-                              }
-                              return (
-                                <code className="bg-blue-500/60 border border-blue-400/40 text-white px-1.5 py-0.5 rounded font-mono text-[11px]" {...codeProps}>
-                                  {children}
-                                </code>
-                              );
-                            },
-                            p({ children, ...pProps }) {
-                              return <p className="my-1.5 leading-relaxed" {...pProps}>{children}</p>;
-                            },
-                            ul({ children, ...ulProps }) {
-                              return <ul className="list-disc pl-5 my-1.5 space-y-0.5" {...ulProps}>{children}</ul>;
-                            },
-                            ol({ children, ...olProps }) {
-                              return <ol className="list-decimal pl-5 my-1.5 space-y-0.5" {...olProps}>{children}</ol>;
-                            },
-                            blockquote({ children, ...bqProps }) {
-                              return <blockquote className="border-l-3 border-blue-400/60 pl-3 py-1 my-2 opacity-90" {...bqProps}>{children}</blockquote>;
-                            },
-                            a({ children, href, ...aProps }: any) {
-                              return <a href={href} className="underline underline-offset-2 hover:opacity-80" target="_blank" rel="noopener noreferrer" {...aProps}>{children}</a>;
-                            },
-                            table({ children, ...tableProps }) {
-                              return (
-                                <div className="overflow-x-auto my-2 rounded-lg border border-blue-400/40">
-                                  <table className="min-w-full text-xs border-collapse" {...tableProps}>{children}</table>
-                                </div>
-                              );
-                            },
-                            thead({ children, ...theadProps }) {
-                              return <thead className="bg-blue-700/60" {...theadProps}>{children}</thead>;
-                            },
-                            tbody({ children, ...tbodyProps }) {
-                              return <tbody className="divide-y divide-blue-400/20" {...tbodyProps}>{children}</tbody>;
-                            },
-                            tr({ children, ...trProps }) {
-                              return <tr className="even:bg-blue-500/20" {...trProps}>{children}</tr>;
-                            },
-                            th({ children, ...thProps }) {
-                              return <th className="px-2.5 py-1.5 text-left font-semibold text-white/90 border-b border-blue-400/40 text-[11px]" {...thProps}>{children}</th>;
-                            },
-                            td({ children, ...tdProps }) {
-                              return <td className="px-2.5 py-1.5 text-white/80 border-b border-blue-400/20 text-[11px]" {...tdProps}>{children}</td>;
-                            },
-                            h1({ children, ...hProps }) {
-                              return <h1 className="text-base font-bold my-2" {...hProps}>{children}</h1>;
-                            },
-                            h2({ children, ...hProps }) {
-                              return <h2 className="text-sm font-bold my-1.5" {...hProps}>{children}</h2>;
-                            },
-                            h3({ children, ...hProps }) {
-                              return <h3 className="text-sm font-semibold my-1.5" {...hProps}>{children}</h3>;
-                            },
-                            hr() {
-                              return <hr className="border-blue-400/40 my-2" />;
-                            },
-                            img({ src, alt, ...imgProps }: any) {
-                              return <img src={src} alt={alt} className="max-w-full rounded-lg my-1.5" style={{ aspectRatio: 'auto' }} loading="lazy" {...imgProps} />;
-                            },
-                          }}
-                        >
-                          {msg.content_text}
-                        </ReactMarkdown>
+                        <MarkdownRenderer content={msg.content_text ?? ''} variant="user" />
                       </div>
                     )}
                   </div>
@@ -980,206 +806,46 @@ function TabChat({
                         {msg.content_text.replace(/<\/?think>|<\/?thinking>/gi, '').trim()}
                       </blockquote>
                     ) : (
-                      <div className="markdown-body">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[[rehypeHighlight, { detect: false }]]}
-                        components={{
-                          pre({ children }) {
-                            return <pre className="code-block">{children}</pre>;
-                          },
-                          code({ className, children, ...props }: any) {
-                            const match = /language-(\w+)/.exec(className || '');
-                            const codeText = extractCodeText(children).replace(/\n$/, '');
-                            const isInline = !className;
-
-                            if (!isInline) {
-                              const language = match ? match[1] : 'code';
-                              const blockId = `${msg.id}-${language}-${codeText}`;
-                              return (
-                                <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 relative font-mono text-xs shadow-3xs max-w-full">
-                                  <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
-                                    <span className="text-[10px] font-mono font-bold uppercase tracking-wider">{language}</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleCopyCode(codeText, blockId)}
-                                      className="flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 px-2.5 py-1 rounded text-[11px] text-slate-600 dark:text-slate-300 font-sans cursor-pointer transition-colors"
-                                    >
-                                      {copiedId === blockId ? (
-                                        <>
-                                          <Check className="w-3 h-3 text-green-600" />
-                                          <span className="text-green-600 font-medium">Copied</span>
-                                        </>
-                                      ) : (
-                                        <>
-                                          <Copy className="w-3 h-3" />
-                                          <span>Copy</span>
-                                        </>
-                                      )}
-                                    </button>
-                                  </div>
-                                  <pre className="p-4 overflow-x-auto text-[11.5px] leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950">
-                                    <code className={className}>{children}</code>
-                                  </pre>
-                                </div>
-                              );
-                            }
-
-                            return (
-                              <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold" {...props}>
-                                {children}
-                              </code>
-                            );
-                          },
-                          p({ children, ...props }) {
-                            return <p className="text-slate-700 dark:text-slate-300 leading-relaxed my-2 text-[13.5px]" {...props}>{children}</p>;
-                          },
-                          ul({ children, ...props }) {
-                            return <ul className="list-disc pl-5 my-2 text-xs text-slate-700 dark:text-slate-300 space-y-1" {...props}>{children}</ul>;
-                          },
-                          ol({ children, ...props }) {
-                            return <ol className="list-decimal pl-5 my-2 text-xs text-slate-700 dark:text-slate-300 space-y-1" {...props}>{children}</ol>;
-                          },
-                          blockquote({ children, ...props }) {
-                            return <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-1.5 my-3 italic text-slate-600 dark:text-slate-400 rounded-r-lg" {...props}>{children}</blockquote>;
-                          },
-                          table({ children, ...props }) {
-                            return (
-                              <div className="overflow-x-auto my-3 rounded-lg border border-slate-200 dark:border-slate-700">
-                                <table className="min-w-full text-xs border-collapse" {...props}>
-                                  {children}
-                                </table>
-                              </div>
-                            );
-                          },
-                          thead({ children, ...props }) {
-                            return <thead className="bg-slate-50 dark:bg-slate-800" {...props}>{children}</thead>;
-                          },
-                          tbody({ children, ...props }) {
-                            return <tbody className="divide-y divide-slate-200 dark:divide-slate-700" {...props}>{children}</tbody>;
-                          },
-                          tr({ children, ...props }) {
-                            return <tr className="even:bg-slate-50/50 dark:even:bg-slate-800/50" {...props}>{children}</tr>;
-                          },
-                          th({ children, ...props }) {
-                            return <th className="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[12px]" {...props}>{children}</th>;
-                          },
-                          td({ children, ...props }) {
-                            return <td className="px-3 py-2 text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 text-[12px]" {...props}>{children}</td>;
-                          },
-                        }}
-                      >
-                        {msg.content_text}
-                      </ReactMarkdown>
-                    </div>
-                  )}
+                      <MarkdownRenderer content={msg.content_text ?? ''} variant="assistant" blockIdPrefix={msg.id} />
+                    )}
                 </div>
               )}
-                <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-2 px-1 font-mono">
-                  {new Date(msg.created_at).toLocaleTimeString()}
-                </span>
+                <div className="flex items-center gap-2 mt-2 px-1">
+                  {msg.content_text ? (
+                    <button
+                      type="button"
+                      onClick={() => handleCopyMessage(msg.id, msg.content_text)}
+                      className="md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer"
+                      title="复制消息"
+                    >
+                      {copiedMessageId === msg.id ? (
+                        <>
+                          <Check className="w-3 h-3 text-green-600" />
+                          <span className="text-green-600 font-medium">已复制</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>复制</span>
+                        </>
+                      )}
+                    </button>
+                  ) : null}
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                    {new Date(msg.created_at).toLocaleTimeString()}
+                  </span>
+                </div>
               </div>
             </div>
           );
         })}
 
-        {/* Streaming content */}
-        {streamingContent && (
+        {/* Streaming content（仅 streaming 阶段渲染，complete 后由占位消息接管，避免重复渲染） */}
+        {phase === 'streaming' && streamingContent && (
           <div className="flex justify-start items-start w-full min-w-0">
             <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
               <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
-                <div className="markdown-body">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[[rehypeHighlight, { detect: false }]]}
-                    components={{
-                      pre({ children }) {
-                        return <pre className="code-block">{children}</pre>;
-                      },
-                      code({ className, children, ...codeProps }: any) {
-                        const match = /language-(\w+)/.exec(className || '');
-                        const codeText = extractCodeText(children).replace(/\n$/, '');
-                        const isInline = !className;
-
-                        if (!isInline) {
-                          const language = match ? match[1] : 'code';
-                          const blockId = `stream-${language}-${codeText}`;
-                          return (
-                            <div className="my-3 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 relative font-mono text-xs shadow-3xs max-w-full">
-                              <div className="bg-slate-100/80 dark:bg-slate-800 px-4 py-1.5 flex items-center justify-between text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 select-none">
-                                <span className="text-[10px] font-mono font-bold uppercase tracking-wider">{language}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyCode(codeText, blockId)}
-                                  className="flex items-center space-x-1.5 hover:bg-slate-200 dark:hover:bg-slate-800 px-2.5 py-1 rounded text-[11px] text-slate-600 dark:text-slate-300 font-sans cursor-pointer transition-colors"
-                                >
-                                  {copiedId === blockId ? (
-                                    <>
-                                      <Check className="w-3 h-3 text-green-600" />
-                                      <span className="text-green-600 font-medium">Copied</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Copy className="w-3 h-3" />
-                                      <span>Copy</span>
-                                    </>
-                                  )}
-                                </button>
-                              </div>
-                              <pre className="p-4 overflow-x-auto text-[11.5px] leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-950">
-                                <code className={className}>{children}</code>
-                              </pre>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <code className="bg-slate-100 dark:bg-slate-800 border border-slate-150 dark:border-slate-700 text-slate-800 dark:text-slate-200 px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold" {...codeProps}>
-                            {children}
-                          </code>
-                        );
-                      },
-                      p({ children, ...pProps }) {
-                        return <p className="text-slate-700 dark:text-slate-300 leading-relaxed my-2 text-[13.5px]" {...pProps}>{children}</p>;
-                      },
-                      ul({ children, ...ulProps }) {
-                        return <ul className="list-disc pl-5 my-2 text-xs text-slate-700 dark:text-slate-300 space-y-1" {...ulProps}>{children}</ul>;
-                      },
-                      ol({ children, ...olProps }) {
-                        return <ol className="list-decimal pl-5 my-2 text-xs text-slate-700 dark:text-slate-300 space-y-1" {...olProps}>{children}</ol>;
-                      },
-                      blockquote({ children, ...bqProps }) {
-                        return <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-1.5 my-3 italic text-slate-600 dark:text-slate-400 rounded-r-lg" {...bqProps}>{children}</blockquote>;
-                      },
-                      table({ children, ...tableProps }) {
-                        return (
-                          <div className="overflow-x-auto my-3 rounded-lg border border-slate-200 dark:border-slate-700">
-                            <table className="min-w-full text-xs border-collapse" {...tableProps}>
-                              {children}
-                            </table>
-                          </div>
-                        );
-                      },
-                      thead({ children, ...theadProps }) {
-                        return <thead className="bg-slate-50 dark:bg-slate-800" {...theadProps}>{children}</thead>;
-                      },
-                      tbody({ children, ...tbodyProps }) {
-                        return <tbody className="divide-y divide-slate-200 dark:divide-slate-700" {...tbodyProps}>{children}</tbody>;
-                      },
-                      tr({ children, ...trProps }) {
-                        return <tr className="even:bg-slate-50/50 dark:even:bg-slate-800/50" {...trProps}>{children}</tr>;
-                      },
-                      th({ children, ...thProps }) {
-                        return <th className="px-3 py-2 text-left font-semibold text-slate-700 dark:text-slate-200 border-b border-slate-200 dark:border-slate-700 text-[12px]" {...thProps}>{children}</th>;
-                      },
-                      td({ children, ...tdProps }) {
-                        return <td className="px-3 py-2 text-slate-600 dark:text-slate-300 border-b border-slate-100 dark:border-slate-800 text-[12px]" {...tdProps}>{children}</td>;
-                      },
-                    }}
-                  >
-                    {sanitizeStreamingContent(streamingContent)}
-                  </ReactMarkdown>
-                </div>
+                <MarkdownRenderer content={sanitizeStreamingContent(streamingContent)} variant="assistant" blockIdPrefix="stream" />
               </div>
               <span className="text-[10px] text-blue-500 mt-2 px-1 font-mono animate-pulse">
                 streaming…
@@ -1262,24 +928,6 @@ function TabChat({
           </div>
         )}
       </div>
-
-      {/* Suggestions */}
-      {false && allMessages.length > 0 && !isRunning && (
-        <div className="px-6 py-2 flex flex-wrap gap-2 select-none shrink-0 bg-white/40 dark:bg-slate-900/60 border-t border-slate-100 dark:border-slate-800/60">
-          <button
-            onClick={() => handleSendInternal('生成当前会话的 Git Diff', [])}
-            className="text-[11px] bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 text-slate-600 dark:text-slate-300 shadow-3xs cursor-pointer transition-colors"
-          >
-            📊 生成 Git Diff
-          </button>
-          <button
-            onClick={() => handleSendInternal('分析当前会话状态并总结', [])}
-            className="text-[11px] bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 text-slate-600 dark:text-slate-300 shadow-3xs cursor-pointer transition-colors"
-          >
-            🧩 分析会话
-          </button>
-        </div>
-      )}
 
       {/* Input area */}
       {/* Model selector & archive bar */}
