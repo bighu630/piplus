@@ -23,6 +23,9 @@ import { useSessionContextUsage } from '../lib/hooks';
 import ChatInput from './ChatInput';
 import { useChatStream, useWebSocket } from '../lib/ws-provider';
 
+// 距容器底部多少像素内视为"在底部"（跟随吸底与按钮显示共用）
+const FOLLOW_THRESHOLD = 100;
+
 interface ModelOption {
   provider: string;
   id: string;
@@ -200,13 +203,10 @@ function TabChat({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
   const [previewImage, setPreviewImage] = useState<ChatImageContentBlockDTO | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
-  const prevDisplayMessagesRef = useRef<ChatMessageDTO[]>([]);
+  const prevSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
   const prevScrollHeightRef = useRef<number | null>(null);
-  const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
-  const sessionJustSwitchedRef = useRef(false);
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
   const { connected: wsConnected, clearStreamRuntimeErrors } = useWebSocket();
   // 流式快照统一由 ws-provider 按 sessionId 管理（80ms 节流），本组件只消费
@@ -215,12 +215,10 @@ function TabChat({
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
 
-  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
-    messagesEndRef.current?.scrollIntoView({ behavior });
-  };
-
   const handleScrollToBottom = () => {
-    scrollToBottom('smooth');
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
     setIsNearBottom(true);
     isNearBottomRef.current = true;
   };
@@ -298,38 +296,48 @@ function TabChat({
         },
       ];
 
+  // 触顶加载判定：首消息 id 变化即视为 prepend（排除底部流式增长误判）
+  const prevFirstMsgIdRef = useRef<string | undefined>(displayMessages[0]?.id);
+
+  // 单一滚动协调：会话切换跳底 / 触顶加载补偿 / 底部跟随（统一瞬时 scrollTo，无 smooth 动画竞争）
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const prevMessages = prevDisplayMessagesRef.current;
-    const currentMessages = displayMessages;
+    const sessionSwitched = prevSessionIdRef.current !== selectedSessionId;
+    prevSessionIdRef.current = selectedSessionId;
 
-    const prevFirstId = prevMessages[0]?.id;
-    const prevLastId = prevMessages[prevMessages.length - 1]?.id;
-    const currentFirstId = currentMessages[0]?.id;
-    const currentLastId = currentMessages[currentMessages.length - 1]?.id;
-
-    const prepended =
-      prevMessages.length > 0 &&
-      currentMessages.length > prevMessages.length &&
-      prevFirstId !== currentFirstId &&
-      prevLastId === currentLastId;
-
-    const appended =
-      currentMessages.length > prevMessages.length ||
-      (prevLastId !== currentLastId && currentLastId !== undefined);
-
-    lastChangeTypeRef.current = prepended ? 'prepend' : appended ? 'append' : 'none';
-
-    if (prepended && prevScrollHeightRef.current !== null) {
-      const heightDelta = container.scrollHeight - prevScrollHeightRef.current;
-      container.scrollTop += heightDelta;
+    if (sessionSwitched) {
+      // 会话切换：真实消息渲染后（layout effect 时机）直接跳底，无需 rAF
+      container.scrollTop = container.scrollHeight;
+      setIsNearBottom(true);
+      isNearBottomRef.current = true;
+      prevScrollHeightRef.current = container.scrollHeight;
+      prevFirstMsgIdRef.current = displayMessages[0]?.id;
+      return;
     }
 
-    prevDisplayMessagesRef.current = currentMessages;
+    const firstId = displayMessages[0]?.id;
+    const prepended = prevFirstMsgIdRef.current !== firstId;
+    prevFirstMsgIdRef.current = firstId;
+
+    const prevHeight = prevScrollHeightRef.current;
     prevScrollHeightRef.current = container.scrollHeight;
-  }, [displayMessages]);
+
+    const heightDelta = prevHeight === null ? 0 : container.scrollHeight - prevHeight;
+
+    // 触顶加载更早消息（首消息 id 变化且高度增长）：补偿 scrollTop 保持阅读位置
+    if (prepended && heightDelta > 0 && !isNearBottomRef.current) {
+      container.scrollTop += heightDelta;
+      return;
+    }
+
+    // 底部跟随：用户停留在底部附近时，任何内容变化（流式 delta/append/乐观消息）都瞬时吸底
+    if (isNearBottomRef.current) {
+      container.scrollTop = container.scrollHeight;
+      setIsNearBottom(true);
+    }
+  }, [displayMessages, streamingContent, selectedSessionId]);
 
   // Auto-load more when scrolling to the top (sentinel becomes visible)
   useEffect(() => {
@@ -378,51 +386,6 @@ function TabChat({
     prevRuntimeStatus.current = runtimeStatus;
   }, [runtimeStatus]);
 
-  // 独立标记：session 切换时设 flag，等真实消息渲染后再跳到底部
-  useEffect(() => {
-    sessionJustSwitchedRef.current = true;
-  }, [selectedSessionId]);
-
-  // useLayoutEffect：在浏览器重绘前同步吸附底部，避免抽搐
-  useLayoutEffect(() => {
-    if (!streamingContent || !isNearBottomRef.current) return;
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    // 注意：这里不做渲染后的 nearBottom 检查。用户渲染前就在底部 → 直接跟随
-    container.scrollTop = container.scrollHeight - container.clientHeight;
-    setIsNearBottom(true);
-    isNearBottomRef.current = true;
-  }, [streamingContent]);
-
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    // 刚刚切换 session → 等真实消息加载后立刻跳到底部
-    if (sessionJustSwitchedRef.current && displayMessages.length > 0) {
-      const isPlaceholder = displayMessages.length === 1 && displayMessages[0].id === 'empty_placeholder';
-      if (!isPlaceholder) {
-        sessionJustSwitchedRef.current = false;
-        setIsNearBottom(true);
-        isNearBottomRef.current = true;
-        requestAnimationFrame(() => requestAnimationFrame(() => scrollToBottom('auto')));
-        return;
-      }
-    }
-
-    if (streamingContent || lastChangeTypeRef.current === 'prepend') {
-      return;
-    }
-
-    // 仅当渲染前用户就在底部时才跟随
-    if (!isNearBottomRef.current) {
-      return;
-    }
-
-    scrollToBottom('smooth');
-    setIsNearBottom(true);
-    isNearBottomRef.current = true;
-  }, [displayMessages, streamingContent, selectedSessionId]);
 
   // 流式订阅已迁移至 useChatStream：ws-provider 按 sessionId 累积快照（含切会话自动切换），
   // 不再需要本地订阅 effect 与切会话清空逻辑
@@ -507,13 +470,13 @@ function TabChat({
     }
   };
 
-  // 滚动监听：同步更新按钮状态和跟随标记（两者共用同一 clientHeight/3 阈值）
+  // 滚动监听：同步更新按钮状态和跟随标记（两者共用同一 FOLLOW_THRESHOLD 阈值）
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
 
     const checkNearBottom = () => {
-      const near = container.scrollHeight - container.scrollTop - container.clientHeight < container.clientHeight / 3;
+      const near = container.scrollHeight - container.scrollTop - container.clientHeight < FOLLOW_THRESHOLD;
       setIsNearBottom(near);
       isNearBottomRef.current = near;
     };
@@ -913,8 +876,6 @@ function TabChat({
           );
         })()}
 
-        <div ref={messagesEndRef} />
-        
         {/* Scroll to bottom button */}
         {!isNearBottom && (
           <div className="sticky bottom-6 z-10 flex justify-end pointer-events-none">
