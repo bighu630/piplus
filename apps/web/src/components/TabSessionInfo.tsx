@@ -140,7 +140,7 @@ function TabSessionInfo({ selectedSessionId, selectedProjectId }: TabSessionInfo
                 {sessionInfo.role_template.name}
               </span>
               <span className="text-[10px] text-slate-400 ml-2">
-                v{encodeURIComponent(sessionInfo.role_template.version)}
+                {sessionInfo.role_template.version}
               </span>
             </div>
           </div>
