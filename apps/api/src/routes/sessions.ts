@@ -32,7 +32,7 @@ function randomId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
 }
 
-/** 剥离 planner 首条消息时运行时注入的角色提示词前缀（见 @piplus/domain session/runtime.ts 的 merge 逻辑）。
+/** 剥离顶层会话（planner/blank）首条消息时运行时注入的角色提示词前缀（见 @piplus/domain session/runtime.ts 的 merge 逻辑）。
  *  使用 lastIndexOf 取最后出现处，保证内容本身含分隔串时也只剥离一次注入前缀 */
 export function stripMergedPromptPrefix(text: string): string {
   const idx = text.lastIndexOf(MERGED_USER_MESSAGE_SEPARATOR);
@@ -458,7 +458,7 @@ export function registerSessionRoutes(app: Hono) {
         source_session_id: null,
         content_text: row.role === 'user' ? stripMergedPromptPrefix(row.text) : row.text,
         content_blocks: row.contentBlocks?.map((block) => block.type === 'text'
-          ? { type: 'text' as const, text: block.text }
+          ? { type: 'text' as const, text: row.role === 'user' ? stripMergedPromptPrefix(block.text) : block.text }
           : {
               type: 'image' as const,
               mime_type: block.mimeType,
