@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { SessionInfoDTO, ProjectTodoDTO } from '@piplus/shared';
 import {
   Activity,
@@ -25,6 +25,55 @@ function runtimeStatusLabel(status: string): string {
     default:
       return '空闲';
   }
+}
+
+interface PromptBlockProps {
+  label: string;
+  content: string;
+  clampClass: string;
+  emptyText?: string;
+}
+
+function PromptBlock({ label, content, clampClass, emptyText }: PromptBlockProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const pRef = useRef<HTMLParagraphElement>(null);
+
+  useEffect(() => {
+    const el = pRef.current;
+    if (el) {
+      setOverflowing(el.scrollHeight > el.clientHeight + 1);
+    }
+  }, [content]);
+
+  if (!content) {
+    return (
+      <div>
+        <span className="text-slate-400">{label}</span>
+        <p className="mt-1 text-slate-600 dark:text-slate-400">{emptyText ?? '无'}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <span className="text-slate-400">{label}</span>
+      <p
+        ref={pRef}
+        className={'mt-1 text-slate-600 dark:text-slate-400 whitespace-pre-wrap break-all ' + (expanded ? '' : clampClass)}
+      >
+        {content}
+      </p>
+      {overflowing && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400 mt-1 cursor-pointer"
+        >
+          {expanded ? '收起' : '展开'}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function TabSessionInfo({ selectedSessionId, selectedProjectId }: TabSessionInfoProps) {
@@ -276,19 +325,19 @@ function TabSessionInfo({ selectedSessionId, selectedProjectId }: TabSessionInfo
                   {sessionInfo.role_template.key}
                 </span>
               </div>
-              <div>
-                <span className="text-slate-400">系统提示词：</span>
-                <p className="mt-1 text-slate-600 dark:text-slate-400 line-clamp-4 break-all">
-                  {sessionInfo.prompts.role_base_prompt_snapshot || '无'}
-                </p>
-              </div>
+              <PromptBlock
+                key={`sys-prompt-${sessionInfo.session.id}`}
+                label="系统提示词："
+                content={sessionInfo.prompts.role_base_prompt_snapshot || ''}
+                clampClass="line-clamp-4"
+              />
               {sessionInfo.prompts.user_supplied_prompt && (
-                <div>
-                  <span className="text-slate-400">用户补充提示词：</span>
-                  <p className="mt-1 text-slate-600 dark:text-slate-400 line-clamp-3 break-all">
-                    {sessionInfo.prompts.user_supplied_prompt}
-                  </p>
-                </div>
+                <PromptBlock
+                  key={`usr-prompt-${sessionInfo.session.id}`}
+                  label="用户补充提示词："
+                  content={sessionInfo.prompts.user_supplied_prompt}
+                  clampClass="line-clamp-3"
+                />
               )}
             </div>
           </div>
