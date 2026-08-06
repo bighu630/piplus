@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { createWorkspaceSocket } from './ws-client';
+import { createWorkspaceSocket, nextReconnectDelay } from './ws-client';
 
 type Listener = (event?: MessageEvent | Event) => void;
 
@@ -49,6 +49,17 @@ class FakeWebSocket {
     }
   }
 }
+
+describe('nextReconnectDelay', () => {
+  test('exponential backoff with cap', () => {
+    expect(nextReconnectDelay(0)).toBe(2000);
+    expect(nextReconnectDelay(1)).toBe(4000);
+    expect(nextReconnectDelay(2)).toBe(8000);
+    expect(nextReconnectDelay(3)).toBe(16000);
+    expect(nextReconnectDelay(4)).toBe(30000); // 32000 → capped
+    expect(nextReconnectDelay(10)).toBe(30000);
+  });
+});
 
 describe('createWorkspaceSocket', () => {
   const originalWindow = globalThis.window;

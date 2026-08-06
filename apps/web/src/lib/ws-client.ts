@@ -1,7 +1,10 @@
 import type { ClientMessage } from '@piplus/shared';
 import { getWsBaseUrl } from './runtime-config';
 
-const RECONNECT_DELAY = 2000;
+export function nextReconnectDelay(attempt: number): number {
+  return Math.min(2000 * 2 ** attempt, 30000);
+}
+
 const INITIAL_CONNECT_DELAY = 0;
 
 export function createWorkspaceSocket({
@@ -14,6 +17,7 @@ export function createWorkspaceSocket({
   onClose?: () => void;
 }) {
   let ws: WebSocket;
+  let reconnectAttempt = 0;
   let closed = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let connectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -25,13 +29,14 @@ export function createWorkspaceSocket({
     ws.addEventListener('message', onMessage);
 
     ws.addEventListener('open', () => {
+      reconnectAttempt = 0;
       onOpen?.();
     });
 
     ws.addEventListener('close', () => {
       onClose?.();
       if (!closed) {
-        reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
+        reconnectTimer = setTimeout(connect, nextReconnectDelay(reconnectAttempt++));
       }
     });
 
