@@ -3,6 +3,9 @@ export type PiplusRuntimeConfig = {
   platform?: string;
   apiBaseUrl?: string;
   wsBaseUrl?: string;
+  theme?: {
+    setPreference?: (preference: 'light' | 'dark' | 'system') => void;
+  };
 };
 
 function trimTrailingSlash(value: string) {
