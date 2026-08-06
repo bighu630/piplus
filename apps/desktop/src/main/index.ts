@@ -6,6 +6,7 @@ import { waitForHealth } from './health.js';
 import { ensureAppPaths } from './paths.js';
 import { getFreePort, getPreferredPort } from './port.js';
 import { createMainWindow } from './window.js';
+import { initTheme } from './theme.js';
 import { getWebProdDir, desktopDistRoot } from './resolve-paths.js';
 import { createAppTray } from './tray.js';
 
@@ -49,6 +50,11 @@ async function bootstrap() {
   const apiBaseUrl = `http://127.0.0.1:${port}`;
 
   await waitForHealth(`${apiBaseUrl}/health`);
+
+  // Apply persisted theme preference before the window loads so the
+  // renderer's prefers-color-scheme matches from the very first frame.
+  await initTheme();
+
   mainWindow = await createMainWindow(apiBaseUrl, paths.logsDir);
 
   // ── System tray ──────────────────────────────────────────
