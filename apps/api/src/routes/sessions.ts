@@ -10,7 +10,7 @@ import { registerWebSocketRoutes, socketHub } from '../ws/server';
 import { createEvent } from '../ws/protocol';
 import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
-import { createAuditService, findRoleTemplateByVersion, startSessionRun } from '@piplus/domain';
+import { createAuditService, findRoleTemplateByVersion, MERGED_USER_MESSAGE_SEPARATOR, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
 import { readdir, readFile, appendFile, access, stat, writeFile, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -30,6 +30,14 @@ function getPiModelsFilePath() {
 
 function randomId(prefix: string) {
   return `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
+}
+
+/** 剥离顶层会话（planner/blank）首条消息时运行时注入的角色提示词前缀（见 @piplus/domain session/runtime.ts 的 merge 逻辑）。
+ *  使用 lastIndexOf 取最后出现处，保证内容本身含分隔串时也只剥离一次注入前缀 */
+export function stripMergedPromptPrefix(text: string): string {
+  const idx = text.lastIndexOf(MERGED_USER_MESSAGE_SEPARATOR);
+  if (idx === -1) return text;
+  return text.slice(idx + MERGED_USER_MESSAGE_SEPARATOR.length);
 }
 
 type MessageCursor = {
@@ -448,9 +456,9 @@ export function registerSessionRoutes(app: Hono) {
         role: row.role,
         message_kind: row.messageKind ?? 'normal',
         source_session_id: null,
-        content_text: row.text,
+        content_text: row.role === 'user' ? stripMergedPromptPrefix(row.text) : row.text,
         content_blocks: row.contentBlocks?.map((block) => block.type === 'text'
-          ? { type: 'text' as const, text: block.text }
+          ? { type: 'text' as const, text: row.role === 'user' ? stripMergedPromptPrefix(block.text) : block.text }
           : {
               type: 'image' as const,
               mime_type: block.mimeType,
