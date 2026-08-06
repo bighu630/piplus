@@ -5,6 +5,7 @@ import { createDb } from '@piplus/db/client';
 import { messages, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
+import { stripMergedPromptPrefix } from './sessions';
 
 const imageCapableModelPromise = createPiClient().listAvailableModels().then((models) => models.at(-1) ?? models[0]);
 
@@ -442,5 +443,21 @@ describe('session routes', () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body).toMatchObject({ error: { code: 'NOT_FOUND' } });
+  });
+});
+
+describe('stripMergedPromptPrefix', () => {
+  test('strips merged role prompt prefix from planner first message', () => {
+    const merged = 'You are a planner...\n\n请尊重用户的语言习惯，现在用户说：\n\n帮我看看这个项目';
+    expect(stripMergedPromptPrefix(merged)).toBe('帮我看看这个项目');
+  });
+
+  test('returns text unchanged when no separator present', () => {
+    expect(stripMergedPromptPrefix('普通消息')).toBe('普通消息');
+  });
+
+  test('keeps content after the last separator occurrence', () => {
+    const text = 'a\n\n请尊重用户的语言习惯，现在用户说：\n\nb\n\n请尊重用户的语言习惯，现在用户说：\n\nc';
+    expect(stripMergedPromptPrefix(text)).toBe('c');
   });
 });
