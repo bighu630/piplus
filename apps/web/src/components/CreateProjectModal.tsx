@@ -312,27 +312,28 @@ export default function CreateProjectModal({
                     <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 w-24 shrink-0">{role.label}</span>
                     <span className="text-[10px] text-slate-400 dark:text-slate-500 w-16 shrink-0">{role.key}</span>
                     <div className="flex-1 min-w-0 relative">
-                      <select
-                        value={config.version ?? ''}
-                        onChange={(e) => setCreateRoleConfig((prev) => ({
-                          ...prev,
-                          [role.key]: { ...prev[role.key], version: e.target.value || undefined },
-                        }))}
-                        className="w-full px-2 py-1 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
-                      >
-                        {isBuiltin ? (
-                          <option value="内置">内置</option>
-                        ) : (
-                          <>
-                            <option value="">使用最新版本</option>
-                            {roleVersions.map((v) => (
-                              <option key={v.id} value={v.version}>{v.version === '内置' ? '内置' : `v${v.version}`}</option>
-                            ))}
-                          </>
-                        )}
-                      </select>
-                      {!roleEnabled && (
-                        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-50/70 dark:bg-slate-950/70">
+                      {roleEnabled ? (
+                        <select
+                          value={config.version ?? ''}
+                          onChange={(e) => setCreateRoleConfig((prev) => ({
+                            ...prev,
+                            [role.key]: { ...prev[role.key], version: e.target.value || undefined },
+                          }))}
+                          className="w-full px-2 py-1 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+                        >
+                          {isBuiltin ? (
+                            <option value="内置">内置</option>
+                          ) : (
+                            <>
+                              <option value="">使用最新版本</option>
+                              {roleVersions.map((v) => (
+                                <option key={v.id} value={v.version}>{v.version === '内置' ? '内置' : `v${v.version}`}</option>
+                              ))}
+                            </>
+                          )}
+                        </select>
+                      ) : (
+                        <div className="flex items-center justify-center rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950/50 min-h-[30px] px-2">
                           <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">角色未启用</span>
                         </div>
                       )}

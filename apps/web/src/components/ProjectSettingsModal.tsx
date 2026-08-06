@@ -289,21 +289,22 @@ export default function ProjectSettingsModal({
                     <div key={idx} inert={!roleEnabled} className={`flex items-center gap-3 mb-2${roleEnabled ? '' : ' opacity-50 grayscale select-none pointer-events-none'}`}>
                       <span className="text-xs text-slate-600 dark:text-slate-400 w-20 shrink-0">{idx === 0 ? role.label : ''}</span>
                       <div className={`flex-1${roleEnabled ? '' : ' relative'}`}>
-                        <Select
-                          value={modelKey}
-                          onChange={(v) => handleEditRoleModelChange(role.key, idx, v)}
-                          options={[
-                            { value: '', label: '继承（使用父级模型）' },
-                            ...(modelsQueryData ?? []).map((m: any) => ({
-                              value: `${m.provider}/${m.id}`,
-                              label: `${m.provider} / ${m.label}`,
-                            })),
-                          ]}
-                          searchable
-                          className="w-full"
-                        />
-                        {!roleEnabled && (
-                          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-50/70 dark:bg-slate-950/70">
+                        {roleEnabled ? (
+                          <Select
+                            value={modelKey}
+                            onChange={(v) => handleEditRoleModelChange(role.key, idx, v)}
+                            options={[
+                              { value: '', label: '继承（使用父级模型）' },
+                              ...(modelsQueryData ?? []).map((m: any) => ({
+                                value: `${m.provider}/${m.id}`,
+                                label: `${m.provider} / ${m.label}`,
+                              })),
+                            ]}
+                            searchable
+                            className="w-full"
+                          />
+                        ) : (
+                          <div className="flex items-center justify-center rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950/50 min-h-[30px] px-2">
                             <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">角色未启用</span>
                           </div>
                         )}
