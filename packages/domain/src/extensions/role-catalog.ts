@@ -94,6 +94,9 @@ export async function loadRoleCatalog(db: RoleManagerDb, projectId?: string): Pr
 
   const roles: RoleCatalogEntry[] = [];
 
+  // 记录是否已有角色配置（须在内置角色循环删除 key 之前计算）
+  const hasRoleConfig = Object.keys(roleConfig).length > 0;
+
   // Process built-in roles first, preserving their order
   for (const builtin of BUILTIN_ROLES) {
     const cfg = roleConfig[builtin.key];
@@ -129,24 +132,29 @@ export async function loadRoleCatalog(db: RoleManagerDb, projectId?: string): Pr
   }
 
   // Also load any custom roles from DB that are NOT in roleConfig
-  const dbRows = await db
-    .select({ key: roleTemplates.key, name: roleTemplates.name, description: roleTemplates.description })
-    .from(roleTemplates)
-    .where(isNull(roleTemplates.archivedAt))
-    .orderBy(desc(roleTemplates.version));
+  // 注意：新项目创建时已初始化完整角色配置（内置启用 + 现有自定义禁用），因此未配置的自定义角色
+  //（项目创建后新建的）视为禁用，需在项目设置-角色配置中显式启用；
+  // 旧项目（roleConfigJson 为 '{}'，从未配置过）保持旧行为自动加入所有自定义角色。
+  if (!hasRoleConfig) {
+    const dbRows = await db
+      .select({ key: roleTemplates.key, name: roleTemplates.name, description: roleTemplates.description })
+      .from(roleTemplates)
+      .where(isNull(roleTemplates.archivedAt))
+      .orderBy(desc(roleTemplates.version));
 
-  const processedKeys = new Set(roles.map(r => r.key));
-  for (const row of dbRows) {
-    if (!processedKeys.has(row.key)) {
-      const cfg = roleConfig[row.key];
-      if (cfg?.enabled === false) continue;
-      roles.push({
-        key: row.key,
-        name: row.name,
-        description: row.description,
-        source: 'db',
-      });
-      processedKeys.add(row.key);
+    const processedKeys = new Set(roles.map(r => r.key));
+    for (const row of dbRows) {
+      if (!processedKeys.has(row.key)) {
+        const cfg = roleConfig[row.key];
+        if (cfg?.enabled === false) continue;
+        roles.push({
+          key: row.key,
+          name: row.name,
+          description: row.description,
+          source: 'db',
+        });
+        processedKeys.add(row.key);
+      }
     }
   }
 

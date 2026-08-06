@@ -19,6 +19,7 @@ export type CreateProjectInput = {
     thinkingLevel?: string | null;
   } | null;
   gitConfigJson?: string;
+  roleConfig?: Record<string, { enabled?: boolean; version?: string } | null> | null;
 };
 
 export type CreateSessionInput = {
@@ -270,6 +271,33 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       const projectId = id('project');
       const plannerTemplate = await findRoleTemplate(db, 'planner');
 
+      // 构建初始角色配置：内置角色启用内置版本，自定义角色默认禁用
+      // （key 列表从 DB 派生，勿硬编码；先内置后自定义保证顺序）
+      const templateRows = await db
+        .select({ key: roleTemplates.key, isBuiltin: roleTemplates.isBuiltin })
+        .from(roleTemplates)
+        .where(isNull(roleTemplates.archivedAt));
+      const config: Record<string, { enabled?: boolean; version?: string }> = {};
+      for (const row of templateRows) {
+        if (row.isBuiltin) {
+          config[row.key] = { enabled: true, version: '内置' };
+        }
+      }
+      for (const row of templateRows) {
+        if (!row.isBuiltin) {
+          config[row.key] = { enabled: false };
+        }
+      }
+      // 合并调用方传入的 role_config：逐 key 覆盖（value 为 null 则跳过；version 为空字符串则清除该角色的版本（catalog 回退到最新版本））
+      if (input.roleConfig) {
+        for (const [key, value] of Object.entries(input.roleConfig)) {
+          if (value === null) continue;
+          const merged = { ...(config[key] ?? { enabled: true }), ...value };
+          if (value.version === '') delete merged.version;
+          config[key] = merged;
+        }
+      }
+
       await db.insert(projects).values({
         id: projectId,
         name: input.name,
@@ -283,6 +311,7 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         lastActivityAt: timestamp,
         createdAt: timestamp,
         updatedAt: timestamp,
+        roleConfigJson: JSON.stringify(config),
         ...(input.gitConfigJson ? { gitConfigJson: input.gitConfigJson } : {}),
       } as any);
 

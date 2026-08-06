@@ -323,6 +323,7 @@ export function createProject(
   repoUrl?: string,
   model?: { provider: string; id: string } | null,
   gitConfig?: { userName?: string; userEmail?: string; token?: string } | null,
+  roleConfig?: Record<string, RoleConfigEntry | null> | null,
 ) {
   return request<{ projectId: string; sessionId?: string; piSessionId?: string }>('/api/v1/projects', {
     method: 'POST',
@@ -333,6 +334,7 @@ export function createProject(
       repo_url: repoUrl ?? '',
       model: model ?? null,
       git_config: gitConfig ?? undefined,
+      role_config: roleConfig ?? undefined,
     }),
   });
 }
