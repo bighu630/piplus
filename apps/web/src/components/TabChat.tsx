@@ -296,6 +296,9 @@ function TabChat({
         },
       ];
 
+  // 触顶加载判定：首消息 id 变化即视为 prepend（排除底部流式增长误判）
+  const prevFirstMsgIdRef = useRef<string | undefined>(displayMessages[0]?.id);
+
   // 单一滚动协调：会话切换跳底 / 触顶加载补偿 / 底部跟随（统一瞬时 scrollTo，无 smooth 动画竞争）
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
@@ -310,16 +313,21 @@ function TabChat({
       setIsNearBottom(true);
       isNearBottomRef.current = true;
       prevScrollHeightRef.current = container.scrollHeight;
+      prevFirstMsgIdRef.current = displayMessages[0]?.id;
       return;
     }
+
+    const firstId = displayMessages[0]?.id;
+    const prepended = prevFirstMsgIdRef.current !== firstId;
+    prevFirstMsgIdRef.current = firstId;
 
     const prevHeight = prevScrollHeightRef.current;
     prevScrollHeightRef.current = container.scrollHeight;
 
     const heightDelta = prevHeight === null ? 0 : container.scrollHeight - prevHeight;
 
-    // 触顶加载更早消息（高度增加且视口锚定在顶部）：补偿 scrollTop 保持阅读位置
-    if (heightDelta > 0 && container.scrollTop < FOLLOW_THRESHOLD && !isNearBottomRef.current) {
+    // 触顶加载更早消息（首消息 id 变化且高度增长）：补偿 scrollTop 保持阅读位置
+    if (prepended && heightDelta > 0 && !isNearBottomRef.current) {
       container.scrollTop += heightDelta;
       return;
     }
