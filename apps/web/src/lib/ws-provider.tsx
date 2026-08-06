@@ -4,13 +4,20 @@ import { createWorkspaceSocket } from './ws-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { sendSystemNotification } from './notification';
 import { findSessionNode, updateNodeRuntimeStatus } from './tree-utils';
+import {
+  INITIAL_CHAT_STREAM_SNAPSHOT,
+  reduceChatStreamSnapshot,
+  type ChatStreamEvent,
+  type ChatStreamSnapshot,
+} from './chat-stream-state';
 
 type RuntimeStatus = 'running' | 'idle';
 
 interface WebSocketContextValue {
   connected: boolean;
   localRuntimeStatusBySession: Record<string, RuntimeStatus>;
-  subscribeToStream: (cb: (msg: any) => void) => () => void;
+  subscribeToStream: (cb: (stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => void) => () => void;
+  chatStream: { useChatStream: (sessionId: string | null) => ChatStreamSnapshot };
   setSessionContext: (sessionId: string | null, projectId: string | null, activeTab: string) => void;
   subscribeToRuntimeErrors: (cb: (error: {sessionId: string; error: string}) => void) => () => void;
   subscribeToMessages: (cb: (msg: any) => void) => () => void;
@@ -36,7 +43,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [localRuntimeStatusBySession, setLocalRuntimeStatusBySession] = useState<Record<string, RuntimeStatus>>({});
   const queryClient = useQueryClient();
-  const streamListenersRef = useRef<Set<(msg: any) => void>>(new Set());
+  const streamListenersRef = useRef<Set<(stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => void>>(new Set());
+  // 流式快照：按 sessionId 全局累积，TabChat 卸载/切会话不丢流式内容
+  const streamSnapshotsRef = useRef<Record<string, ChatStreamSnapshot>>({});
   const runtimeErrorListenersRef = useRef<Set<(error: {sessionId: string; error: string}) => void>>(new Set());
   const messageListenersRef = useRef<Set<(msg: any) => void>>(new Set());
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
@@ -71,11 +80,27 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           messageListenersRef.current.forEach(cb => cb(message));
 
           // ═══ Chat stream events ═══
-          if (message.kind === 'chat_stream' && message.scope?.session_id === currentSessionId) {
-            // Notify streaming subscribers (TabChat)
-            streamListenersRef.current.forEach(cb => cb(message));
+          if (message.kind === 'chat_stream' && message.scope?.session_id) {
+            // 流式快照：所有 session 都累积，不做 currentSessionId 过滤
+            const streamSessionId = message.scope.session_id;
+            const streamEvent: ChatStreamEvent = message.phase === 'start'
+              ? { type: 'start', delta: message.payload?.delta ?? '' }
+              : message.phase === 'delta'
+                ? { type: 'delta', delta: message.payload?.delta ?? '' }
+                : message.phase === 'complete'
+                  ? { type: 'complete' }
+                  : { type: 'error', error: message.payload?.error ?? 'Unknown agent loop error', runId: message.payload?.stream_id ?? 'unknown' };
+            streamSnapshotsRef.current[streamSessionId] = reduceChatStreamSnapshot(
+              streamSnapshotsRef.current[streamSessionId] ?? INITIAL_CHAT_STREAM_SNAPSHOT,
+              streamEvent,
+            );
 
-            if (message.phase === 'complete') {
+            // 现有 currentSessionId 过滤转发逻辑保持不变
+            if (streamSessionId === currentSessionId) {
+              // Notify streaming subscribers (TabChat / useChatStream)
+              streamListenersRef.current.forEach(cb => cb({ sessionId: streamSessionId, snapshot: streamSnapshotsRef.current[streamSessionId] }));
+
+              if (message.phase === 'complete') {
               Promise.all([
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', currentSessionId] }),
                 queryClient.invalidateQueries({ queryKey: ['session', 'commands', currentSessionId] }),
@@ -105,6 +130,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                   }
                 }
               }
+              }
             }
           }
 
@@ -129,6 +155,22 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             }
 
             if (status === 'idle') {
+              // 流式快照：idle 带错误则记入快照，否则全清（现有逻辑保持不动）
+              if (eventSessionId) {
+                const idleError = (message.payload as any)?.error;
+                const snapshotEvent: ChatStreamEvent = (typeof idleError === 'string' && idleError)
+                  ? { type: 'error', error: idleError, runId: 'runtime-status' }
+                  : { type: 'runtime_idle' };
+                streamSnapshotsRef.current[eventSessionId] = reduceChatStreamSnapshot(
+                  streamSnapshotsRef.current[eventSessionId] ?? INITIAL_CHAT_STREAM_SNAPSHOT,
+                  snapshotEvent,
+                );
+                // 通知流式订阅者（useChatStream 需要实时拿到 idle/error 快照）
+                if (eventSessionId === currentSessionId) {
+                  streamListenersRef.current.forEach(cb => cb({ sessionId: eventSessionId, snapshot: streamSnapshotsRef.current[eventSessionId] }));
+                }
+              }
+
               const idleError = (message.payload as any)?.error;
               if (idleError && typeof idleError === 'string' && idleError && eventSessionId === currentSessionId) {
                 runtimeErrorListenersRef.current.forEach(cb => cb({ sessionId: eventSessionId!, error: idleError }));
@@ -259,7 +301,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     };
   }, []); // Only on mount
 
-  const subscribeToStream = useCallback((cb: (msg: any) => void): (() => void) => {
+  const subscribeToStream = useCallback((cb: (stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => void): (() => void) => {
     streamListenersRef.current.add(cb);
     return () => { streamListenersRef.current.delete(cb); };
   }, []);
@@ -278,8 +320,51 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     socketRef.current?.sendRaw?.(msg);
   }, []);
 
+  // useChatStream：按 sessionId 读取全局流式快照，80ms 节流合并更新（trailing flush 保证最终内容完整）
+  const useChatStreamImpl = (sessionId: string | null): ChatStreamSnapshot => {
+    const key = sessionId ?? '';
+    const [snapshot, setSnapshot] = useState<ChatStreamSnapshot>(
+      () => streamSnapshotsRef.current[key] ?? INITIAL_CHAT_STREAM_SNAPSHOT,
+    );
+    const latestRef = useRef<ChatStreamSnapshot>(snapshot);
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+      // sessionId 变化：立即同步最新快照并重置节流定时器（跳过节流）
+      latestRef.current = streamSnapshotsRef.current[key] ?? INITIAL_CHAT_STREAM_SNAPSHOT;
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      setSnapshot(latestRef.current);
+
+      const listener = (stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => {
+        if (stream.sessionId !== key) return;
+        // 回调只存最新快照，无 pending 定时器时才起 80ms 定时器，触发时合并 setState
+        latestRef.current = stream.snapshot;
+        if (timerRef.current == null) {
+          timerRef.current = setTimeout(() => {
+            timerRef.current = null;
+            setSnapshot(latestRef.current);
+          }, 80);
+        }
+      };
+      streamListenersRef.current.add(listener);
+      return () => {
+        streamListenersRef.current.delete(listener);
+        // 卸载清理定时器
+        if (timerRef.current) {
+          clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+      };
+    }, [key]);
+
+    return snapshot;
+  };
+
   return (
-    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, subscribeToRuntimeErrors, subscribeToMessages, sendRaw }}>
+    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, subscribeToRuntimeErrors, subscribeToMessages, sendRaw, chatStream: { useChatStream: useChatStreamImpl } }}>
       {children}
     </WebSocketContext.Provider>
   );
@@ -293,4 +378,9 @@ export function useWebSocket() {
 
 export function useWebSocketConnected() {
   return useWebSocket().connected;
+}
+
+// 按 sessionId 读取全局流式快照（内部经 context 分发到 provider 内的实现）
+export function useChatStream(sessionId: string | null): ChatStreamSnapshot {
+  return useWebSocket().chatStream.useChatStream(sessionId);
 }
