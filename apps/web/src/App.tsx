@@ -845,7 +845,6 @@ export default function App() {
                   onStop={handleStop}
                   sending={sendMessageMut.isPending}
                   runtimeStatus={runtimeStatus}
-                  sessionTitle={sessionInfo?.session.title}
                   selectedSessionId={selectedSessionId}
                   sendShortcutMode={sendShortcutMode}
                   models={modelsQuery.data ?? []}
