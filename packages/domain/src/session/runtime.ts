@@ -98,6 +98,9 @@ export async function markSessionIdle(db: RoleManagerDb, sessionId: string, time
   }).where(eq(sessions.id, sessionId));
 }
 
+/** planner 首条消息时注入角色提示词与用户内容之间的分隔串（api 层剥离前缀时引用，勿单独改动） */
+export const MERGED_USER_MESSAGE_SEPARATOR = '\n\n请尊重用户的语言习惯，现在用户说：\n\n';
+
 export async function startSessionRun(input: StartSessionRunInput) {
   const startedAt = input.startedAt ?? new Date();
   const safetyTimeoutMs = input.safetyTimeoutMs ?? (() => {
@@ -183,7 +186,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
   // as a separate LLM turn, breaking the single-turn merge semantics.
   let finalContent = input.content;
   if (isFirst && runtimeState?.prompt && input.content) {
-    finalContent = `${runtimeState.prompt}\n\n请尊重用户的语言习惯，现在用户说：\n\n${input.content}`;
+    finalContent = `${runtimeState.prompt}${MERGED_USER_MESSAGE_SEPARATOR}${input.content}`;
     console.log('[session-runtime] merged prompt + user message (first conversation)', { sessionId: input.sessionId });
   } else if (isFirst && runtimeState?.prompt) {
     // spawn_session: content is empty, just inject prompt
