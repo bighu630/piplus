@@ -10,12 +10,14 @@ import { setRequestContext, getRequestContext, setCrossProjectWait, clearCrossPr
 import { getSubagentTimeoutMs } from '../settings/service';
 
 const WRITEBACK_REMINDER_INTERVAL_MS = 15 * 1000;
-const MAX_WRITEBACK_REMINDERS = 2;
+const MAX_WRITEBACK_REMINDERS = 3;
+const MAX_NO_OUTPUT_REMINDERS = 1;
 
 /**
  * 决定对空闲子会话的下一步动作（纯函数，便于测试）。
  * 语义与 wait 循环保持一致：先查间隔（间隔未到 → null，即使已达上限也不触发 failed），
  * 再查上限（达上限 → failed），否则返回 remind。
+ * 上限按场景区分：无输出（hasNoOutput）仅 1 次，有输出可重复 3 次。
  * 发送给子代理的 reminder 文案统一为英文：子代理多为英文系统提示，中文指令可能被忽略；
  * 返回给父代理的 failed 消息保持中文（那是给父代理看的）。
  */
@@ -27,7 +29,8 @@ export function decideReminderAction(params: {
 }): { action: 'remind'; message: string } | { action: 'failed'; message: string; error: string } | null {
   const { reminderCount, lastReminderAt, now, hasNoOutput } = params;
   if (now - lastReminderAt < WRITEBACK_REMINDER_INTERVAL_MS) return null;
-  if (reminderCount >= MAX_WRITEBACK_REMINDERS) {
+  const maxReminders = hasNoOutput ? MAX_NO_OUTPUT_REMINDERS : MAX_WRITEBACK_REMINDERS;
+  if (reminderCount >= maxReminders) {
     return hasNoOutput
       ? { action: 'failed', message: '子会话执行失败：模型未产生任何输出', error: '模型未产生任何输出' }
       : { action: 'failed', message: '子会话多次提醒后仍未写回结果', error: '子会话未写回结果' };

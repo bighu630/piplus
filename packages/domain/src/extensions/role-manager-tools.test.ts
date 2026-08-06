@@ -1706,31 +1706,36 @@ describe('decideReminderAction', () => {
   });
 
   test('returns remind when interval elapsed and reminders remain (normal → English reminder)', () => {
-    const result = decideReminderAction({ reminderCount: 1, lastReminderAt: 0, now: 15_000, hasNoOutput: false });
-    expect(result).toEqual({
-      action: 'remind',
-      message: 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.',
-    });
+    // 有输出场景上限 3 次：reminderCount 0/1/2 均在限内
+    for (const reminderCount of [0, 1, 2]) {
+      const result = decideReminderAction({ reminderCount, lastReminderAt: 0, now: 15_000, hasNoOutput: false });
+      expect(result).toEqual({
+        action: 'remind',
+        message: 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.',
+      });
+    }
   });
 
-  test('returns failed when interval elapsed and reminders exhausted', () => {
-    const withOutput = decideReminderAction({ reminderCount: 2, lastReminderAt: 0, now: 15_000, hasNoOutput: false });
-    expect(withOutput).toEqual({
-      action: 'failed',
-      message: '子会话多次提醒后仍未写回结果',
-      error: '子会话未写回结果',
-    });
-
-    const noOutput = decideReminderAction({ reminderCount: 2, lastReminderAt: 0, now: 15_000, hasNoOutput: true });
-    expect(noOutput).toEqual({
+  test('returns failed when no-output reminders exhausted (max 1)', () => {
+    const result = decideReminderAction({ reminderCount: 1, lastReminderAt: 0, now: 15_000, hasNoOutput: true });
+    expect(result).toEqual({
       action: 'failed',
       message: '子会话执行失败：模型未产生任何输出',
       error: '模型未产生任何输出',
     });
   });
 
+  test('returns failed when normal reminders exhausted (max 3)', () => {
+    const result = decideReminderAction({ reminderCount: 3, lastReminderAt: 0, now: 15_000, hasNoOutput: false });
+    expect(result).toEqual({
+      action: 'failed',
+      message: '子会话多次提醒后仍未写回结果',
+      error: '子会话未写回结果',
+    });
+  });
+
   test('returns null when reminders exhausted but interval not elapsed (keeps waiting)', () => {
-    expect(decideReminderAction({ reminderCount: 2, lastReminderAt: 0, now: 14_000, hasNoOutput: false })).toBeNull();
-    expect(decideReminderAction({ reminderCount: 5, lastReminderAt: 0, now: 14_000, hasNoOutput: true })).toBeNull();
+    expect(decideReminderAction({ reminderCount: 3, lastReminderAt: 0, now: 14_000, hasNoOutput: false })).toBeNull();
+    expect(decideReminderAction({ reminderCount: 1, lastReminderAt: 0, now: 14_000, hasNoOutput: true })).toBeNull();
   });
 });
