@@ -183,7 +183,7 @@ export default function RoleManager({
                   {renderRoleIcon(newRoleIcon, 'w-5 h-5 text-slate-600 dark:text-slate-300')}
                 </button>
                 {showIconPicker === 'new' && (
-                  <div className="absolute z-20 mt-1 p-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg grid grid-cols-8 gap-1 w-72">
+                  <div className="absolute z-20 right-0 top-full mt-1 p-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg grid grid-cols-8 gap-1 w-72 max-w-[calc(100vw-2rem)] max-h-64 overflow-y-auto">
                     {ROLE_ICON_NAMES.map((name) => (
                       <button
                         key={name}
@@ -405,7 +405,7 @@ export default function RoleManager({
                                     {renderRoleIcon(editingIcon || defaultRoleIcon(), 'w-5 h-5 text-slate-600 dark:text-slate-300')}
                                   </button>
                                   {showIconPicker === tpl.id && (
-                                    <div className="absolute z-20 mt-1 p-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg grid grid-cols-8 gap-1 w-72">
+                                    <div className="absolute z-20 left-0 top-full mt-1 p-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg grid grid-cols-8 gap-1 w-72 max-w-[calc(100vw-2rem)] max-h-64 overflow-y-auto">
                                       {ROLE_ICON_NAMES.map((name) => (
                                         <button
                                           key={name}

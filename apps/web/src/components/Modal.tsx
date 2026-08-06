@@ -45,7 +45,7 @@ export default function Modal({
         </div>
 
         {/* Scrollable body content */}
-        <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+        <div className="flex-1 overflow-y-auto overflow-x-hidden pr-1 space-y-4">
           {children}
         </div>
       </div>

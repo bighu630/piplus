@@ -1401,7 +1401,7 @@ function TabChat({
             <img
               src={imageBlockToDataUrl(previewImage)!}
               alt={previewImage.filename ?? 'preview'}
-              className="max-h-[70vh] w-auto rounded-xl border border-slate-200 dark:border-slate-700"
+              className="max-h-[70vh] max-w-full w-auto rounded-xl border border-slate-200 dark:border-slate-700"
             />
           </div>
         )}
