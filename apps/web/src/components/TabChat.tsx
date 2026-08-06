@@ -21,7 +21,7 @@ import Modal from './Modal';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
 import ChatInput from './ChatInput';
-import { useWebSocket } from '../lib/ws-provider';
+import { useChatStream, useWebSocket } from '../lib/ws-provider';
 
 interface ModelOption {
   provider: string;
@@ -207,13 +207,10 @@ function TabChat({
   const prevScrollHeightRef = useRef<number | null>(null);
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
   const sessionJustSwitchedRef = useRef(false);
-  const [streamNote, setStreamNote] = useState('');
-  const [streamingContent, setStreamingContent] = useState('');
-  const streamingContentRef = useRef('');
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
-  const [pendingAssistantContent, setPendingAssistantContent] = useState<string | null>(null);
-  const [runtimeErrors, setRuntimeErrors] = useState<Array<{runId: string; error: string}>>([]);
-  const { subscribeToStream, subscribeToRuntimeErrors, connected: wsConnected } = useWebSocket();
+  const { connected: wsConnected } = useWebSocket();
+  // 流式快照统一由 ws-provider 按 sessionId 管理（80ms 节流），本组件只消费
+  const { phase, streamingContent, streamNote, runtimeErrors } = useChatStream(selectedSessionId ?? null);
 
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
@@ -240,6 +237,8 @@ function TabChat({
     (msg.content_blocks ?? []).filter((block) => block.type === 'text');
 
   // 将刚完成的 streaming 内容作为占位消息加入，避免 query 刷新前的闪白
+  // 由快照推导：仅 complete 阶段保留内容，展示到被真实消息确认或下一轮流开始
+  const pendingAssistantContent = phase === 'complete' && streamingContent ? streamingContent : null;
   // 用 useMemo 判断当前 pending 内容是否已被真实消息确认
   const pendingAssistantConfirmed = useMemo(() => {
     if (!pendingAssistantContent) return false;
@@ -247,13 +246,6 @@ function TabChat({
       m.role === 'assistant' && m.content_text === pendingAssistantContent,
     );
   }, [messages, pendingAssistantContent]);
-
-  // 当真实消息已包含 pending 内容时，清除它
-  useEffect(() => {
-    if (pendingAssistantConfirmed) {
-      setPendingAssistantContent(null);
-    }
-  }, [pendingAssistantConfirmed]);
 
   const allMessages = [...messages];
   // Append pending user messages that haven't been confirmed.
@@ -377,13 +369,11 @@ function TabChat({
     }
   }, [runtimeStatus, messages.length]);
 
-  // Clear stream state when runtime transitions from running to idle
+  // 运行结束（running→idle）时清空暂存用户消息；流式快照由 ws-provider 自行重置
   const prevRuntimeStatus = useRef(runtimeStatus);
   useEffect(() => {
     if (runtimeStatus === 'idle' && prevRuntimeStatus.current === 'running') {
-      setStreamNote('');
       setPendingUserMessages([]);
-      setPendingAssistantContent(null);
     }
     prevRuntimeStatus.current = runtimeStatus;
   }, [runtimeStatus]);
@@ -434,51 +424,11 @@ function TabChat({
     isNearBottomRef.current = true;
   }, [displayMessages, streamingContent, selectedSessionId]);
 
-  // Subscribe to WS stream events（ws-provider 已按 sessionId 累积快照，回调收到 { sessionId, snapshot }）
-  useEffect(() => {
-    return subscribeToStream(({ sessionId: streamSessionId, snapshot }) => {
-      // 兜底过滤：provider 已按当前会话转发，这里防止切会话瞬间收到旧会话事件
-      if (streamSessionId !== selectedSessionId) return;
-      if (snapshot.phase === 'streaming') {
-        // start 事件已由 reducer 重置内容/错误，delta 事件已累积——快照为全量，直接整体覆盖
-        setStreamingContent(snapshot.streamingContent);
-        streamingContentRef.current = snapshot.streamingContent;
-        setRuntimeErrors([]);
-        setStreamNote(snapshot.streamNote);
-      } else if (snapshot.phase === 'complete') {
-        setStreamNote('');
-        setPendingUserMessages([]);
-        // 保存流式内容，在 query 刷新前作为占位消息显示
-        setPendingAssistantContent(snapshot.streamingContent);
-        setStreamingContent('');
-      } else if (snapshot.phase === 'error') {
-        setRuntimeErrors(snapshot.runtimeErrors);
-        setStreamingContent('');
-      }
-      // phase === 'idle'：快照已被重置，本组件状态由 complete/error 或切会话逻辑处理
-    });
-  }, [subscribeToStream, selectedSessionId]);
-
-  // Clear streaming state when switching sessions
-  useEffect(() => {
-    setStreamingContent('');
-    setStreamNote('');
-    setPendingUserMessages([]);
-    setRuntimeErrors([]);
-    setPendingAssistantContent(null);
-    streamingContentRef.current = '';
-  }, [selectedSessionId]);
-
-  // Subscribe to runtime errors from ws-provider
-  useEffect(() => {
-    return subscribeToRuntimeErrors(({ error }) => {
-      setRuntimeErrors([{ runId: 'runtime-status', error }]);
-    });
-  }, [subscribeToRuntimeErrors]);
+  // 流式订阅已迁移至 useChatStream：ws-provider 按 sessionId 累积快照（含切会话自动切换），
+  // 不再需要本地订阅 effect 与切会话清空逻辑
 
   // Internal send handler that manages pending user messages
   const handleSendInternal = useCallback(async (content: string, attachments: SessionMessageImageAttachment[]) => {
-    setRuntimeErrors([]);
     const optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const imageBlocks: ChatImageContentBlockDTO[] = attachments.map((attachment) => ({
       type: 'image',
@@ -503,13 +453,24 @@ function TabChat({
     setPendingUserMessages((prev) => [...prev, optimisticMessage]);
     try {
       await onSend(content, attachments);
-      // 发送成功后立即移除暂存消息，避免 query 返回前重复展示
-      setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      // 成功后不移除：等待 messages query 轮询拉到真实消息后由 reconcile 确认，
+      // 避免 POST 返回与 refetch 完成之间的窗口期用户消息闪白（60s 兜底见下方 effect）
     } catch {
       setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       throw new Error('send_failed');
     }
   }, [onSend]);
+
+  // 兜底：乐观消息 60s 未被真实消息确认则强制移除（正常由 refetch/1.5s 轮询确认）
+  useEffect(() => {
+    if (pendingUserMessages.length === 0) return;
+    const timers = pendingUserMessages.map((pm) =>
+      setTimeout(() => {
+        setPendingUserMessages((prev) => prev.filter((m) => m.id !== pm.id));
+      }, 60_000),
+    );
+    return () => timers.forEach((t) => clearTimeout(t));
+  }, [pendingUserMessages]);
 
   // 通用复制逻辑：navigator.clipboard 优先，fallback textarea + execCommand
   const copyText = async (text: string) => {
