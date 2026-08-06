@@ -31,7 +31,7 @@ import ProviderModal from './components/ProviderModal';
 import ProjectSettingsModal from './components/ProjectSettingsModal';
 import SettingsPanel from './components/SettingsPanel';
 import { LoginScreen } from './components/LoginScreen';
-import { useWebSocket } from './lib/ws-provider';
+import { useWebSocket, useWebSocketConnected } from './lib/ws-provider';
 import {
   useAuthSession,
   useTree,
@@ -338,7 +338,8 @@ export default function App() {
   const archiveProjectMut = useArchiveProjectMutation();
   const setProjectPinnedMut = useSetProjectPinnedMutation();
   const deleteProjectMut = useDeleteProjectMutation();
-  const { connected: wsConnected, localRuntimeStatusBySession, setSessionContext, subscribeToMessages, sendRaw } = useWebSocket();
+  const { localRuntimeStatusBySession, setSessionContext, subscribeToMessages, sendRaw } = useWebSocket();
+  const wsConnected = useWebSocketConnected();
   const currentSessionNode = selectedSessionId ? findSessionNode(tree, selectedSessionId) : null;
   // localRuntimeStatusBySession is updated immediately from WS runtime_status_changed events,
   // before async query refetches complete. This prevents stale query data from
@@ -711,6 +712,11 @@ export default function App() {
       </div>
 
       <div className={`${isContentVisible ? 'flex' : 'hidden'} w-full flex-1 min-w-0 flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-900 relative`}>
+        {!wsConnected && (
+          <div className="shrink-0 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 px-4 py-1.5 text-center text-[11px] font-medium text-amber-700 dark:text-amber-300">
+            连接已断开，正在重连…
+          </div>
+        )}
         <header className={`border-b border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 shrink-0 select-none ${isMobile ? 'px-4 py-2' : 'px-6 py-2 flex flex-wrap items-center justify-between'}`}>
           {isMobile ? (
             <>
