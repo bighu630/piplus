@@ -416,6 +416,10 @@ function TabChat({
       created_at: new Date().toISOString(),
     };
     setPendingUserMessages((prev) => [...prev, optimisticMessage]);
+    // 发送消息后强制开启底部跟随：乐观消息插入渲染后由滚动协调 effect 吸底，
+    // 无论用户之前在哪个位置都能看到新消息与回复
+    isNearBottomRef.current = true;
+    setIsNearBottom(true);
     try {
       await onSend(content, attachments);
       // 成功后不移除：等待 messages query 轮询拉到真实消息后由 reconcile 确认，
