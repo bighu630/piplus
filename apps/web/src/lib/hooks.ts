@@ -287,8 +287,8 @@ export function useDeleteSessionFileMutation(sessionId: string | null) {
 export function useCreateProjectMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (params: { name: string; mode?: string; path?: string; repoUrl?: string; model?: ModelInfo | null; gitConfig?: { userName?: string; userEmail?: string; token?: string } | null }) =>
-      createProject(params.name, params.mode, params.path, params.repoUrl, params.model ?? null, params.gitConfig),
+    mutationFn: (params: { name: string; mode?: string; path?: string; repoUrl?: string; model?: ModelInfo | null; gitConfig?: { userName?: string; userEmail?: string; token?: string } | null; roleConfig?: Record<string, RoleConfigEntry | null> }) =>
+      createProject(params.name, params.mode, params.path, params.repoUrl, params.model ?? null, params.gitConfig, params.roleConfig),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['tree'] });
     },

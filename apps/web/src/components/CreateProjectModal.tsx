@@ -1,7 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Modal from './Modal';
 import Select from './Select';
 import { PlusCircle } from 'lucide-react';
+import { useRoleTemplates } from '../lib/hooks';
+import { renderRoleIcon } from '../lib/role-icons';
+import type { RoleConfigEntry } from '../lib/api';
 
 interface CreateProjectModalProps {
   isOpen: boolean;
@@ -23,6 +26,25 @@ const ROLE_CONFIG_KEYS = [
 ];
 
 const CONFIGURABLE_ROLE_KEYS = ROLE_CONFIG_KEYS.filter((r) => r.key !== 'planner');
+
+/**
+ * Returns all role keys (built-in + custom) with labels for the role-config tab.
+ * Built-in roles keep their order, custom roles are appended alphabetically.
+ */
+function getAllRoleKeys(templates: Array<{ key: string; name: string; isBuiltin: boolean }> | undefined): Array<{ key: string; label: string }> {
+  const builtinKeys = new Set(ROLE_CONFIG_KEYS.map((r) => r.key));
+  const customTemplates = (templates ?? []).filter((t) => !builtinKeys.has(t.key));
+  const seenCustom = new Set<string>();
+  const customRoles: Array<{ key: string; label: string }> = [];
+  for (const t of customTemplates) {
+    if (!seenCustom.has(t.key)) {
+      seenCustom.add(t.key);
+      customRoles.push({ key: t.key, label: t.name });
+    }
+  }
+  customRoles.sort((a, b) => a.key.localeCompare(b.key));
+  return [...ROLE_CONFIG_KEYS, ...customRoles];
+}
 
 const THINKING_LABELS: Record<string, string> = {
   off: '思考：关',
@@ -64,9 +86,42 @@ export default function CreateProjectModal({
   const [createProjectModelKey, setCreateProjectModelKey] = useState('');
   const [createPlannerThinkingLevel, setCreatePlannerThinkingLevel] = useState('');
   const [createProjectRoleModels, setCreateProjectRoleModels] = useState<Record<string, Array<{ provider: string; id: string; thinkingLevel?: string | null }>>>({});
+  const [createRoleConfig, setCreateRoleConfig] = useState<Record<string, RoleConfigEntry>>({});
   const [createGitUserName, setCreateGitUserName] = useState('');
   const [createGitUserEmail, setCreateGitUserEmail] = useState('');
   const [createGitToken, setCreateGitToken] = useState('');
+  const roleTemplatesQuery = useRoleTemplates();
+
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) {
+      wasOpenRef.current = false;
+      return;
+    }
+    // 刚打开弹窗：重置为默认值（内置启用内置版本 + 自定义禁用）
+    if (!wasOpenRef.current) {
+      wasOpenRef.current = true;
+      const defaults: Record<string, RoleConfigEntry> = {};
+      for (const r of ROLE_CONFIG_KEYS) defaults[r.key] = { enabled: true, version: '内置' };
+      setCreateRoleConfig(defaults);
+    }
+    // 模板数据到达/刷新时补全缺失的自定义角色（不覆盖用户已编辑项）
+    const builtinKeys = new Set(ROLE_CONFIG_KEYS.map((r) => r.key));
+    const customTemplates = (roleTemplatesQuery.data ?? []).filter((t) => !builtinKeys.has(t.key));
+    if (customTemplates.length > 0) {
+      setCreateRoleConfig((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const t of customTemplates) {
+          if (!next[t.key]) {
+            next[t.key] = { enabled: false };
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+  }, [isOpen, roleTemplatesQuery.data]);
 
   const handleCreateProject = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -91,6 +146,7 @@ export default function CreateProjectModal({
         gitConfig: createGitUserName || createGitUserEmail || createGitToken
           ? { userName: createGitUserName || undefined, userEmail: createGitUserEmail || undefined, token: createGitToken || undefined }
           : undefined,
+        roleConfig: createRoleConfig,
       });
       // Save role default models after project creation
       const mergedRoleDefaults: Record<string, any> = {};
@@ -123,12 +179,13 @@ export default function CreateProjectModal({
       setCreateProjectModelKey('');
       setCreatePlannerThinkingLevel('');
       setCreateProjectRoleModels({});
+      setCreateRoleConfig({});
       setCreateGitUserName('');
       setCreateGitUserEmail('');
       setCreateGitToken('');
       onCreated(result.projectId, result.sessionId);
     } catch {}
-  }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, createProjectRoleModels, setProjectRoleModelsMut, onClose, onCreated]);
+  }, [createName, createMode, createPath, createRepoUrl, createProjectModelKey, createProjectMut, createProjectRoleModels, createRoleConfig, setProjectRoleModelsMut, onClose, onCreated]);
 
   const handleCreateProjectRoleModelChange = useCallback((roleKey: string, index: number, value: string) => {
     setCreateProjectRoleModels((prev) => {
@@ -238,6 +295,68 @@ export default function CreateProjectModal({
         </div>
         <details className="group">
           <summary className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300 select-none">
+            角色设置
+          </summary>
+          <div className="mt-2 space-y-2 pl-2 border-l-2 border-slate-200 dark:border-slate-800">
+            {getAllRoleKeys(roleTemplatesQuery.data).map((role) => {
+              const config = createRoleConfig[role.key] ?? {};
+              const roleEnabled = config.enabled !== false;
+              const roleVersions = (roleTemplatesQuery.data ?? [])
+                .filter((t) => t.key === role.key)
+                .sort((a, b) => String(b.version).localeCompare(String(a.version), undefined, { numeric: true }));
+              const isBuiltin = ROLE_CONFIG_KEYS.some((r) => r.key === role.key);
+              return (
+                <div key={role.key} className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 px-3 py-2">
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="mr-1">{renderRoleIcon(roleVersions[0]?.icon, 'w-4 h-4')}</span>
+                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 w-24 shrink-0">{role.label}</span>
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500 w-16 shrink-0">{role.key}</span>
+                    <div className="flex-1 min-w-0 relative">
+                      <select
+                        value={config.version ?? ''}
+                        onChange={(e) => setCreateRoleConfig((prev) => ({
+                          ...prev,
+                          [role.key]: { ...prev[role.key], version: e.target.value || undefined },
+                        }))}
+                        className="w-full px-2 py-1 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+                      >
+                        {isBuiltin ? (
+                          <option value="内置">内置</option>
+                        ) : (
+                          <>
+                            <option value="">使用最新版本</option>
+                            {roleVersions.map((v) => (
+                              <option key={v.id} value={v.version}>{v.version === '内置' ? '内置' : `v${v.version}`}</option>
+                            ))}
+                          </>
+                        )}
+                      </select>
+                      {!roleEnabled && (
+                        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-50/70 dark:bg-slate-950/70">
+                          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">角色未启用</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer ml-3 shrink-0">
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={roleEnabled}
+                      onChange={(e) => setCreateRoleConfig((prev) => ({
+                        ...prev,
+                        [role.key]: { ...prev[role.key], enabled: e.target.checked },
+                      }))}
+                    />
+                    <div className="w-9 h-5 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                </div>
+              );
+            })}
+          </div>
+        </details>
+        <details className="group">
+          <summary className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5 cursor-pointer hover:text-slate-700 dark:hover:text-slate-300 select-none">
             角色默认模型（可选）
           </summary>
           <div className="mt-2 space-y-3 pl-2 border-l-2 border-slate-200 dark:border-slate-800">
@@ -323,7 +442,7 @@ export default function CreateProjectModal({
           </div>
         </details>
         <div className="flex space-x-2 pt-3 justify-end border-t border-slate-150 dark:border-slate-800">
-          <button type="button" onClick={() => { onClose(); setCreateProjectRoleModels({}); }} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
+          <button type="button" onClick={() => { onClose(); setCreateProjectRoleModels({}); setCreateRoleConfig({}); }} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
           <button type="submit" disabled={createProjectMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs hover:shadow-xs transition cursor-pointer disabled:opacity-50">{createProjectMut.isPending ? '创建中…' : '确认创建'}</button>
         </div>
       </form>

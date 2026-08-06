@@ -51,6 +51,28 @@ export function registerProjectRoutes(app: Hono) {
           thinkingLevel: requestedModel.thinkingLevel ?? null,
         }
       : null;
+    const roleConfig = (body as { role_config?: Record<string, { enabled?: boolean; version?: string } | null> | null }).role_config;
+
+    // 校验 role_config（与 PUT /:projectId/role-config 的校验规则一致）：可为 undefined/null，否则必须是对象，
+    // 每个 value 必须是对象或 null，enabled 必须是 boolean、version 必须是 string
+    if (roleConfig !== undefined && roleConfig !== null) {
+      if (typeof roleConfig !== 'object' || Array.isArray(roleConfig)) {
+        return c.json({ error: { code: 'VALIDATION_ERROR', message: 'role_config must be a JSON object mapping role keys to config objects' } }, 400);
+      }
+      for (const [roleKey, config] of Object.entries(roleConfig)) {
+        if (config !== null && typeof config === 'object') {
+          const roleCfg = config as Record<string, unknown>;
+          if (roleCfg.enabled !== undefined && typeof roleCfg.enabled !== 'boolean') {
+            return c.json({ error: { code: 'VALIDATION_ERROR', message: `enabled for '${roleKey}' must be boolean` } }, 400);
+          }
+          if (roleCfg.version !== undefined && typeof roleCfg.version !== 'string') {
+            return c.json({ error: { code: 'VALIDATION_ERROR', message: `version for '${roleKey}' must be string` } }, 400);
+          }
+        } else if (config !== null) {
+          return c.json({ error: { code: 'VALIDATION_ERROR', message: `Value for '${roleKey}' must be an object or null` } }, 400);
+        }
+      }
+    }
 
     if (mode === 'existing') {
       if (!path) return c.json({ error: { code: 'INVALID_PATH', message: 'Path is required' } }, 400);
@@ -105,7 +127,7 @@ export function registerProjectRoutes(app: Hono) {
           },
         }, 500);
       }
-      const result = await createProjectWithPlanner(db, piClient, repoName, userId, targetPath, 'git_clone', repoUrl, plannerModel, gitConfigJson);
+      const result = await createProjectWithPlanner(db, piClient, repoName, userId, targetPath, 'git_clone', repoUrl, plannerModel, gitConfigJson, roleConfig);
       await createAuditService(db).record(userId, "project.created", "project", result.projectId, { name: repoName, path: targetPath, sourceType: 'git_clone', sourceUrl: repoUrl });
       await createAuditService(db).record(userId, "session.created", "session", result.sessionId, { role: "planner", project_id: result.projectId });
       socketHub.broadcast(createEvent('project.created', { project_id: result.projectId }, { project_id: result.projectId }));
@@ -115,7 +137,7 @@ export function registerProjectRoutes(app: Hono) {
     }
 
     // existing mode
-    const result = await createProjectWithPlanner(db, piClient, name, userId, path, 'existing', '', plannerModel, gitConfigJson);
+    const result = await createProjectWithPlanner(db, piClient, name, userId, path, 'existing', '', plannerModel, gitConfigJson, roleConfig);
     await createAuditService(db).record(userId, "project.created", "project", result.projectId, { name });
     await createAuditService(db).record(userId, "session.created", "session", result.sessionId, { role: "planner", project_id: result.projectId });
     socketHub.broadcast(createEvent('project.created', { project_id: result.projectId }, { project_id: result.projectId }));

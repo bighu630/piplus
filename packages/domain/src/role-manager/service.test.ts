@@ -325,4 +325,107 @@ describe('role manager service', () => {
     expect(message?.messageKind).toBe('writeback');
     expect(message?.contentText).toBe('Task completed');
   });
+
+  test('创建项目时初始化 roleConfigJson：内置启用内置版本 + 自定义禁用', async () => {
+    const { db, roleManager } = await setupDomain();
+    // 插入一个自定义模板（非内置），模拟用户自定义角色
+    const now = new Date();
+    await db.insert(roleTemplates).values({
+      id: 'role_custom_test',
+      key: 'custom_role',
+      version: '1.0',
+      name: 'Custom Role',
+      description: 'A user-defined role',
+      basePrompt: '你是自定义角色。',
+      configJson: '{}',
+      createdBy: 'user_seed',
+      ownerType: 'user',
+      visibility: 'public',
+      isBuiltin: false,
+      archivedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    const result = await roleManager.createProjectWithPlanner({
+      name: 'Role Config Init',
+      createdBy: 'user_seed',
+    });
+
+    const [project] = await db.select().from(projects).where(eq(projects.id, result.projectId)).limit(1);
+    const config = JSON.parse(project?.roleConfigJson ?? '{}');
+
+    // 6 个内置角色全部启用内置版本
+    const builtinKeys = ['planner', 'worker', 'reviewer', 'feature_lead', 'bugfix_lead', 'blank'];
+    for (const key of builtinKeys) {
+      expect(config[key]).toEqual({ enabled: true, version: '内置' });
+    }
+    // 自定义角色默认禁用
+    expect(config['custom_role']).toEqual({ enabled: false });
+  });
+
+  test('创建项目时合并 role_config：自定义启用指定版本 + 内置覆盖 enabled', async () => {
+    const { db, roleManager } = await setupDomain();
+    const now = new Date();
+    await db.insert(roleTemplates).values({
+      id: 'role_custom_test',
+      key: 'custom_role',
+      version: '1.0',
+      name: 'Custom Role',
+      description: 'A user-defined role',
+      basePrompt: '你是自定义角色。',
+      configJson: '{}',
+      createdBy: 'user_seed',
+      ownerType: 'user',
+      visibility: 'public',
+      isBuiltin: false,
+      archivedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+    await db.insert(roleTemplates).values({
+      id: 'role_custom_null_test',
+      key: 'custom_role_null',
+      version: '1.0',
+      name: 'Null Custom Role',
+      description: 'A user-defined role',
+      basePrompt: '你是自定义角色。',
+      configJson: '{}',
+      createdBy: 'user_seed',
+      ownerType: 'user',
+      visibility: 'public',
+      isBuiltin: false,
+      archivedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    } as any);
+
+    const result = await roleManager.createProjectWithPlanner({
+      name: 'Role Config Merge',
+      createdBy: 'user_seed',
+      roleConfig: {
+        custom_role: { enabled: true, version: '1.0' },
+        // value 为 null：跳过，保持默认（自定义角色禁用）
+        custom_role_null: null,
+        planner: { enabled: false },
+        // version 为空字符串：清除版本，catalog 回退到最新版本
+        worker: { version: '' },
+      },
+    });
+
+    const [project] = await db.select().from(projects).where(eq(projects.id, result.projectId)).limit(1);
+    const config = JSON.parse(project?.roleConfigJson ?? '{}');
+
+    // 自定义角色：覆盖为启用指定版本
+    expect(config['custom_role']).toEqual({ enabled: true, version: '1.0' });
+    // value 为 null 的 key：跳过合并，保持默认禁用
+    expect(config['custom_role_null']).toEqual({ enabled: false });
+    // 内置角色：enabled 被覆盖为 false，version 保留默认 '内置'
+    expect(config['planner']).toEqual({ enabled: false, version: '内置' });
+    // 内置角色：version 为空字符串被清除（无 version 字段），enabled 保持默认
+    expect(config['worker']).toEqual({ enabled: true });
+    expect(config['worker'].version).toBeUndefined();
+    // 其余内置仍默认
+    expect(config['blank']).toEqual({ enabled: true, version: '内置' });
+  });
 });
