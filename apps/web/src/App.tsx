@@ -9,6 +9,15 @@ import {
   getNotificationPermission,
   requestNotificationPermission,
 } from './lib/notification';
+import {
+  THEME_STORAGE_KEY,
+  applyThemeClass,
+  prefersDarkScheme,
+  readThemePreference,
+  resolveTheme,
+  type ResolvedTheme,
+  type ThemePreference,
+} from './lib/theme';
 import Sidebar from './components/Sidebar';
 import TabChat from './components/TabChat';
 import TabSessionInfo from './components/TabSessionInfo';
@@ -196,14 +205,8 @@ export default function App() {
   const [currentModelSupportsImages, setCurrentModelSupportsImages] = useState<boolean | null>(null);
 
   const initialUrlSessionId = useMemo(() => getSessionIdFromPath(window.location.pathname), []);
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    try {
-      const saved = localStorage.getItem('pi-workspace-theme');
-      return saved === 'dark' ? 'dark' : 'light';
-    } catch {
-      return 'light';
-    }
-  });
+  const [theme, setTheme] = useState<ThemePreference>(readThemePreference);
+  const [systemDark, setSystemDark] = useState<boolean>(() => prefersDarkScheme());
   const [sendShortcutMode, setSendShortcutMode] = useState<SendShortcutMode>(() => {
     try {
       const saved = localStorage.getItem('pi-send-shortcut-mode');
@@ -221,16 +224,43 @@ export default function App() {
   const isSidebarVisible = !isMobile || showMobileSidebar;
   const isContentVisible = !isMobile || !showMobileSidebar;
 
+  // 解析生效主题：system 偏好由 matchMedia 解析，绝不写回用户偏好
+  const resolvedTheme: ResolvedTheme = resolveTheme(theme, systemDark);
+
+  // 仅 system 模式监听系统主题变化
   useEffect(() => {
-    try { localStorage.setItem('pi-workspace-theme', theme); } catch {}
+    if (theme !== 'system') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [theme]);
+
+  // 持久化用户偏好（偏好本身，非解析值）
+  useEffect(() => {
+    try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch {}
+  }, [theme]);
+
+  // dark class 应用到 documentElement（React 挂载后接管 FOUC 脚本设置）
+  useEffect(() => {
+    applyThemeClass(resolvedTheme);
+  }, [resolvedTheme]);
+
+  // highlight.js 样式跟随生效主题
+  useEffect(() => {
     const hljsLinkId = 'hljs-theme';
     const existing = document.getElementById(hljsLinkId);
     if (existing) existing.remove();
     const link = document.createElement('link');
     link.id = hljsLinkId;
     link.rel = 'stylesheet';
-    link.href = theme === 'dark' ? hljsDark : hljsLight;
+    link.href = resolvedTheme === 'dark' ? hljsDark : hljsLight;
     document.head.appendChild(link);
+  }, [resolvedTheme]);
+
+  // 桌面端：偏好变化时同步主进程 nativeTheme.themeSource
+  useEffect(() => {
+    window.piplusConfig?.theme?.setPreference?.(theme);
   }, [theme]);
 
   useEffect(() => {
@@ -645,7 +675,7 @@ export default function App() {
   const isPlannerRoot = sessionInfo?.role_template.key === 'planner' && sessionInfo.lineage.depth === 0;
 
   return (
-    <div className={`flex flex-col md:flex-row h-[100dvh] min-h-0 w-full overflow-hidden overscroll-none bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased ${theme}`}>
+    <div className="flex flex-col md:flex-row h-[100dvh] min-h-0 w-full overflow-hidden overscroll-none bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased">
       <div className={`${isSidebarVisible ? 'flex' : 'hidden'} w-full min-w-0 flex-1 md:w-auto md:flex-none`}>
         <Sidebar
           projects={tree}
@@ -872,7 +902,7 @@ export default function App() {
                     key={selectedSessionId}
                     ref={terminalRef}
                     sessionId={selectedSessionId}
-                    theme={theme}
+                    theme={resolvedTheme}
                     visible={activeTab === 'terminal'}
                     onTerminalMessage={handleTerminalMessage}
                   />
