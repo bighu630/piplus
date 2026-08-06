@@ -430,7 +430,7 @@ function TabChat({
   // Internal send handler that manages pending user messages
   const handleSendInternal = useCallback(async (content: string, attachments: SessionMessageImageAttachment[]) => {
     // 发送新消息时清除旧运行时错误（基线行为，迁移到 provider 快照后经 context 方法恢复）
-    clearStreamRuntimeErrors(selectedSessionId);
+    clearStreamRuntimeErrors(selectedSessionId ?? null);
     const optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const imageBlocks: ChatImageContentBlockDTO[] = attachments.map((attachment) => ({
       type: 'image',
