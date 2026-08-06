@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Settings, RefreshCw, Trash2 } from 'lucide-react';
+import { Settings, RefreshCw, Trash2, Sun, Monitor, Moon } from 'lucide-react';
 import Modal from './Modal';
 import { usePackages, usePackageUpdates, useRoleTemplates, useUpdateRoleTemplateMutation, useCreateRoleTemplateMutation, useDeleteRoleTemplateMutation, useSettings, useUpdateSettingsMutation } from '../lib/hooks';
 
@@ -16,8 +16,8 @@ interface SettingsPanelProps {
   onClose: () => void;
   sendShortcutMode: 'enter' | 'mod_enter';
   onSendShortcutModeChange: (mode: 'enter' | 'mod_enter') => void;
-  theme: 'light' | 'dark';
-  onThemeChange: (theme: 'light' | 'dark') => void;
+  theme: 'light' | 'dark' | 'system';
+  onThemeChange: (theme: 'light' | 'dark' | 'system') => void;
   systemNotificationsEnabled: boolean;
   onToggleSystemNotifications: (enabled: boolean) => Promise<void>;
   notificationPermissionStatus: string;
@@ -100,11 +100,12 @@ export default function SettingsPanel({
                 <button onClick={() => onSendShortcutModeChange('mod_enter')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${sendShortcutMode === 'mod_enter' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>Ctrl/Cmd+Enter 发送</button>
               </div>
             </div>
-            <div className="flex-1 min-w-[200px]">
+            <div className="flex-1 min-w-[240px]">
               <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">主题</label>
               <div className="flex gap-2">
-                <button onClick={() => onThemeChange('light')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'light' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>浅色</button>
-                <button onClick={() => onThemeChange('dark')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer ${theme === 'dark' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}>深色</button>
+                <button onClick={() => onThemeChange('light')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer inline-flex items-center justify-center gap-1.5 ${theme === 'light' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}><Sun size={14} />浅色</button>
+                <button onClick={() => onThemeChange('system')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer inline-flex items-center justify-center gap-1.5 ${theme === 'system' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}><Monitor size={14} />跟随系统</button>
+                <button onClick={() => onThemeChange('dark')} className={`flex-1 px-3 py-2 text-xs font-semibold rounded-lg border transition cursor-pointer inline-flex items-center justify-center gap-1.5 ${theme === 'dark' ? 'bg-blue-50 dark:bg-blue-950/30 border-blue-300 dark:border-blue-800 text-blue-700 dark:text-blue-400' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}><Moon size={14} />深色</button>
               </div>
             </div>
           </div>
