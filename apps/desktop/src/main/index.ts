@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, Menu } from 'electron';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { resolve } from 'node:path';
 import { startApiProcess, stopApiProcess } from './api-process.js';
@@ -83,6 +83,10 @@ async function bootstrap() {
 }
 
 app.whenReady().then(async () => {
+  // Remove the application menu so the menu bar never appears
+  // (Alt must not reveal a hidden menu bar). No-op on macOS.
+  Menu.setApplicationMenu(null);
+
   try {
     await bootstrap();
   } catch (error) {
