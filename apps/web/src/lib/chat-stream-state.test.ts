@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   INITIAL_CHAT_STREAM_SNAPSHOT,
+  createThrottledFlusher,
   reduceChatStreamSnapshot,
 } from './chat-stream-state';
 
@@ -73,5 +74,70 @@ describe('chat stream state reducer', () => {
     );
     expect(snap.streamingContent).toBe('已有内容');
     expect(snap.phase).toBe('streaming');
+  });
+});
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe('createThrottledFlusher', () => {
+  test('连续 push 只 flush 最后一次（合并节流）', async () => {
+    const flushed: number[] = [];
+    const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 5);
+    flusher.push(1);
+    flusher.push(2);
+    flusher.push(3);
+    await wait(30);
+    expect(flushed).toEqual([3]);
+    flusher.dispose();
+  });
+
+  test('immediate=true 立即 flush，不等节流窗口', () => {
+    const flushed: number[] = [];
+    const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 50);
+    flusher.push(1);
+    flusher.push(2, true);
+    expect(flushed).toEqual([2]);
+    flusher.dispose();
+  });
+
+  test('immediate 打断 pending：立即 flush 后不再有定时器 flush', async () => {
+    const flushed: number[] = [];
+    const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 5);
+    flusher.push(1);
+    flusher.push(2, true);
+    expect(flushed).toEqual([2]);
+    await wait(30);
+    expect(flushed).toEqual([2]);
+    flusher.dispose();
+  });
+
+  test('flush 后再次 push 重新起定时器', async () => {
+    const flushed: number[] = [];
+    const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 5);
+    flusher.push(1);
+    await wait(20);
+    expect(flushed).toEqual([1]);
+    flusher.push(2);
+    await wait(20);
+    expect(flushed).toEqual([1, 2]);
+    flusher.dispose();
+  });
+
+  test('dispose 后不再 flush', async () => {
+    const flushed: number[] = [];
+    const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 5);
+    flusher.push(1);
+    flusher.dispose();
+    flusher.push(2);
+    await wait(30);
+    expect(flushed).toEqual([]);
+  });
+
+  test('无 pending timer 时 immediate 也立即 flush', () => {
+    const flushed: number[] = [];
+    const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 50);
+    flusher.push(1, true);
+    expect(flushed).toEqual([1]);
+    flusher.dispose();
   });
 });

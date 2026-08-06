@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
 import { createWorkspaceSocket } from './ws-client';
 import { useQueryClient } from '@tanstack/react-query';
@@ -6,6 +6,7 @@ import { sendSystemNotification } from './notification';
 import { findSessionNode, updateNodeRuntimeStatus } from './tree-utils';
 import {
   INITIAL_CHAT_STREAM_SNAPSHOT,
+  createThrottledFlusher,
   reduceChatStreamSnapshot,
   type ChatStreamEvent,
   type ChatStreamSnapshot,
@@ -19,7 +20,7 @@ interface WebSocketContextValue {
   subscribeToStream: (cb: (stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => void) => () => void;
   chatStream: { useChatStream: (sessionId: string | null) => ChatStreamSnapshot };
   setSessionContext: (sessionId: string | null, projectId: string | null, activeTab: string) => void;
-  subscribeToRuntimeErrors: (cb: (error: {sessionId: string; error: string}) => void) => () => void;
+  clearStreamRuntimeErrors: (sessionId: string | null) => void;
   subscribeToMessages: (cb: (msg: any) => void) => () => void;
   sendRaw: (msg: Record<string, unknown>) => void;
 }
@@ -46,7 +47,6 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const streamListenersRef = useRef<Set<(stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => void>>(new Set());
   // 流式快照：按 sessionId 全局累积，TabChat 卸载/切会话不丢流式内容
   const streamSnapshotsRef = useRef<Record<string, ChatStreamSnapshot>>({});
-  const runtimeErrorListenersRef = useRef<Set<(error: {sessionId: string; error: string}) => void>>(new Set());
   const messageListenersRef = useRef<Set<(msg: any) => void>>(new Set());
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
 
@@ -165,16 +165,16 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                   streamSnapshotsRef.current[eventSessionId] ?? INITIAL_CHAT_STREAM_SNAPSHOT,
                   snapshotEvent,
                 );
+                // 非当前会话的 runtime_idle 快照已无人读取：删除条目防止快照 map 无限增长
+                if (snapshotEvent.type === 'runtime_idle' && eventSessionId !== currentSessionId) {
+                  delete streamSnapshotsRef.current[eventSessionId];
+                }
                 // 通知流式订阅者（useChatStream 需要实时拿到 idle/error 快照）
                 if (eventSessionId === currentSessionId) {
                   streamListenersRef.current.forEach(cb => cb({ sessionId: eventSessionId, snapshot: streamSnapshotsRef.current[eventSessionId] }));
                 }
               }
 
-              const idleError = (message.payload as any)?.error;
-              if (idleError && typeof idleError === 'string' && idleError && eventSessionId === currentSessionId) {
-                runtimeErrorListenersRef.current.forEach(cb => cb({ sessionId: eventSessionId!, error: idleError }));
-              }
               if (eventSessionId === currentSessionId) {
                 Promise.all([
                   queryClient.invalidateQueries({ queryKey: ['session', 'info', currentSessionId] }),
@@ -306,9 +306,16 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     return () => { streamListenersRef.current.delete(cb); };
   }, []);
 
-  const subscribeToRuntimeErrors = useCallback((cb: (error: {sessionId: string; error: string}) => void): (() => void) => {
-    runtimeErrorListenersRef.current.add(cb);
-    return () => { runtimeErrorListenersRef.current.delete(cb); };
+  // 清除指定 session 的运行时错误（发送新消息时调用，避免旧错误残留显示）
+  const clearStreamRuntimeErrors = useCallback((sessionId: string | null) => {
+    const key = sessionId ?? '';
+    const snap = streamSnapshotsRef.current[key];
+    if (snap && snap.runtimeErrors.length > 0) {
+      const next = { ...snap, runtimeErrors: [] };
+      streamSnapshotsRef.current[key] = next;
+      // 通知订阅者同步 useChatStream 的本地 state
+      streamListenersRef.current.forEach(cb => cb({ sessionId: key, snapshot: next }));
+    }
   }, []);
 
   const subscribeToMessages = useCallback((cb: (msg: any) => void): (() => void) => {
@@ -320,51 +327,49 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     socketRef.current?.sendRaw?.(msg);
   }, []);
 
-  // useChatStream：按 sessionId 读取全局流式快照，80ms 节流合并更新（trailing flush 保证最终内容完整）
-  const useChatStreamImpl = (sessionId: string | null): ChatStreamSnapshot => {
+  // ⚠️ hook-in-context 模式：本 hook 经 context 属性（chatStream.useChatStream）暴露给子组件调用。
+  // 它虽在 provider 渲染期间定义，但内部 hook（useState/useRef/useEffect）的 state 归因于调用方 fiber，
+  // 因此只能作为组件顶层 hook 无条件调用，绝不能放进事件回调 / 条件分支 / 循环中。
+  const useChatStreamImpl = useCallback((sessionId: string | null): ChatStreamSnapshot => {
     const key = sessionId ?? '';
     const [snapshot, setSnapshot] = useState<ChatStreamSnapshot>(
       () => streamSnapshotsRef.current[key] ?? INITIAL_CHAT_STREAM_SNAPSHOT,
     );
-    const latestRef = useRef<ChatStreamSnapshot>(snapshot);
-    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
-      // sessionId 变化：立即同步最新快照并重置节流定时器（跳过节流）
-      latestRef.current = streamSnapshotsRef.current[key] ?? INITIAL_CHAT_STREAM_SNAPSHOT;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      setSnapshot(latestRef.current);
+      // sessionId 变化：立即同步最新快照并重置节流器（跳过节流窗口）
+      setSnapshot(streamSnapshotsRef.current[key] ?? INITIAL_CHAT_STREAM_SNAPSHOT);
+
+      // 节流 flush 器：连续 delta 合并为一次 setState；complete/error 立即 flush（不等待窗口，
+      // 否则 complete 与 runtime_idle 在 80ms 内相继到达时被合并，完整内容占位会被跳过）
+      const flusher = createThrottledFlusher<ChatStreamSnapshot>(
+        (value) => setSnapshot(value),
+        80,
+      );
 
       const listener = (stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => {
         if (stream.sessionId !== key) return;
-        // 回调只存最新快照，无 pending 定时器时才起 80ms 定时器，触发时合并 setState
-        latestRef.current = stream.snapshot;
-        if (timerRef.current == null) {
-          timerRef.current = setTimeout(() => {
-            timerRef.current = null;
-            setSnapshot(latestRef.current);
-          }, 80);
-        }
+        flusher.push(
+          stream.snapshot,
+          stream.snapshot.phase === 'complete' || stream.snapshot.phase === 'error',
+        );
       };
       streamListenersRef.current.add(listener);
       return () => {
         streamListenersRef.current.delete(listener);
-        // 卸载清理定时器
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-          timerRef.current = null;
-        }
+        // 卸载 / 切会话清理节流定时器，防止旧会话快照延迟冲刷到新会话视图
+        flusher.dispose();
       };
     }, [key]);
 
     return snapshot;
-  };
+  }, []);
+
+  // 稳定 chatStream context 引用（impl 经 useCallback 固定，memo 不会随 provider 渲染重建）
+  const chatStreamValue = useMemo(() => ({ useChatStream: useChatStreamImpl }), [useChatStreamImpl]);
 
   return (
-    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, subscribeToRuntimeErrors, subscribeToMessages, sendRaw, chatStream: { useChatStream: useChatStreamImpl } }}>
+    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, clearStreamRuntimeErrors, subscribeToMessages, sendRaw, chatStream: chatStreamValue }}>
       {children}
     </WebSocketContext.Provider>
   );

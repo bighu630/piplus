@@ -29,6 +29,52 @@ export type ChatStreamEvent =
   | { type: 'error'; error: string; runId: string }
   | { type: 'runtime_idle' };
 
+// 节流 flush 器：合并高频 push 为最后一次 flush，供 useChatStream 的 80ms 节流使用（纯工具，可单测）
+// 语义：push 存 latest；无 pending timer 时起 setTimeout(delayMs) 后 flush(latest)；
+//       immediate=true 时清 pending timer 立即 flush(latest)；dispose 清理 timer 并禁止后续 flush
+export function createThrottledFlusher<T>(
+  flush: (value: T) => void,
+  delayMs: number,
+): { push: (value: T, immediate?: boolean) => void; dispose: () => void } {
+  let latest: T | undefined = undefined;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  const flushNow = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (disposed) return;
+    flush(latest as T);
+  };
+
+  return {
+    push(value, immediate = false) {
+      if (disposed) return;
+      latest = value;
+      if (immediate) {
+        flushNow();
+        return;
+      }
+      // 无 pending timer 时才起定时器；已有 timer 则仅更新 latest（合并到下一次 flush）
+      if (timer === null) {
+        timer = setTimeout(() => {
+          timer = null;
+          flush(latest as T);
+        }, delayMs);
+      }
+    },
+    dispose() {
+      disposed = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
 export function reduceChatStreamSnapshot(
   snap: ChatStreamSnapshot,
   event: ChatStreamEvent,

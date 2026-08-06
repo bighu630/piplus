@@ -208,7 +208,7 @@ function TabChat({
   const lastChangeTypeRef = useRef<'none' | 'prepend' | 'append'>('none');
   const sessionJustSwitchedRef = useRef(false);
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
-  const { connected: wsConnected } = useWebSocket();
+  const { connected: wsConnected, clearStreamRuntimeErrors } = useWebSocket();
   // 流式快照统一由 ws-provider 按 sessionId 管理（80ms 节流），本组件只消费
   const { phase, streamingContent, streamNote, runtimeErrors } = useChatStream(selectedSessionId ?? null);
 
@@ -429,6 +429,8 @@ function TabChat({
 
   // Internal send handler that manages pending user messages
   const handleSendInternal = useCallback(async (content: string, attachments: SessionMessageImageAttachment[]) => {
+    // 发送新消息时清除旧运行时错误（基线行为，迁移到 provider 快照后经 context 方法恢复）
+    clearStreamRuntimeErrors(selectedSessionId);
     const optimisticId = `optimistic_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const imageBlocks: ChatImageContentBlockDTO[] = attachments.map((attachment) => ({
       type: 'image',
@@ -459,7 +461,7 @@ function TabChat({
       setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       throw new Error('send_failed');
     }
-  }, [onSend]);
+  }, [onSend, clearStreamRuntimeErrors, selectedSessionId]);
 
   // 兜底：乐观消息 60s 未被真实消息确认则强制移除（正常由 refetch/1.5s 轮询确认）
   useEffect(() => {
@@ -471,6 +473,11 @@ function TabChat({
     );
     return () => timers.forEach((t) => clearTimeout(t));
   }, [pendingUserMessages]);
+
+  // 切换会话时清空乐观消息（跨会话 reconcile 不匹配，避免 A 的乐观消息渲染进 B）
+  useEffect(() => {
+    setPendingUserMessages([]);
+  }, [selectedSessionId]);
 
   // 通用复制逻辑：navigator.clipboard 优先，fallback textarea + execCommand
   const copyText = async (text: string) => {
@@ -808,7 +815,7 @@ function TabChat({
                     <button
                       type="button"
                       onClick={() => handleCopyMessage(msg.id, msg.content_text)}
-                      className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer"
+                      className="md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer"
                       title="复制消息"
                     >
                       {copiedMessageId === msg.id ? (
@@ -833,8 +840,8 @@ function TabChat({
           );
         })}
 
-        {/* Streaming content */}
-        {streamingContent && (
+        {/* Streaming content（仅 streaming 阶段渲染，complete 后由占位消息接管，避免重复渲染） */}
+        {phase === 'streaming' && streamingContent && (
           <div className="flex justify-start items-start w-full min-w-0">
             <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
               <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
