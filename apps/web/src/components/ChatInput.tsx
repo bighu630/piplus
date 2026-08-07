@@ -44,6 +44,7 @@ interface ChatInputProps {
   isRunning: boolean;
   sendShortcutMode?: 'enter' | 'mod_enter';
   currentModelSupportsImages?: boolean | null;
+  visionRelayEnabled?: boolean;
   wsConnected?: boolean;
   selectedSessionId: string | null;
   isMobile?: boolean;
@@ -57,6 +58,7 @@ export default function ChatInput({
   isRunning,
   sendShortcutMode,
   currentModelSupportsImages,
+  visionRelayEnabled,
   wsConnected,
   selectedSessionId,
   isMobile,
@@ -79,7 +81,7 @@ export default function ChatInput({
   const availableCommands = commandsQuery.data ?? [];
   const commandJustSelectedRef = useRef(false);
 
-  const canSendImages = currentModelSupportsImages !== false;
+  const canSendImages = currentModelSupportsImages !== false || visionRelayEnabled === true;
 
   const filteredCommands = (() => {
     if (!commandFilter) return availableCommands;
@@ -141,6 +143,10 @@ export default function ChatInput({
         setAttachmentError('当前模型不支持图片输入，请切换到支持图片的模型。');
         return;
       }
+      if (/图片识别失败/i.test(message)) {
+        setAttachmentError('图片识别失败，消息未发送（多模态识别模型不可用），请查看会话中的错误说明。');
+        return;
+      }
       if (/unsupported image mime type/i.test(message)) {
         setAttachmentError('仅支持 PNG、JPEG、WebP、GIF 图片。');
         return;
@@ -197,6 +203,13 @@ export default function ChatInput({
     <div className="shrink-0 px-4 py-2 md:px-5 bg-slate-50 dark:bg-slate-900">
       <div className="mx-auto max-w-[900px]">
         <div className="flex flex-col gap-2">
+          {/* Vision relay hint when current model can't take images directly */}
+          {attachments.length > 0 && currentModelSupportsImages === false && visionRelayEnabled && (
+            <div className="text-[11px] text-amber-600 dark:text-amber-400">
+              当前模型不支持图片输入，图片将由多模态模型识别为文字描述后发送。
+            </div>
+          )}
+
           {/* Attachments preview */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/60 p-2">
@@ -414,7 +427,10 @@ export default function ChatInput({
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isRunning || !canSendImages || attachments.length >= 4}
                 className="flex items-center space-x-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
-                title={isRunning ? '对话进行中，暂时不能添加图片' : canSendImages ? '添加图片' : '当前模型不支持图片输入'}
+                title={isRunning ? '对话进行中，暂时不能添加图片'
+                  : currentModelSupportsImages === false && visionRelayEnabled
+                    ? '当前模型不支持图片输入，将通过多模态模型识别图片'
+                    : canSendImages ? '添加图片' : '当前模型不支持图片输入'}
               >
                 {canSendImages ? (
                   <ImagePlus className="w-3.5 h-3.5" />

@@ -46,6 +46,7 @@ interface TabChatProps {
   models?: ModelOption[];
   currentModelValue?: string;
   currentModelSupportsImages?: boolean | null;
+  visionRelayEnabled?: boolean;
   onModelSelect?: (provider: string, id: string) => void;
   onArchiveSession?: () => void;
   archivePending?: boolean;
@@ -186,6 +187,7 @@ function TabChat({
   models,
   currentModelValue,
   currentModelSupportsImages,
+  visionRelayEnabled,
   onModelSelect,
   onArchiveSession,
   archivePending,
@@ -536,6 +538,29 @@ function TabChat({
           const isUser = msg.role === 'user';
           const isToolCall = msg.message_kind === 'tool_call';
           const isTool = msg.message_kind === 'tool' || msg.role === 'tool';
+          const isErrorKind = msg.message_kind === 'error';
+
+          // Error message (vision relay failure etc.): red notice card
+          if (isErrorKind) {
+            return (
+              <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+                <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
+                  <div className="w-full rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 space-y-1">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-red-700 dark:text-red-400">
+                      <OctagonX className="w-3.5 h-3.5" />
+                      系统提示
+                    </div>
+                    <div className="text-xs text-red-700 dark:text-red-400 whitespace-pre-wrap">
+                      {msg.content_text}
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+                    {new Date(msg.created_at).toLocaleTimeString()}
+                  </span>
+                </div>
+              </div>
+            );
+          }
 
           // Tool call message: collapsible card
           if (isToolCall) {
@@ -997,6 +1022,7 @@ function TabChat({
         isRunning={isRunning}
         sendShortcutMode={sendShortcutMode}
         currentModelSupportsImages={currentModelSupportsImages}
+        visionRelayEnabled={visionRelayEnabled}
         wsConnected={wsConnected}
         selectedSessionId={selectedSessionId ?? null}
         isMobile={isMobile}

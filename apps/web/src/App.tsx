@@ -49,6 +49,7 @@ import {
   useLogoutMutation,
   useModelsStatus,
   useModels,
+  useSettings,
   useSetSessionModelMutation,
   useArchiveProjectMutation,
   useSetProjectPinnedMutation,
@@ -311,6 +312,10 @@ export default function App() {
   const sessionInfoQuery = useSessionInfo(selectedSessionId);
   const sessionInfo = sessionInfoQuery.data;
   const modelsQuery = useModels();
+  const settingsQuery = useSettings();
+  const visionRelayEnabled = settingsQuery.data?.vision_enabled === 'true'
+    && !!settingsQuery.data?.vision_model
+    && settingsQuery.data.vision_model.includes('/');
   const setModelMut = useSetSessionModelMutation();
   const thinkingLevelQuery = useSessionThinkingLevel(selectedSessionId);
   const setThinkingLevelMut = useSetSessionThinkingLevelMutation();
@@ -856,6 +861,7 @@ export default function App() {
                   models={modelsQuery.data ?? []}
                   currentModelValue={sessionInfo?.session.current_model ? `${sessionInfo.session.current_model.provider}/${sessionInfo.session.current_model.id}` : ''}
                   currentModelSupportsImages={currentModelSupportsImages}
+                  visionRelayEnabled={visionRelayEnabled}
                   onModelSelect={handleModelSelect}
                   thinkingLevelValue={thinkingLevelQuery.data?.current_level ?? null}
                   thinkingLevelOptions={thinkingLevelQuery.data?.available_levels}
