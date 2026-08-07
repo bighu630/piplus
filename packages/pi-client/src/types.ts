@@ -113,7 +113,9 @@ export type PiSessionStreamEvent =
   | { type: 'message_end'; sessionId: string; runId: string; messageId?: string }
   | { type: 'error'; sessionId: string; runId: string; messageId?: string; error: string }
   | { type: 'compaction_start'; sessionId: string; reason: 'manual' | 'threshold' | 'overflow' }
-  | { type: 'compaction_end'; sessionId: string; reason: 'manual' | 'threshold' | 'overflow'; aborted: boolean; errorMessage?: string };
+  | { type: 'compaction_end'; sessionId: string; reason: 'manual' | 'threshold' | 'overflow'; aborted: boolean; errorMessage?: string }
+  // 无 UI 载荷的活动信号，仅用于安全计时器重置。
+  | { type: 'activity'; sessionId: string; runId: string };
 
 export type PiContextUsage = {
   tokens: number | null;

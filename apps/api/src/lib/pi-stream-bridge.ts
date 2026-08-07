@@ -18,5 +18,8 @@ export function mapPiStreamEventToFrames(
       return [createEvent('session.compaction_start', { reason: event.reason }, { session_id: sessionId })];
     case 'compaction_end':
       return [createEvent('session.compaction_end', { reason: event.reason, aborted: event.aborted, error_message: event.errorMessage ?? null }, { session_id: sessionId })];
+    case 'activity':
+      // 无 UI 载荷的活动信号（thinking/tool 阶段），仅用于安全计时器重置
+      return [];
   }
 }
