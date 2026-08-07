@@ -203,13 +203,6 @@ export default function ChatInput({
     <div className="shrink-0 px-4 py-2 md:px-5 bg-slate-50 dark:bg-slate-900">
       <div className="mx-auto max-w-[900px]">
         <div className="flex flex-col gap-2">
-          {/* Vision relay hint when current model can't take images directly */}
-          {attachments.length > 0 && currentModelSupportsImages === false && visionRelayEnabled && (
-            <div className="text-[11px] text-amber-600 dark:text-amber-400">
-              当前模型不支持图片输入，图片将由多模态模型识别为文字描述后发送。
-            </div>
-          )}
-
           {/* Attachments preview */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/60 p-2">
