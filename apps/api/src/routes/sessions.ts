@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
 import { messages, projects, roleTemplates, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
-import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, or } from 'drizzle-orm';
 import { createPiClient } from '@piplus/pi-client';
 import type { PiClient, PiContentBlock, PiImageInput, PiModelInfo } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
@@ -283,9 +283,23 @@ export async function describeImagesWithFallback(
 }
 
 /** 图片描述与用户文本合并（描述追加在文本后；纯图片消息仅描述）。 */
+/** 图片描述合并进用户消息时的标记前缀（GET /chat/messages 据此识别并替换回原始消息）。 */
+const VISION_MERGED_MARKER = '[图片内容识别]';
+
 export function buildVisionMergedContent(content: string, description: string): string {
-  const desc = `[图片内容识别]\n${description}`;
+  const desc = `${VISION_MERGED_MARKER}\n${description}`;
   return content ? `${content}\n\n${desc}` : desc;
+}
+
+/** 解析落库的 contentBlocksJson（PiContentBlock[]）；非法/空返回 null。 */
+function parseStoredContentBlocks(json: string | null): PiContentBlock[] | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? (parsed as PiContentBlock[]) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 主备都失败：插入 error 历史消息（用户可见），返回用户友好的错误文案。 */
@@ -550,6 +564,48 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
         toolArgs: undefined,
         contentBlocks: undefined,
       }));
+    }
+
+    // Vision relay 用户消息替换（仅首页）：pi 历史中保存的是合并了 "[图片内容识别]" 描述的消息，
+    // 用 DB 中保留原始文本 + 图片附件的消息行替换，历史展示原始图片而非描述文本。
+    // 必须在 allMessages 组装之前执行（展开 pageRows 后修改不再影响结果）。
+    // DB createdAt 由 nextMessageTime() 生成（与 pi 历史时间戳毫秒级对齐），按时间顺序一一配对。
+    if (!cursor || cursor === '0') {
+      const dbUserRows = await db.select().from(messages)
+        .where(and(
+          eq(messages.sessionId, sessionId),
+          eq(messages.role, 'user'),
+          eq(messages.messageKind, 'normal'),
+        ))
+        .orderBy(asc(messages.createdAt));
+      const visionRelayRows = dbUserRows.filter((row) => {
+        const blocks = parseStoredContentBlocks(row.contentBlocksJson);
+        return blocks !== null && blocks.some((block) => block.type === 'image');
+      });
+      if (visionRelayRows.length > 0) {
+        // pi 历史中带合并标记的用户消息，按时间升序
+        const mergedIndexes = pageRows
+          .map((m, i) => ({ index: i, time: m.createdAt ? new Date(m.createdAt).getTime() : 0 }))
+          .filter(({ index }) => pageRows[index].role === 'user' && pageRows[index].text.includes(VISION_MERGED_MARKER))
+          .sort((a, b) => a.time - b.time);
+        for (let i = 0; i < visionRelayRows.length && i < mergedIndexes.length; i++) {
+          const row = visionRelayRows[i];
+          const target = mergedIndexes[i];
+          // 时间容差防御：顺序错乱（极端场景）时保守跳过
+          const rowTime = new Date(row.createdAt).getTime();
+          if (Math.abs(rowTime - target.time) > 5 * 60_000) continue;
+          pageRows[target.index] = {
+            id: row.id,
+            role: row.role as 'user',
+            text: row.contentText,
+            messageKind: 'normal',
+            createdAt: new Date(row.createdAt).toISOString(),
+            toolName: undefined,
+            toolArgs: undefined,
+            contentBlocks: parseStoredContentBlocks(row.contentBlocksJson) ?? undefined,
+          } as typeof pageRows[number];
+        }
+      }
     }
 
     const allMessages = [...dbCommandMessages.reverse(), ...pageRows];

@@ -1,6 +1,7 @@
 import { createSeedDb } from '@piplus/db/init';
 import { describe, expect, test } from 'bun:test';
 import { and, eq } from 'drizzle-orm';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { createDb } from '@piplus/db/client';
 import { messages, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
@@ -366,6 +367,118 @@ describe('session routes', () => {
       await Bun.sleep(10);
     }
     expect(sessionRow?.runtimeStatus).toBe('idle');
+  });
+
+  test('vision relay: history shows original user text and image attachments instead of merged description', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+
+    const realClient = createPiClient();
+    const capturedRaw: { messages: Array<{ role: string; text: string }> | null } = { messages: null };
+    const stubClient = new Proxy(realClient, {
+      get(target, prop, receiver) {
+        if (prop === 'completeModel') {
+          return async () => ({ text: '这是一张报错截图', stopReason: 'stop' });
+        }
+        if (prop === 'sendMessage') {
+          // 成功返回（stub 不写 pi 历史）：随后测试手动注入合并文本消息模拟真实 pi 会话文件
+          return async (_sessionId: string, _content: string) => ({ sessionId: _sessionId, runId: 'stub-run' });
+        }
+        if (prop === 'getHistory') {
+          // 记录 pi 会话文件里的原始历史（未经过替换），用于证明替换确实发生
+          return async (...args: Parameters<typeof target.getHistory>) => {
+            const result = await target.getHistory(...args);
+            capturedRaw.messages = result.messages.map((m) => ({ role: m.role, text: m.text }));
+            return result;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const app = createApp({ piClient: stubClient });
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Vision Relay History', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 切换到纯文本模型
+    const modelsRes = await app.request('/api/v1/models', { headers: { 'x-user-id': 'user_seed' } });
+    const modelsBody = await modelsRes.json();
+    const textOnlyModel = (modelsBody.models as Array<{ provider: string; id: string; input?: string[] }>).find(
+      (m) => Array.isArray(m.input) && !m.input.includes('image'),
+    );
+    if (textOnlyModel) {
+      await app.request(`/api/v1/sessions/${sessionId}/model`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
+      });
+    }
+
+    await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ vision_enabled: 'true', vision_model: 'fake-vision/fake-model' }),
+    });
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+    expect(sendRes.status).toBe(202);
+
+    // 模拟真实 pi 会话文件：往文件追加一条 vision relay 合并文本用户消息（时间戳贴近 DB 落库时间）
+    const db = createDb(`file:${path}`);
+    const [sessionRow] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    const locator = JSON.parse(sessionRow.piSessionLocatorJson) as { sessionFile: string };
+    const manager = SessionManager.open(locator.sessionFile);
+    manager.appendMessage({
+      role: 'user',
+      content: 'describe this\n\n[图片内容识别]\n这是一张报错截图',
+      timestamp: Date.now(),
+    });
+
+    // 轮询 GET 历史直到用户消息可见（pi 历史已包含注入消息）
+    type HistoryMessage = {
+      role: string;
+      content_text: string;
+      content_blocks: Array<{ type: string; data_base64?: string }> | null;
+    };
+    let histBody: { messages: HistoryMessage[] } | null = null;
+    for (let i = 0; i < 200; i++) {
+      const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      });
+      const body = (await histRes.json()) as { messages: HistoryMessage[] };
+      histBody = body;
+      if (body.messages.some((m) => m.role === 'user' && m.content_text.includes('describe this'))) break;
+      await Bun.sleep(10);
+    }
+
+    // pi 原始历史确实包含合并文本消息（替换前提成立）
+    expect(capturedRaw.messages?.some((m) => m.role === 'user' && m.text.includes('[图片内容识别]')) ?? false).toBe(true);
+
+    // GET 响应中该用户消息被替换为原始文本 + 图片附件
+    const userMsg = histBody!.messages.find((m) => m.role === 'user' && m.content_text.includes('describe this'));
+    expect(userMsg).toBeTruthy();
+    expect(userMsg!.content_text).not.toContain('[图片内容识别]');
+    const imageBlock = userMsg!.content_blocks?.find((b) => b.type === 'image');
+    expect(imageBlock).toBeTruthy();
+    expect(imageBlock!.data_base64).toBe(Buffer.from('blocked').toString('base64'));
   });
 
   test('vision relay: concurrent POST while describe in flight gets 409', async () => {
