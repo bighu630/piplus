@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { readHistory } from './history';
 import { RuntimeRegistry } from './runtime-registry';
+import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from './constants';
 import type {
   PiClient,
   PiCompleteModelInput,
@@ -396,6 +397,8 @@ export function createPiClient(): PiClient {
         const { session: agentSession } = await createAgentSession(options);
         const session = runtimeRegistry.ensure(sessionId, locator, runtimeCwd);
         session.agentSession = agentSession;
+        // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数
+        session.closeRetries = 0;
 
         // Collect slash commands from restored agent session
         try {
@@ -422,7 +425,7 @@ export function createPiClient(): PiClient {
         session.idleCleanupTimer = setTimeout(() => {
           console.log('[pi-client] restoreRuntime idle cleanup triggered', { sessionId });
           this.closeRuntime(sessionId).catch(() => {});
-        }, 30 * 60 * 1000);
+        }, NON_WORKER_IDLE_RUNTIME_TTL_MS);
       } catch {
         throw new Error('pi_session_runtime_unavailable');
       }
@@ -444,6 +447,15 @@ export function createPiClient(): PiClient {
           existing.toolDefs = tools;
           existing.toolHandler = toolHandler;
           console.log('[pi-client] ensureRuntime skipped — runtime already alive, tools unchanged', { sessionId });
+          // 与 domain 定时器"每次 run 重置"语义对齐：长期活跃的 runtime 从不重建，
+          // 若不重置，client 定时器会在 run 中途触发回收，dispose 在途生成。
+          if (existing.idleCleanupTimer) clearTimeout(existing.idleCleanupTimer);
+          existing.idleCleanupTimer = setTimeout(() => {
+            console.log('[pi-client] ensureRuntime idle cleanup triggered', { sessionId });
+            this.closeRuntime(sessionId).catch(() => {});
+          }, NON_WORKER_IDLE_RUNTIME_TTL_MS);
+          // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数
+          existing.closeRetries = 0;
           return;
         }
       }
@@ -508,6 +520,8 @@ export function createPiClient(): PiClient {
         session.agentSession = agentSession;
         session.toolDefs = tools;
         session.toolHandler = toolHandler;
+        // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数
+        session.closeRetries = 0;
 
         // Migrate prompt from piSessionId entry (stored by createSession)
         const piSessionId = locator.piSessionId;
@@ -520,6 +534,13 @@ export function createPiClient(): PiClient {
               sessionId, piSessionId, promptLen: session.prompt.length,
             });
           }
+        }
+
+        // 别名 entry 的唯一用途是把角色 prompt 移交给 domain entry；迁移后即无用，
+        // 删除以免 registry 随创建会话数量无限增长。放在成功路径内：ensureRuntime
+        // 抛错时别名保留，下次重试仍可迁移（prompt 为空也删——无内容可交接）。
+        if (piSessionId && piSessionId !== sessionId) {
+          runtimeRegistry.delete(piSessionId);
         }
 
         // Collect slash commands
@@ -548,7 +569,7 @@ export function createPiClient(): PiClient {
         session.idleCleanupTimer = setTimeout(() => {
           console.log('[pi-client] ensureRuntime idle cleanup triggered', { sessionId });
           this.closeRuntime(sessionId).catch(() => {});
-        }, 30 * 60 * 1000);
+        }, NON_WORKER_IDLE_RUNTIME_TTL_MS);
       } catch {
         throw new Error('pi_session_runtime_unavailable');
       }
@@ -607,6 +628,10 @@ export function createPiClient(): PiClient {
       const runId = `run_${crypto.randomUUID().slice(0, 10)}`;
 
       if (session.agentSession) {
+        // 一次新的 run 意味着用户重新激活会话，复位停止标记。
+        // stopped 仅供 reloadIdleRuntimes 过滤"可回收"runtime 使用；
+        // 不复位会让已停止的会话在下次 sendMessage 后仍被当作可回收。
+        session.stopped = false;
         if (content || options?.images?.length) {
           // 用户消息
           console.log('[pi-client] sendMessage → agentSession.prompt', {
@@ -685,8 +710,27 @@ export function createPiClient(): PiClient {
       const session = runtimeRegistry.get(sessionId);
       if (!session) return; // idempotent, already cleaned
       if (session.idleCleanupTimer) { clearTimeout(session.idleCleanupTimer); session.idleCleanupTimer = undefined; }
+      // 绝不 dispose 正在流式生成的 agentSession —— dispose() 会 abort 在途生成。
+      // 定时器触发时若 run 仍在进行，跳过本次回收；重试定时器 30s 后再次尝试。
+      // 覆盖 worker 立即回收路径的极端时序，避免 worker runtime 泄漏。
+      if (session.agentSession?.isStreaming) {
+        // 重试计数封顶：provider 连接挂死导致 isStreaming 永不复位时，强制 dispose 兜底，
+        // 避免僵尸 runtime + 定时器无限循环。
+        // 上界：30min（client 定时器原始触发）+ 40 × 30s ≈ 50min 连续流式的合法长 run
+        // 才会被强制回收——正常 run 每次开始都会经 ensureRuntime 刷新定时器并复位计数。
+        session.closeRetries = (session.closeRetries ?? 0) + 1;
+        if (session.closeRetries < 40) {
+          console.log('[pi-client] closeRuntime skipped — agent still streaming', { sessionId, retry: session.closeRetries });
+          session.idleCleanupTimer = setTimeout(() => {
+            this.closeRuntime(sessionId).catch(() => {});
+          }, 30_000);
+          return;
+        }
+        console.warn('[pi-client] closeRuntime force disposing after 40 streaming retries', { sessionId });
+      }
       session.agentSession?.dispose();
       session.agentSession = undefined;
+      session.closeRetries = 0;
       session.listeners.clear();
       session.toolHandler = undefined;
       session.toolDefs = [];
@@ -694,6 +738,22 @@ export function createPiClient(): PiClient {
       // Preserve the registry entry (locator, cwd, model) so that
       // bindToolRuntime() and restoreRuntime() can still find the
       // session file and model metadata on subsequent calls.
+    },
+
+    /** 删除/归档会话时释放 runtime 并删除 registry 条目（含 createSession 的 piSessionId 别名条目）。
+     *  注意：不做 isStreaming 守卫——删除项目必须中止在途生成；
+     *  孤儿 run 的 doCleanup 对已删除的 DB 行是 0 行更新，安全。 */
+    async disposeSession(sessionId, locator) {
+      const session = runtimeRegistry.get(sessionId);
+      if (session) {
+        if (session.idleCleanupTimer) { clearTimeout(session.idleCleanupTimer); session.idleCleanupTimer = undefined; }
+        try { session.agentSession?.dispose(); } catch { /* ignore */ }
+        runtimeRegistry.delete(sessionId);
+      }
+      // main entry 不存在时也要删别名——"createSession 后从未 run"的会话只有别名条目。
+      if (locator?.piSessionId && locator.piSessionId !== sessionId) {
+        runtimeRegistry.delete(locator.piSessionId);
+      }
     },
 
     /**
@@ -709,6 +769,15 @@ export function createPiClient(): PiClient {
         } catch {
           // Ignore disposal errors
         }
+        // dispose 后必须清空全部状态：ensureRuntime 以 agentSession 真值判断 runtime
+        // 存活，残留引用会让后续 run 对已 dispose 的 session 调 prompt() → 每次都失败。
+        session.agentSession = undefined;
+        session.closeRetries = 0;
+        if (session.idleCleanupTimer) { clearTimeout(session.idleCleanupTimer); session.idleCleanupTimer = undefined; }
+        session.listeners.clear();
+        session.toolHandler = undefined;
+        session.toolDefs = [];
+        session.messages = [];
         if (session.locator.piSessionId) {
           runtimeRegistry.delete(session.locator.piSessionId);
         }

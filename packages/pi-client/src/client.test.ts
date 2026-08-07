@@ -335,4 +335,93 @@ describe('pi client gateway', () => {
     const r2 = await client.stopSession(created.sessionId);
     expect(r2).toMatchObject({ status: 'stopped' });
   });
+
+  // ─── Runtime 回收机制修复回归测试（各测试独立 sessionId，不共享 registry 状态）───
+
+  test('#5 ensureRuntime deletes piSessionId alias entry after prompt migration', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Alias Cleanup Test' });
+
+    // domain sessionId 与 piSessionId 别名不同 → ensureRuntime 应迁移 prompt 并删除别名 entry
+    await client.ensureRuntime('domain_session_alias', {
+      locator: created.locator,
+      cwd: process.cwd(),
+      tools: [],
+      toolHandler: async () => ({}),
+    });
+
+    // 别名 entry 已删除（修复前 getRuntimeState(created.sessionId) 会残留非 null）
+    expect(client.getRuntimeState(created.sessionId)).toBeNull();
+    // prompt 已迁移到 domain entry
+    expect(client.getRuntimeState('domain_session_alias')?.prompt).toBe('hello');
+
+    await client.closeRuntime('domain_session_alias');
+  });
+
+  test('#2 reloadIdleRuntimes disposes and clears agentSession (ready=false)', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Reload Idle Test' });
+    // 生产路径：domain sessionId ≠ piSessionId 别名（locator.piSessionId 来自 createSession）
+    await client.restoreRuntime('domain_session_reload', created.locator);
+    expect(client.getRuntimeState('domain_session_reload')?.ready).toBe(true);
+
+    await client.stopSession('domain_session_reload');
+    const closed = await client.reloadIdleRuntimes();
+    expect(closed).toBeGreaterThanOrEqual(1);
+
+    // 修复点：dispose 后 agentSession 必须置空，否则 ready 仍为 true
+    // （残留引用会让后续 run 对已 dispose 的 session 调 prompt() → 每次都失败）
+    expect(client.getRuntimeState('domain_session_reload')?.ready).toBe(false);
+
+    await client.closeRuntime('domain_session_reload');
+  });
+
+  test('#3 sendMessage resets stopped flag so reloadIdleRuntimes skips the session', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Stopped Reset Test' });
+    await client.restoreRuntime('domain_session_reset', created.locator);
+
+    await client.stopSession('domain_session_reset');
+    // sendMessage 可能在模型无 key 时 reject——stopped 复位发生在 prompt 尝试之前，
+    // 因此即使 run 失败，会话也已重新激活（不再被视为可回收）。
+    await client.sendMessage('domain_session_reset', 'hi').catch(() => {});
+
+    await client.reloadIdleRuntimes();
+    // 本会话 stopped 已复位 → 不被 closeIdle 回收，runtime 保持存活
+    expect(client.getRuntimeState('domain_session_reset')?.ready).toBe(true);
+
+    await client.closeRuntime('domain_session_reset');
+  });
+
+  test('#1 closeRuntime skips streaming runtimes (isStreaming guard)', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'Close Streaming Test' });
+    await client.restoreRuntime(created.sessionId, created.locator);
+
+    const p = client.sendMessage(created.sessionId, 'hi').catch(() => {});
+
+    // 轮询等待 isStreaming 出现（模型无 key 时可能瞬间失败，超时则跳过第一段断言）
+    let observed = false;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (client.getRuntimeState(created.sessionId)?.isStreaming) {
+        observed = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    if (observed && client.getRuntimeState(created.sessionId)?.isStreaming) {
+      // 流式生成中调用 closeRuntime → 守卫生效，不得 dispose
+      await client.closeRuntime(created.sessionId);
+      expect(client.getRuntimeState(created.sessionId)?.ready).toBe(true);
+    } else {
+      console.log('[test] #1 streaming window not observed (model failed fast) — asserting dispose path only');
+    }
+
+    await p;
+    // 生成结束后 closeRuntime 正常 dispose
+    await client.closeRuntime(created.sessionId);
+    expect(client.getRuntimeState(created.sessionId)?.ready).toBe(false);
+  });
 });

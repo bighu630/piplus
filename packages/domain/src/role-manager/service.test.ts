@@ -69,6 +69,10 @@ function makeRecordingPiClient() {
     async closeRuntime() {
       return;
     },
+    async disposeSession() {
+      // 删除/归档路径的释放逻辑在 API 路由测试中覆盖，此处 mock 无需跟踪
+      return;
+    },
     async reloadIdleRuntimes() {
       return 0;
     },

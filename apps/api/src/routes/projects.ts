@@ -1,10 +1,11 @@
 import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
-import { createAuditService, reloadProjectSessionRuntimes } from '@piplus/domain';
+import { createAuditService, clearIdleRuntimeCleanup, reloadProjectSessionRuntimes } from '@piplus/domain';
 import { messages, projects, projectTodos, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
 import { createProjectWithPlanner } from '@piplus/domain/project/service';
 import { createTopLevelSession } from '@piplus/domain/session/service';
 import { createPiClient } from '@piplus/pi-client';
+import { parseLocator } from '@piplus/pi-client/locator';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { getDbPath } from '../db-context';
@@ -730,8 +731,19 @@ export function registerProjectRoutes(app: Hono) {
     const [project] = await db.select({ id: projects.id }).from(projects).where(and(eq(projects.id, projectId), eq(projects.createdBy, userId))).limit(1);
     if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404);
 
-    const sessionRows = await db.select({ id: sessions.id }).from(sessions).where(eq(sessions.projectId, projectId));
+    const sessionRows = await db.select({ id: sessions.id, piSessionLocatorJson: sessions.piSessionLocatorJson }).from(sessions).where(eq(sessions.projectId, projectId));
     const sessionIds = sessionRows.map((s) => s.id);
+
+    // 删除项目前释放所有会话的 runtime：清除 domain 回收定时器并 dispose agentSession，
+    // 避免内存中的 registry 条目与 30 分钟回收定时器在项目删除后继续存活。
+    for (const s of sessionRows) {
+      try {
+        clearIdleRuntimeCleanup(s.id);
+        await piClient.disposeSession(s.id, parseLocator(s.piSessionLocatorJson));
+      } catch (err) {
+        console.warn('[projects] disposeSession failed', { sessionId: s.id, error: String(err) });
+      }
+    }
 
     // Delete project todos
     await db.delete(projectTodos).where(eq(projectTodos.projectId, projectId));

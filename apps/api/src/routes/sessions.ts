@@ -10,7 +10,7 @@ import { registerWebSocketRoutes, socketHub } from '../ws/server';
 import { createEvent } from '../ws/protocol';
 import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
-import { createAuditService, findRoleTemplateByVersion, getSetting, MERGED_USER_MESSAGE_SEPARATOR, startSessionRun } from '@piplus/domain';
+import { createAuditService, clearIdleRuntimeCleanup, findRoleTemplateByVersion, getSetting, MERGED_USER_MESSAGE_SEPARATOR, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
 import { readdir, readFile, appendFile, access, stat, writeFile, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -741,8 +741,9 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
     log.info('message sent', { sessionId, messageId });
     await createAuditService(db).record(userId, "message.sent", "session", sessionId, { message_id: messageId });
 
+    const eventId = randomId('event');
     await db.insert(sessionEvents).values({
-      id: randomId('event'),
+      id: eventId,
       sessionId,
       type: 'chat_message_received',
       payload: JSON.stringify({ message_id: messageId }),
@@ -751,40 +752,59 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
       createdAt: now,
     } as any);
 
-    const run = await startSessionRun({
-      db,
-      piClient,
-      sessionId,
-      userId,
-      content: effectiveContent,
-      images: effectiveImages,
-      startedAt: now,
-      onStreamEvent: async (event) => {
-        for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
-          socketHub.sendToSession(sessionId, frame);
-        }
-      },
-      onRuntimeStatusChange: async ({ sessionId: eventSessionId, projectId, runtimeStatus, error }) => {
-        socketHub.sendToSession(eventSessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus, error }, { project_id: projectId, session_id: eventSessionId }));
-      },
-      onToolSessionCreated: async ({ sessionId: childSessionId, projectId }) => {
-        socketHub.broadcast(createEvent('session.created', { session_id: childSessionId }, { project_id: projectId, session_id: childSessionId }));
-        socketHub.broadcast(createEvent('tree.changed', { project_id: projectId }, { project_id: projectId }));
-      },
-      candidateModels: (() => {
+    try {
+      const run = await startSessionRun({
+        db,
+        piClient,
+        sessionId,
+        userId,
+        content: effectiveContent,
+        images: effectiveImages,
+        startedAt: now,
+        onStreamEvent: async (event) => {
+          for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
+            socketHub.sendToSession(sessionId, frame);
+          }
+        },
+        onRuntimeStatusChange: async ({ sessionId: eventSessionId, projectId, runtimeStatus, error }) => {
+          socketHub.sendToSession(eventSessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus, error }, { project_id: projectId, session_id: eventSessionId }));
+        },
+        onToolSessionCreated: async ({ sessionId: childSessionId, projectId }) => {
+          socketHub.broadcast(createEvent('session.created', { session_id: childSessionId }, { project_id: projectId, session_id: childSessionId }));
+          socketHub.broadcast(createEvent('tree.changed', { project_id: projectId }, { project_id: projectId }));
+        },
+        candidateModels: (() => {
+          try {
+            const parsed = JSON.parse(session.modelFallbacksJson ?? '[]');
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })(),
+      });
+
+      socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
+      socketHub.broadcast(createEvent('tree.changed', { project_id: session.projectId }, { project_id: session.projectId }));
+
+      return c.json({ accepted: true, session_id: sessionId, run_id: run.runId, message_id: messageId }, 202);
+    } catch (error) {
+      // 并发双 POST 的败者在 startSessionRun 原子认领失败时抛 session_busy，
+      // 映射为干净的 409（与 setSessionModel 路由同模式），其余错误原样上抛。
+      const message = error instanceof Error ? error.message : 'unknown';
+      if (message === 'session_busy') {
+        // 消息从未发出（并发败者 / isStreaming 守卫被拒）：删除刚插入的消息行与
+        // chat_message_received 事件行，保持历史一致，否则 UI 出现无回复的悬空消息；
+        // 用户重试会重新插入。审计记录保留（系统审计日志不随业务行删除）。
         try {
-          const parsed = JSON.parse(session.modelFallbacksJson ?? '[]');
-          return Array.isArray(parsed) ? parsed : [];
-        } catch {
-          return [];
+          await db.delete(messages).where(eq(messages.id, messageId));
+          await db.delete(sessionEvents).where(eq(sessionEvents.id, eventId));
+        } catch (cleanupErr) {
+          log.warn('chat 409: ghost message cleanup failed', { sessionId, messageId, error: String(cleanupErr) });
         }
-      })(),
-    });
-
-    socketHub.broadcast(createEvent('session.updated', { session_id: sessionId }, { project_id: session.projectId, session_id: sessionId }));
-    socketHub.broadcast(createEvent('tree.changed', { project_id: session.projectId }, { project_id: session.projectId }));
-
-    return c.json({ accepted: true, session_id: sessionId, run_id: run.runId, message_id: messageId }, 202);
+        return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+      }
+      throw error;
+    }
   });
 
   /**
@@ -1000,6 +1020,14 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
     const now = nextMessageTime();
+    // 归档后会话不可用，runtime 与回收定时器一并释放；
+    // 若未来支持取消归档，ensureRuntime 可基于仍在磁盘的 session 文件完整重建。
+    try {
+      clearIdleRuntimeCleanup(sessionId);
+      await piClient.disposeSession(sessionId, parseLocator(session.piSessionLocatorJson));
+    } catch (err) {
+      log.warn('archive: runtime cleanup failed', { sessionId, error: String(err) });
+    }
     await db.update(sessions).set({ status: 'archived', archivedAt: now, archivedBy: userId, updatedAt: now }).where(eq(sessions.id, sessionId));
     log.info('session archived', { sessionId });
     await createAuditService(db).record(userId, "session.archived", "session", sessionId);

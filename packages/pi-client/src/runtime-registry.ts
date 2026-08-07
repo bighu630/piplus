@@ -20,6 +20,8 @@ export type ActiveSessionRuntime = {
   title: string | null;
   listeners: Set<SessionListener>;
   idleCleanupTimer?: ReturnType<typeof setTimeout>;
+  /** closeRuntime 流式守卫的连续重试计数（>0 表示处于流式跳过状态，正常 dispose 后复位 0）。 */
+  closeRetries?: number;
 };
 
 export class RuntimeRegistry {
@@ -80,13 +82,14 @@ export class RuntimeRegistry {
     return !this.hasHistory(sessionId);
   }
 
-  getRuntimeState(sessionId: string): { ready: boolean; isFirst: boolean; prompt?: string } | null {
+  getRuntimeState(sessionId: string): { ready: boolean; isFirst: boolean; prompt?: string; isStreaming?: boolean } | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     return {
       ready: !!session.agentSession,
       isFirst: !this.hasHistory(sessionId),
       prompt: session.prompt,
+      isStreaming: !!session.agentSession?.isStreaming,
     };
   }
 
