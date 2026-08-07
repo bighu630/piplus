@@ -9,6 +9,8 @@ import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOp
 import MermaidBlock from './MermaidBlock';
 import { useSessionFileTree, useSessionFileContent, useSaveSessionFileContentMutation, useDeleteSessionFileMutation } from '../lib/hooks';
 import { getApiBaseUrl } from '../lib/runtime-config';
+import { loadExpandedPaths, loadSelectedPath, saveExpandedPaths, saveSelectedPath } from '../lib/files-persistence';
+import type { FilesViewKey } from '../lib/files-persistence';
 
 interface TabFilesProps {
   selectedSessionId: string | null;
@@ -20,6 +22,10 @@ interface TabFilesProps {
   panelTitle?: string;
   /** Default expansion for nodes not in expandedPaths. Defaults to depth < 1 when unset. */
   defaultExpanded?: boolean;
+  /** Persistence view key ('files' by default). Each view keeps its own state per project. */
+  viewKey?: FilesViewKey;
+  /** Project id that scopes persisted state. When null/undefined, no persistence happens. */
+  projectId?: string | null;
 }
 
 function isMarkdownFile(filePath: string | null): boolean {
@@ -417,17 +423,23 @@ function TabFiles({
   emptyMessage,
   panelTitle,
   defaultExpanded,
+  viewKey = 'files',
+  projectId,
 }: TabFilesProps) {
   const queryClient = useQueryClient();
   const fileTreeQuery = useSessionFileTree(selectedSessionId);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(() =>
+    projectId ? loadSelectedPath(viewKey, projectId) : null
+  );
   const contentQueryPath = selectedPath && !isImageFile(selectedPath) ? selectedPath : null;
   const fileContentQuery = useSessionFileContent(selectedSessionId, contentQueryPath);
   const saveFileContentMut = useSaveSessionFileContentMutation(selectedSessionId);
   const savingFile = saveFileContentMut.isPending;
   const deleteFileMut = useDeleteSessionFileMutation(selectedSessionId);
   const deletingFile = deleteFileMut.isPending;
-  const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({});
+  const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>(() =>
+    projectId ? loadExpandedPaths(viewKey, projectId) : {}
+  );
   const treeResponse = fileTreeQuery.data ?? null;
   const treeLoading = fileTreeQuery.isLoading;
   const treeError = fileTreeQuery.error instanceof Error ? fileTreeQuery.error.message : null;
@@ -531,6 +543,30 @@ function TabFiles({
     const currentIsOpen = expanded[pathValue] ?? defaultExpanded ?? true;
     setExpandedPaths((prev) => ({ ...prev, [pathValue]: !currentIsOpen }));
   };
+
+  // Persist expanded paths per project when they change
+  useEffect(() => {
+    if (!projectId) return;
+    saveExpandedPaths(viewKey, projectId, expandedPaths);
+  }, [viewKey, projectId, expandedPaths]);
+
+  // Persist selected path per project when it changes
+  useEffect(() => {
+    if (!projectId) return;
+    saveSelectedPath(viewKey, projectId, selectedPath);
+  }, [viewKey, projectId, selectedPath]);
+
+  // Defensive: if the project changes without this component unmounting,
+  // reload both persisted states. The first mount is skipped because the
+  // lazy useState initializers above already loaded them.
+  const prevProjectIdRef = useRef(projectId);
+  useEffect(() => {
+    const prevProjectId = prevProjectIdRef.current;
+    prevProjectIdRef.current = projectId;
+    if (!projectId || prevProjectId === projectId) return;
+    setExpandedPaths(loadExpandedPaths(viewKey, projectId));
+    setSelectedPath(loadSelectedPath(viewKey, projectId));
+  }, [viewKey, projectId]);
 
   return (
     <div className="flex-1 flex h-full overflow-hidden bg-slate-50/60 dark:bg-slate-900/10">

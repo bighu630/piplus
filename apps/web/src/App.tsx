@@ -900,6 +900,8 @@ export default function App() {
               {activeTab === 'files' && (
                 <TabFiles
                   selectedSessionId={selectedSessionId}
+                  viewKey="files"
+                  projectId={selectedProjectId}
                 />
               )}
               {activeTab === 'doce' && (
@@ -908,6 +910,8 @@ export default function App() {
                   rootPathFilter={['doce', 'docs', 'doc']}
                   panelTitle="Doce"
                   defaultExpanded={true}
+                  viewKey="doce"
+                  projectId={selectedProjectId}
                 />
               )}
               {/* Terminal tab — keep-alive via display:none */}
