@@ -637,6 +637,122 @@ describe('startSessionRun', () => {
     expect(state.unsubscribed).toContain('session_test_runtime');
   });
 
+  // ─── 子会话安全计时器：不传 onStreamEvent 也必须订阅流事件 ─────────────
+  test('subscribes to stream events even without onStreamEvent (child sessions)', async () => {
+    const { db } = await setupSession({ sessionId: 'session_subscribe_no_ui' });
+    const { client, state } = makePiClient();
+
+    await startSessionRun({
+      db,
+      piClient: client,
+      sessionId: 'session_subscribe_no_ui',
+      userId: 'user_seed',
+      content: 'x',
+      safetyTimeoutMs: 150,
+      // 不传 onStreamEvent：startChildSessionRun（spawn_session 的 worker 子会话）
+      // 没有 UI 消费方，正是这种调用方式。安全计时器重置不能依赖它。
+      onRuntimeStatusChange: async () => {},
+    });
+
+    try {
+      // 即使没有 UI 消费方，runtime 也必须订阅流事件（否则 10 分钟硬超时必杀子会话）
+      expect(state.subscribed).toContain('session_subscribe_no_ui');
+
+      // sendMessage 正常 resolve → 会话正常回到 idle，订阅随之解除
+      await Bun.sleep(50);
+      const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_subscribe_no_ui')).limit(1);
+      expect(session?.runtimeStatus).toBe('idle');
+      expect(state.unsubscribed).toContain('session_subscribe_no_ui');
+    } finally {
+      // 非 worker 的 doCleanup 会调度 30min 定时器，取消避免污染模块级 Map
+      clearIdleRuntimeCleanup('session_subscribe_no_ui');
+    }
+  });
+
+  test('safety timeout resets on stream activity without onStreamEvent', async () => {
+    const { db } = await setupSession({ sessionId: 'session_safety_reset' });
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — only stream activity or the timeout can end the run
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+    // 手动控制流事件到达时机：订阅只捕获 listener，不自动触发
+    let capturedListener: ((event: PiSessionStreamEvent) => void | Promise<void>) | null = null;
+    const manualClient: PiClient = {
+      ...pendingClient,
+      async subscribeSession(sessionId, listener) {
+        state.subscribed.push(sessionId);
+        capturedListener = listener;
+        return () => {
+          state.unsubscribed.push(sessionId);
+        };
+      },
+    };
+
+    await startSessionRun({
+      db,
+      piClient: manualClient,
+      sessionId: 'session_safety_reset',
+      userId: 'user_seed',
+      content: 'x',
+      safetyTimeoutMs: 150,
+      onRuntimeStatusChange: async () => {},
+    });
+
+    try {
+      // 80ms 时手动发一个 activity 事件（模拟 thinking/tool 阶段），重置计时器
+      await Bun.sleep(80);
+      expect(capturedListener).not.toBeNull();
+      await capturedListener!({ type: 'activity', sessionId: 'session_safety_reset', runId: 'run_test' });
+
+      // ~200ms：若无重置，150ms 超时早已触发；重置后仍应 running
+      await Bun.sleep(120);
+      let [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_safety_reset')).limit(1);
+      expect(session?.runtimeStatus).toBe('running');
+
+      // ~450ms：无更多事件，超时兜底仍生效 → idle
+      await Bun.sleep(250);
+      [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_safety_reset')).limit(1);
+      expect(session?.runtimeStatus).toBe('idle');
+      expect(state.unsubscribed).toContain('session_safety_reset');
+    } finally {
+      // 非 worker 的 doCleanup 会调度 30min 定时器，取消避免污染模块级 Map
+      clearIdleRuntimeCleanup('session_safety_reset');
+    }
+  });
+
+  test('unsubscribe still runs when onRuntimeStatusChange throws during cleanup', async () => {
+    const { db } = await setupSession({ sessionId: 'session_unsub_on_status_error' });
+    const { client, state } = makePiClient();
+
+    // 第 1 次调用（running 状态回调）必须成功——它在 startSessionRun 主体 await，
+    // 抛错会让 run 启动失败；只有第 2 次（doCleanup 的 idle 回调）抛错，
+    // 才能覆盖 "markSessionIdle 之后、unsubscribe 之前出错" 的泄漏路径。
+    let statusCalls = 0;
+    await startSessionRun({
+      db,
+      piClient: client,
+      sessionId: 'session_unsub_on_status_error',
+      userId: 'user_seed',
+      content: 'x',
+      onRuntimeStatusChange: async () => {
+        statusCalls++;
+        if (statusCalls > 1) throw new Error('status_fail');
+      },
+    });
+
+    // doCleanup 在异步 attemptSend 中执行：轮询等待 unsubscribe 被调用
+    // （onRuntimeStatusChange 抛错也不得泄漏 listener——这是本次 try/finally 修复的核心）
+    for (let i = 0; i < 200; i++) {
+      if (state.unsubscribed.includes('session_unsub_on_status_error')) break;
+      await Bun.sleep(10);
+    }
+    expect(state.unsubscribed).toContain('session_unsub_on_status_error');
+
+    // 状态回调抛错不影响 DB 状态复位（markSessionIdle 在它之前已执行）
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_unsub_on_status_error')).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+    expect(statusCalls).toBe(2);
+  });
+
   // ─── #6 原子认领：并发双 POST 只有一个能启动 run ─────────────────────────
   test('#6 concurrent startSessionRun: atomic claim allows exactly one run', async () => {
     const { db } = await setupSession({ sessionId: 'session_concurrent_claim' });

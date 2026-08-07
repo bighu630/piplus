@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
-import { createPiClient } from './client';
+import { createPiClient, mapAgentSessionEvent } from './client';
 
 describe('pi client gateway', () => {
   test('createSession returns a persistent pi session locator path', async () => {
@@ -423,5 +423,39 @@ describe('pi client gateway', () => {
     // 生成结束后 closeRuntime 正常 dispose
     await client.closeRuntime(created.sessionId);
     expect(client.getRuntimeState(created.sessionId)?.ready).toBe(false);
+  });
+});
+
+describe('mapAgentSessionEvent', () => {
+  test('thinking delta → activity (safety timer reset signal)', () => {
+    const event = mapAgentSessionEvent('sess_act_1', 'run_1', {
+      type: 'message_update',
+      message: {} as never,
+      assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'thinking...', partial: {} as never },
+    });
+    expect(event).toEqual({ type: 'activity', sessionId: 'sess_act_1', runId: 'run_1' });
+  });
+
+  test('tool_execution_start → activity (safety timer reset signal)', () => {
+    const event = mapAgentSessionEvent('sess_act_2', 'run_2', {
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'bash',
+      args: { command: 'ls' },
+    });
+    expect(event).toEqual({ type: 'activity', sessionId: 'sess_act_2', runId: 'run_2' });
+  });
+
+  test('text_delta still maps to text_delta (regression)', () => {
+    const event = mapAgentSessionEvent('sess_act_3', 'run_3', {
+      type: 'message_update',
+      message: {} as never,
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'hello', partial: {} as never },
+    });
+    expect(event).toEqual({ type: 'text_delta', sessionId: 'sess_act_3', runId: 'run_3', delta: 'hello' });
+  });
+
+  test('unmapped events (agent_start) are dropped', () => {
+    expect(mapAgentSessionEvent('sess_act_4', 'run_4', { type: 'agent_start' })).toBeNull();
   });
 });

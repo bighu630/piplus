@@ -36,7 +36,7 @@ function getOrCreateSession(sessionId: string) {
   return runtimeRegistry.ensure(sessionId);
 }
 
-function mapAgentSessionEvent(
+export function mapAgentSessionEvent(
   sessionId: string,
   runId: string,
   event: AgentSessionEvent,
@@ -52,6 +52,23 @@ function mapAgentSessionEvent(
       runId,
       delta: event.assistantMessageEvent.delta,
     };
+  }
+
+  // Activity without UI payload (thinking deltas, tool-call construction,
+  // text start/end): forwarded so runtime safety timers reset during
+  // long thinking/tool phases — the agent is alive, just not emitting
+  // user-visible text.
+  if (event.type === 'message_update') {
+    const t = event.assistantMessageEvent.type;
+    if (t === 'thinking_start' || t === 'thinking_delta' || t === 'thinking_end' ||
+        t === 'toolcall_start' || t === 'toolcall_delta' || t === 'toolcall_end' ||
+        t === 'text_start' || t === 'text_end') {
+      return { type: 'activity', sessionId, runId };
+    }
+  }
+
+  if (event.type === 'tool_execution_start' || event.type === 'tool_execution_update' || event.type === 'tool_execution_end') {
+    return { type: 'activity', sessionId, runId };
   }
 
   if (event.type === 'message_end' && event.message.role === 'assistant') {
