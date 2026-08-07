@@ -40,6 +40,26 @@ export type PiImageInput = {
   filename?: string;
 };
 
+export type PiCompleteModelMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+  images?: PiImageInput[];
+};
+
+export type PiCompleteModelInput = {
+  provider: string;
+  id: string;
+  systemPrompt?: string;
+  messages: PiCompleteModelMessage[];
+  maxTokens?: number;
+  signal?: AbortSignal;
+};
+
+export type PiCompleteModelResult = {
+  text: string;
+  stopReason: string;
+};
+
 export type PiTextContentBlock = {
   type: 'text';
   text: string;
@@ -147,6 +167,8 @@ export type PiClient = {
   getHistory(sessionId: string, locator: PiSessionLocator, cursor?: string | null, limit?: number): Promise<PiHistoryPage>;
   /** Send a message. Purely sends content — no prompt injection. */
   sendMessage(sessionId: string, content: string, options?: { images?: PiImageInput[] }): Promise<PiRunAccepted>;
+  /** Direct single-turn model call via the shared model runtime. */
+  completeModel(input: PiCompleteModelInput): Promise<PiCompleteModelResult>;
   stopSession(sessionId: string): Promise<PiStopSessionResult>;
   closeRuntime(sessionId: string): Promise<void>;
   /** Close all idle runtimes. Running sessions are left untouched. Returns count of closed runtimes. */

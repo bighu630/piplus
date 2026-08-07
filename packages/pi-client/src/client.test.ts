@@ -281,6 +281,15 @@ describe('pi client gateway', () => {
 
   // ─── Stop session / error resilience ──────────────────────────────────────
 
+  test('completeModel rejects unknown model', async () => {
+    const client = createPiClient();
+    await expect(client.completeModel({
+      provider: 'no-such-provider-xyz',
+      id: 'no-such-model',
+      messages: [{ role: 'user', content: 'hi' }],
+    })).rejects.toThrow(/model_not_found/);
+  });
+
   test('stopSession returns stopped status for unknown session (never created)', async () => {
     const client = createPiClient();
     // Calling stopSession on a session-id that was never created must not throw

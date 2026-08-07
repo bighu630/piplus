@@ -24,4 +24,5 @@ export const MessageRole = {
 export const MessageKind = {
   normal: 'normal',
   writeback: 'writeback',
+  error: 'error',
 } as const;

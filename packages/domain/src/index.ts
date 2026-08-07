@@ -7,3 +7,4 @@ export * from './role-manager/service';
 export * from './session/service';
 export * from './session/runtime';
 export * from './audit/service';
+export * from './settings/service';

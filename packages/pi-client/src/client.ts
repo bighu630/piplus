@@ -14,6 +14,8 @@ import { readHistory } from './history';
 import { RuntimeRegistry } from './runtime-registry';
 import type {
   PiClient,
+  PiCompleteModelInput,
+  PiCompleteModelResult,
   PiCreateSessionResult,
   PiHistoryPage,
   PiImageInput,
@@ -87,6 +89,26 @@ function normalizeImages(images: PiImageInput[] | undefined) {
     data: image.dataBase64,
     mimeType: image.mimeType ?? image.mediaType ?? 'image/png',
   }));
+}
+
+function buildCompleteModelContext(input: PiCompleteModelInput) {
+  return {
+    systemPrompt: input.systemPrompt,
+    messages: input.messages.map((msg) => ({
+      role: msg.role,
+      timestamp: Date.now(),
+      content: msg.images?.length
+        ? [
+            { type: 'text' as const, text: msg.content },
+            ...msg.images.map((image) => ({
+              type: 'image' as const,
+              data: image.dataBase64,
+              mimeType: image.mimeType ?? image.mediaType ?? 'image/png',
+            })),
+          ]
+        : msg.content,
+    })),
+  };
 }
 
 const BUILTIN_COMMANDS: PiSlashCommandInfo[] = [
@@ -708,6 +730,26 @@ export function createPiClient(): PiClient {
       const session = runtimeRegistry.get(sessionId);
       // 优先返回 registry 中缓存的模型（用户手动设置的），agentSession.model 可能被 bindToolRuntime 覆盖
       return session?.model ?? null;
+    },
+
+    async completeModel(input: PiCompleteModelInput): Promise<PiCompleteModelResult> {
+      const model = modelRuntime.getModel(input.provider, input.id);
+      if (!model) {
+        throw new Error(`model_not_found: ${input.provider}/${input.id}`);
+      }
+      const message = await modelRuntime.completeSimple(
+        model,
+        buildCompleteModelContext(input) as unknown as Parameters<typeof modelRuntime.completeSimple>[1],
+        {
+          maxTokens: input.maxTokens,
+          signal: input.signal,
+        },
+      );
+      const text = message.content
+        .filter((block) => block.type === 'text')
+        .map((block) => (block as { type: 'text'; text: string }).text)
+        .join('\n');
+      return { text, stopReason: message.stopReason };
     },
 
     async setSessionModel(sessionId, locator, modelRef, cwd) {
