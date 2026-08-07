@@ -1,10 +1,18 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Modal from './Modal';
 import Select from './Select';
-import { PlusCircle, Trash2 } from 'lucide-react';
+import { PlusCircle, Trash2, ArrowLeft } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useTestModelProviderMutation, useCreateModelProviderMutation, useNativeModelProviders, useSetNativeProviderApiKeyMutation } from '../lib/hooks';
-import type { ProviderFormModel } from '../lib/api';
+import {
+  useTestModelProviderMutation,
+  useCreateModelProviderMutation,
+  useNativeModelProviders,
+  useSetNativeProviderApiKeyMutation,
+  useModelProvidersQuery,
+  useUpdateModelProviderMutation,
+  useDeleteModelProviderMutation,
+} from '../lib/hooks';
+import type { ProviderFormModel, ProviderListItem, ProviderUpdatePayload } from '../lib/api';
 
 interface ProviderModalProps {
   isOpen: boolean;
@@ -86,12 +94,42 @@ function getContextPresetValue(contextWindow: number | undefined): string {
   return match ? match[0] : 'custom';
 }
 
+/** 从列表项构造 JSON 编辑模式的初始内容（不含 providerKey，apiKey 留空占位）。 */
+function buildProviderEditJson(item: ProviderListItem): Record<string, unknown> {
+  const json: Record<string, unknown> = {
+    baseUrl: item.baseUrl,
+    apiKey: '',
+    authHeader: item.authHeader,
+  };
+  if (item.api) json.api = item.api;
+  if (item.headers && Object.keys(item.headers).length > 0) json.headers = item.headers;
+  if (item.compat && Object.keys(item.compat).length > 0) json.compat = item.compat;
+  const models = item.models.length > 0 ? item.models : [{ id: '' }];
+  json.models = models.map((model) => {
+    const entry: Record<string, unknown> = { id: model.id };
+    if (model.name) entry.name = model.name;
+    if (model.api) entry.api = model.api;
+    if (model.reasoning) entry.reasoning = model.reasoning;
+    if (model.input && model.input.length > 0) entry.input = model.input;
+    if (model.contextWindow !== undefined) entry.contextWindow = model.contextWindow;
+    if (model.maxTokens !== undefined) entry.maxTokens = model.maxTokens;
+    if (model.cost && Object.keys(model.cost).length > 0) entry.cost = model.cost;
+    if (model.compat && Object.keys(model.compat).length > 0) entry.compat = model.compat;
+    if (model.thinkingLevelMap && Object.keys(model.thinkingLevelMap).length > 0) entry.thinkingLevelMap = model.thinkingLevelMap;
+    return entry;
+  });
+  return json;
+}
+
 export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
   const queryClient = useQueryClient();
   const testProviderMut = useTestModelProviderMutation();
   const createProviderMut = useCreateModelProviderMutation();
   const nativeProvidersQuery = useNativeModelProviders();
   const setNativeApiKeyMut = useSetNativeProviderApiKeyMutation();
+  const providersQuery = useModelProvidersQuery();
+  const updateProviderMut = useUpdateModelProviderMutation();
+  const deleteProviderMut = useDeleteModelProviderMutation();
 
   const [providerKey, setProviderKey] = useState('');
   const [providerBaseUrl, setProviderBaseUrl] = useState('');
@@ -102,7 +140,7 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
   const [providerApi, setProviderApi] = useState('');
   const [providerHeaders, setProviderHeaders] = useState('');
   const [providerCompatJson, setProviderCompatJson] = useState('');
-  const [providerTab, setProviderTab] = useState<'native' | 'custom'>('native');
+  const [providerTab, setProviderTab] = useState<'native' | 'custom' | 'edit'>('native');
   const [nativeProvider, setNativeProvider] = useState('openrouter');
   const [nativeApiKey, setNativeApiKey] = useState('');
   const [providerModels, setProviderModels] = useState<ProviderFormModel[]>([]);
@@ -113,6 +151,16 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
   const [modelJsonErrors, setModelJsonErrors] = useState<Record<number, { compat?: boolean; thinking?: boolean }>>({});
   const [thinkingCustomModes, setThinkingCustomModes] = useState<Record<number, boolean>>({});
   const [contextCustomModes, setContextCustomModes] = useState<Record<number, boolean>>({});
+
+  // 编辑提供商 tab
+  const [editView, setEditView] = useState<'list' | 'form'>('list');
+  const [editJsonMode, setEditJsonMode] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<ProviderListItem | null>(null);
+  const [editJsonContent, setEditJsonContent] = useState('');
+  const [editJsonFormatError, setEditJsonFormatError] = useState(false);
+  const [editJsonError, setEditJsonError] = useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [editListError, setEditListError] = useState<string | null>(null);
 
   const prevIsOpenRef = useRef(isOpen);
   useEffect(() => {
@@ -127,7 +175,7 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
     setProviderError(null);
   }, [onClose]);
 
-  const resetProviderForm = useCallback(() => {
+  const resetProviderFormFields = useCallback(() => {
     setProviderKey('');
     setProviderBaseUrl('');
     setProviderApiKey('');
@@ -137,7 +185,6 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
     setProviderApi('');
     setProviderHeaders('');
     setProviderCompatJson('');
-    setProviderTab('native');
     setNativeProvider('openrouter');
     setNativeApiKey('');
     setProviderModels([]);
@@ -149,6 +196,19 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
     setThinkingCustomModes({});
     setContextCustomModes({});
   }, []);
+
+  const resetProviderForm = useCallback(() => {
+    resetProviderFormFields();
+    setProviderTab('native');
+    setEditView('list');
+    setEditJsonMode(false);
+    setEditingProvider(null);
+    setEditJsonContent('');
+    setEditJsonFormatError(false);
+    setEditJsonError(null);
+    setDeletingKey(null);
+    setEditListError(null);
+  }, [resetProviderFormFields]);
 
   const updateProviderModel = useCallback((index: number, patch: Partial<ProviderFormModel>) => {
     setProviderModels((current) => current.map((model, modelIndex) => modelIndex === index ? { ...model, ...patch } : model));
@@ -334,13 +394,471 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
     }
   }, [buildProviderPayload, validateProviderPayload, createProviderMut, queryClient, handleClose, providerHeadersJsonError, providerCompatJsonError, modelJsonErrors]);
 
+  // ── 编辑提供商 ──────────────────────────────────────────────────────
+
+  /** 从列表项回填表单（表格模式）与 JSON 编辑内容。providerApiKey 始终留空（后端保留原 key）。 */
+  const fillProviderForm = useCallback((item: ProviderListItem) => {
+    setProviderKey(item.providerKey);
+    setProviderBaseUrl(item.baseUrl);
+    setProviderApiKey('');
+    setProviderAuthHeader(Boolean(item.authHeader));
+    setSupportsDeveloperRole(Boolean(item.compat?.supportsDeveloperRole));
+    setSupportsReasoningEffort(Boolean(item.compat?.supportsReasoningEffort));
+    setProviderApi(item.api ?? '');
+    // compat 去掉已单列的两个键，剩余部分进 JSON 框
+    const compatExtra = item.compat ? { ...item.compat } : {};
+    delete compatExtra.supportsDeveloperRole;
+    delete compatExtra.supportsReasoningEffort;
+    setProviderCompatJson(Object.keys(compatExtra).length > 0 ? JSON.stringify(compatExtra, null, 2) : '');
+    setProviderHeaders(item.headers ? JSON.stringify(item.headers, null, 2) : '');
+    setProviderModels(
+      item.models.length > 0
+        ? item.models.map((model) => ({
+            id: model.id,
+            name: model.name ?? '',
+            reasoning: Boolean(model.reasoning),
+            inputImage: Boolean(model.input?.includes('image')),
+            input: model.input,
+            api: model.api ?? '',
+            contextWindow: model.contextWindow,
+            maxTokens: model.maxTokens,
+            cost: model.cost,
+            compat: model.compat ? JSON.stringify(model.compat, null, 2) : '',
+            thinkingLevelMap: model.thinkingLevelMap ? JSON.stringify(model.thinkingLevelMap, null, 2) : '',
+          }))
+        : [createEmptyProviderModel()],
+    );
+    setProviderError(null);
+    setProviderTestResult(null);
+    setProviderHeadersJsonError(false);
+    setProviderCompatJsonError(false);
+    setModelJsonErrors({});
+    setThinkingCustomModes({});
+    setContextCustomModes({});
+    // JSON 编辑内容独立初始化（两种模式各自保留自己的编辑状态）
+    setEditJsonContent(JSON.stringify(buildProviderEditJson(item), null, 2));
+    setEditJsonFormatError(false);
+    setEditJsonError(null);
+  }, []);
+
+  const handleTabChange = useCallback((tab: 'native' | 'custom' | 'edit') => {
+    if (tab !== 'edit') {
+      // 离开编辑 tab：回到列表视图；若正在编辑，清空表单避免预填残留进添加表单
+      setEditView('list');
+      setEditingProvider(null);
+      setEditJsonError(null);
+      setEditJsonFormatError(false);
+      if (providerTab === 'edit') {
+        resetProviderFormFields();
+      }
+    }
+    setProviderTab(tab);
+  }, [providerTab, resetProviderFormFields]);
+
+  const handleStartEdit = useCallback((item: ProviderListItem) => {
+    fillProviderForm(item);
+    setEditingProvider(item);
+    setEditView('form');
+    setEditJsonMode(false);
+  }, [fillProviderForm]);
+
+  const handleBackToList = useCallback(() => {
+    setEditView('list');
+    setEditingProvider(null);
+    setEditJsonError(null);
+    setEditJsonFormatError(false);
+  }, []);
+
+  const handleDeleteProvider = useCallback(async (item: ProviderListItem) => {
+    if (!window.confirm(`确定删除提供商「${item.providerKey}」？`)) return;
+    setDeletingKey(item.providerKey);
+    setEditListError(null);
+    try {
+      await deleteProviderMut.mutateAsync(item.providerKey);
+    } catch (error) {
+      setEditListError(error instanceof Error ? error.message : '删除失败');
+    } finally {
+      setDeletingKey(null);
+    }
+  }, [deleteProviderMut]);
+
+  /** 表格编辑模式保存（PUT，providerKey 来自 URL，body 中剔除）。 */
+  const handleUpdateProvider = useCallback(async () => {
+    if (!editingProvider) return;
+    const hasJsonError =
+      providerHeadersJsonError ||
+      providerCompatJsonError ||
+      Object.values(modelJsonErrors).some((errors) => errors?.compat || errors?.thinking);
+    if (hasJsonError) {
+      setProviderError('存在 JSON 格式错误，请修正后再保存');
+      return;
+    }
+    const payload = buildProviderPayload();
+    const error = validateProviderPayload(payload);
+    if (error) {
+      setProviderError(error);
+      return;
+    }
+    setProviderError(null);
+    try {
+      const { providerKey: _ignored, ...rest } = payload;
+      await updateProviderMut.mutateAsync({ providerKey: editingProvider.providerKey, payload: rest });
+      setEditView('list');
+      setEditingProvider(null);
+    } catch (saveError) {
+      setProviderError(saveError instanceof Error ? saveError.message : '保存失败');
+    }
+  }, [editingProvider, buildProviderPayload, validateProviderPayload, updateProviderMut, providerHeadersJsonError, providerCompatJsonError, modelJsonErrors]);
+
+  /** JSON 编辑：格式化按钮。 */
+  const handleFormatJson = useCallback(() => {
+    try {
+      const parsed = JSON.parse(editJsonContent);
+      setEditJsonContent(JSON.stringify(parsed, null, 2));
+      setEditJsonFormatError(false);
+    } catch {
+      setEditJsonFormatError(true);
+    }
+  }, [editJsonContent]);
+
+  /** JSON 编辑保存：解析校验后直接以解析结果作为 PUT body。 */
+  const handleSaveJson = useCallback(async () => {
+    if (!editingProvider) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(editJsonContent);
+    } catch {
+      setEditJsonError('JSON 格式错误，请修正后再保存');
+      return;
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      setEditJsonError('JSON 必须是对象');
+      return;
+    }
+    const payload = parsed as Record<string, unknown>;
+    if (typeof payload.baseUrl !== 'string' || !payload.baseUrl.trim()) {
+      setEditJsonError('缺少 baseUrl 字段');
+      return;
+    }
+    if (!Array.isArray(payload.models) || payload.models.length === 0) {
+      setEditJsonError('models 必须是非空数组，至少包含一个模型');
+      return;
+    }
+    if (payload.models.some((model) => typeof model !== 'object' || model === null || typeof (model as { id?: unknown }).id !== 'string' || !((model as { id: string }).id).trim())) {
+      setEditJsonError('models 中每个模型都必须有非空 id');
+      return;
+    }
+    setEditJsonFormatError(false);
+    setEditJsonError(null);
+    try {
+      await updateProviderMut.mutateAsync({ providerKey: editingProvider.providerKey, payload: payload as unknown as ProviderUpdatePayload });
+      setEditView('list');
+      setEditingProvider(null);
+    } catch (saveError) {
+      setEditJsonError(saveError instanceof Error ? saveError.message : '保存失败');
+    }
+  }, [editingProvider, editJsonContent, updateProviderMut]);
+
+  // ── 渲染函数 ────────────────────────────────────────────────────────
+
+  /** 自定义提供商表单（添加与表格编辑共用，isEdit 控制只读/按钮差异）。 */
+  const renderProviderForm = (isEdit: boolean) => (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">providerKey</label>
+          <input
+            value={providerKey}
+            onChange={(e) => setProviderKey(e.target.value)}
+            disabled={isEdit}
+            placeholder="例如 custom-openai"
+            className={`w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 ${isEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">baseUrl</label>
+          <input value={providerBaseUrl} onChange={(e) => setProviderBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
+        </div>
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">api</label>
+          <select value={providerApi} onChange={(e) => setProviderApi(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950">
+            <option value="">openai-completions（默认）</option>
+            <option value="openai-completions">openai-completions</option>
+            <option value="openai-responses">openai-responses</option>
+            <option value="anthropic-messages">anthropic-messages</option>
+            <option value="google-generative-ai">google-generative-ai</option>
+          </select>
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">apiKey</label>
+          <input value={providerApiKey} onChange={(e) => setProviderApiKey(e.target.value)} type="password" placeholder={isEdit ? '留空则保留原 key' : 'sk-...'} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={providerAuthHeader} onChange={(e) => setProviderAuthHeader(e.target.checked)} /> authHeader</label>
+        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsDeveloperRole} onChange={(e) => setSupportsDeveloperRole(e.target.checked)} /> compat.supportsDeveloperRole</label>
+        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsReasoningEffort} onChange={(e) => setSupportsReasoningEffort(e.target.checked)} /> compat.supportsReasoningEffort</label>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">headers（JSON，可选）</label>
+          <textarea value={providerHeaders} onChange={(e) => handleProviderHeadersChange(e.target.value)} placeholder='{
+  "x-custom-header": "value"
+}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
+          {providerHeadersJsonError && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
+        </div>
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">compat 额外字段（JSON，可选）</label>
+          <textarea value={providerCompatJson} onChange={(e) => handleProviderCompatChange(e.target.value)} placeholder='{
+  "supportsUsageInStreaming": false,
+  "maxTokensField": "max_tokens",
+  "thinkingFormat": "deepseek"
+}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
+          {providerCompatJsonError && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">模型列表</div>
+          <div className="text-[10px] text-slate-400 dark:text-slate-500">点击「拉取模型列表」自动获取模型</div>
+        </div>
+        {providerModels.map((model, index) => (
+          <div key={index} className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-3 bg-slate-50 dark:bg-slate-950/40">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 shrink-0">模型 {index + 1}</span>
+                {model.id.trim() ? (
+                  <>
+                    <code className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100 truncate">{model.id}</code>
+                    {model.name?.trim() ? <span className="text-xs text-slate-400 dark:text-slate-500 truncate">{model.name}</span> : null}
+                  </>
+                ) : (
+                  <span className="text-xs text-slate-400 dark:text-slate-500">（未获取到 id）</span>
+                )}
+              </div>
+              <button onClick={() => handleRemoveProviderModel(index)} disabled={providerModels.length === 1} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer shrink-0"><Trash2 className="w-4 h-4" /></button>
+            </div>
+
+            <div>
+              <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">能力</div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <select value={model.api ?? ''} onChange={(e) => updateProviderModel(index, { api: e.target.value })} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950">
+                    <option value="">api（继承提供商）</option>
+                    <option value="openai-completions">openai-completions</option>
+                    <option value="openai-responses">openai-responses</option>
+                    <option value="anthropic-messages">anthropic-messages</option>
+                    <option value="google-generative-ai">google-generative-ai</option>
+                  </select>
+                </div>
+                <div className="flex flex-wrap gap-4 pt-1">
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.reasoning} onChange={(e) => updateProviderModel(index, { reasoning: e.target.checked })} /> reasoning</label>
+                  <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.inputImage} onChange={(e) => updateProviderModel(index, { inputImage: e.target.checked })} /> inputImage</label>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">input（可选）</label>
+                  <div className="flex flex-wrap gap-4">
+                    <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.input?.includes('text') ?? false} onChange={(e) => {
+                      const current = model.input ?? [];
+                      const next = e.target.checked ? [...current, 'text'] : current.filter((t) => t !== 'text');
+                      updateProviderModel(index, { input: next.length > 0 ? next : undefined });
+                    }} /> text</label>
+                    <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.input?.includes('image') ?? false} onChange={(e) => {
+                      const current = model.input ?? [];
+                      const next = e.target.checked ? [...current, 'image'] : current.filter((t) => t !== 'image');
+                      updateProviderModel(index, { input: next.length > 0 ? next : undefined });
+                    }} /> image</label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">参数</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <Select
+                    value={getContextPresetValue(model.contextWindow)}
+                    onChange={(v) => handleContextPresetChange(index, v)}
+                    options={CONTEXT_PRESET_OPTIONS}
+                    placeholder="contextWindow（可选）"
+                    className="w-full"
+                  />
+                  {(contextCustomModes[index] || getContextPresetValue(model.contextWindow) === 'custom') && (
+                    <input
+                      value={model.contextWindow ?? ''}
+                      onChange={(e) => handleContextWindowChange(index, e.target.value)}
+                      type="number"
+                      placeholder="自定义 contextWindow"
+                      className="w-full px-3 py-2 mt-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950"
+                    />
+                  )}
+                </div>
+                <input value={model.maxTokens ?? ''} onChange={(e) => updateProviderModel(index, { maxTokens: e.target.value ? Number(e.target.value) : undefined })} type="number" placeholder="maxTokens（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">价格</div>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                <input value={model.cost?.input ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, input: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.input" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                <input value={model.cost?.output ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, output: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.output" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                <input value={model.cost?.cacheRead ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, cacheRead: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.cacheRead" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+                <input value={model.cost?.cacheWrite ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, cacheWrite: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.cacheWrite" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">高级</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">compat（可选）</label>
+                  <textarea value={model.compat ?? ''} onChange={(e) => handleModelCompatChange(index, e.target.value)} placeholder='例：{ &quot;forceAdaptiveThinking&quot;: true, &quot;thinkingFormat&quot;: &quot;deepseek&quot; }' rows={2} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 font-mono" />
+                  {modelJsonErrors[index]?.compat && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">thinkingLevelMap（可选）</label>
+                  <Select
+                    value={getThinkingPresetValue(model.thinkingLevelMap)}
+                    onChange={(v) => handleThinkingPresetChange(index, v)}
+                    options={THINKING_PRESET_OPTIONS}
+                    placeholder="选择预设"
+                    className="w-full"
+                  />
+                  {(thinkingCustomModes[index] || getThinkingPresetValue(model.thinkingLevelMap) === 'custom') && (
+                    <>
+                      <textarea value={model.thinkingLevelMap ?? ''} onChange={(e) => handleModelThinkingChange(index, e.target.value)} placeholder='例：{ &quot;off&quot;: null, &quot;medium&quot;: &quot;medium&quot;, &quot;high&quot;: &quot;high&quot; }' rows={2} className="w-full mt-2 px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 font-mono" />
+                      {modelJsonErrors[index]?.thinking && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {providerError && <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">{providerError}</div>}
+      {providerTestResult && <div className="text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-lg px-3 py-2">{providerTestResult}</div>}
+
+      <div className="flex justify-end gap-2 pt-3 border-t border-slate-150 dark:border-slate-800">
+        <button onClick={isEdit ? handleBackToList : handleClose} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
+        <button onClick={handleTestProvider} disabled={testProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer disabled:opacity-50">{testProviderMut.isPending ? '拉取中…' : '拉取模型列表'}</button>
+        {isEdit ? (
+          <button onClick={handleUpdateProvider} disabled={updateProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50">{updateProviderMut.isPending ? '保存中…' : '保存修改'}</button>
+        ) : (
+          <button onClick={handleSaveProvider} disabled={createProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50">{createProviderMut.isPending ? '保存中…' : '保存'}</button>
+        )}
+      </div>
+    </div>
+  );
+
+  /** 编辑提供商 tab：列表视图。 */
+  const renderProviderList = () => (
+    <div className="space-y-3">
+      {editListError && (
+        <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">{editListError}</div>
+      )}
+      {providersQuery.isError && (
+        <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">
+          加载失败：{providersQuery.error instanceof Error ? providersQuery.error.message : '未知错误'}
+          <button onClick={() => providersQuery.refetch()} className="ml-2 underline cursor-pointer">重试</button>
+        </div>
+      )}
+      {providersQuery.isLoading && <div className="text-xs text-slate-400 dark:text-slate-500 py-8 text-center">加载中…</div>}
+      {!providersQuery.isLoading && !providersQuery.isError && (providersQuery.data?.providers.length ?? 0) === 0 && (
+        <div className="text-xs text-slate-400 dark:text-slate-500 py-8 text-center">暂无已添加的自定义提供商</div>
+      )}
+      {providersQuery.data?.providers.map((provider) => (
+        <div key={provider.providerKey} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 dark:border-slate-800 px-3 py-2.5 bg-slate-50 dark:bg-slate-950/40">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <code className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100 truncate">{provider.providerKey}</code>
+              <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0">{provider.models.length} 个模型</span>
+            </div>
+            <div className="text-[10px] text-slate-400 dark:text-slate-500 truncate">{provider.baseUrl}</div>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={() => handleStartEdit(provider)} className="px-2.5 py-1 text-[10px] font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">编辑</button>
+            <button
+              onClick={() => handleDeleteProvider(provider)}
+              disabled={deletingKey === provider.providerKey}
+              className="px-2.5 py-1 text-[10px] font-semibold border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-lg transition cursor-pointer disabled:opacity-50"
+            >
+              {deletingKey === provider.providerKey ? '删除中…' : '删除'}
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  /** 编辑提供商 tab：编辑视图（表格/JSON 双模式）。 */
+  const renderEditView = () => {
+    if (!editingProvider) return null;
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <button onClick={handleBackToList} className="flex items-center gap-1 px-2 py-1 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">
+            <ArrowLeft className="w-3.5 h-3.5" /> 返回列表
+          </button>
+          <div className="flex items-center gap-3">
+            <code className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">{editingProvider.providerKey}</code>
+            <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <button
+                onClick={() => setEditJsonMode(false)}
+                className={`px-3 py-1.5 text-[10px] font-semibold transition cursor-pointer ${!editJsonMode ? 'bg-blue-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+              >
+                表格编辑
+              </button>
+              <button
+                onClick={() => setEditJsonMode(true)}
+                className={`px-3 py-1.5 text-[10px] font-semibold transition cursor-pointer ${editJsonMode ? 'bg-blue-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+              >
+                JSON 编辑
+              </button>
+            </div>
+          </div>
+        </div>
+        {editJsonMode ? (
+          <div className="space-y-3">
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              <code className="text-[10px] bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded font-mono">apiKey</code> 留空则保留原 key。
+            </div>
+            <textarea
+              value={editJsonContent}
+              onChange={(e) => {
+                setEditJsonContent(e.target.value);
+                setEditJsonFormatError(false);
+              }}
+              rows={20}
+              spellCheck={false}
+              className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono"
+            />
+            {editJsonFormatError && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
+            {editJsonError && <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">{editJsonError}</div>}
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-150 dark:border-slate-800">
+              <button onClick={handleBackToList} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
+              <button onClick={handleFormatJson} className="px-4 py-1.5 text-xs font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">格式化</button>
+              <button onClick={handleSaveJson} disabled={updateProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50">{updateProviderMut.isPending ? '保存中…' : '保存修改'}</button>
+            </div>
+          </div>
+        ) : (
+          renderProviderForm(true)
+        )}
+      </div>
+    );
+  };
+
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="添加模型" icon={<PlusCircle className="w-4 h-4 text-blue-600 dark:text-blue-400" />} maxWidthClassName="max-w-3xl">
       <div className="space-y-4">
         {/* Tabs */}
         <div className="flex border-b border-slate-200 dark:border-slate-700 -mx-1">
           <button
-            onClick={() => setProviderTab('native')}
+            onClick={() => handleTabChange('native')}
             className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${
               providerTab === 'native'
                 ? 'border-blue-600 text-blue-700 dark:text-blue-400'
@@ -350,7 +868,7 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
             平台密钥
           </button>
           <button
-            onClick={() => setProviderTab('custom')}
+            onClick={() => handleTabChange('custom')}
             className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${
               providerTab === 'custom'
                 ? 'border-blue-600 text-blue-700 dark:text-blue-400'
@@ -358,6 +876,16 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
             }`}
           >
             自定义提供商
+          </button>
+          <button
+            onClick={() => handleTabChange('edit')}
+            className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${
+              providerTab === 'edit'
+                ? 'border-blue-600 text-blue-700 dark:text-blue-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+            }`}
+          >
+            编辑提供商
           </button>
         </div>
 
@@ -413,189 +941,11 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
           </div>
         )}
 
-        {/* Tab content: Custom */}
-        {providerTab === 'custom' && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">providerKey</label>
-                <input value={providerKey} onChange={(e) => setProviderKey(e.target.value)} placeholder="例如 custom-openai" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">baseUrl</label>
-                <input value={providerBaseUrl} onChange={(e) => setProviderBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">api</label>
-                <select value={providerApi} onChange={(e) => setProviderApi(e.target.value)} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950">
-                  <option value="">openai-completions（默认）</option>
-                  <option value="openai-completions">openai-completions</option>
-                  <option value="openai-responses">openai-responses</option>
-                  <option value="anthropic-messages">anthropic-messages</option>
-                  <option value="google-generative-ai">google-generative-ai</option>
-                </select>
-              </div>
-              <div className="md:col-span-2">
-                <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">apiKey</label>
-                <input value={providerApiKey} onChange={(e) => setProviderApiKey(e.target.value)} type="password" placeholder="sk-..." className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950" />
-              </div>
-            </div>
+        {/* Tab content: Custom（添加） */}
+        {providerTab === 'custom' && renderProviderForm(false)}
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={providerAuthHeader} onChange={(e) => setProviderAuthHeader(e.target.checked)} /> authHeader</label>
-              <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsDeveloperRole} onChange={(e) => setSupportsDeveloperRole(e.target.checked)} /> compat.supportsDeveloperRole</label>
-              <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300"><input type="checkbox" checked={supportsReasoningEffort} onChange={(e) => setSupportsReasoningEffort(e.target.checked)} /> compat.supportsReasoningEffort</label>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">headers（JSON，可选）</label>
-                <textarea value={providerHeaders} onChange={(e) => handleProviderHeadersChange(e.target.value)} placeholder='{
-  "x-custom-header": "value"
-}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
-                {providerHeadersJsonError && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">compat 额外字段（JSON，可选）</label>
-                <textarea value={providerCompatJson} onChange={(e) => handleProviderCompatChange(e.target.value)} placeholder='{
-  "supportsUsageInStreaming": false,
-  "maxTokensField": "max_tokens",
-  "thinkingFormat": "deepseek"
-}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
-                {providerCompatJsonError && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">模型列表</div>
-                <div className="text-[10px] text-slate-400 dark:text-slate-500">点击「拉取模型列表」自动获取模型</div>
-              </div>
-              {providerModels.map((model, index) => (
-                <div key={index} className="rounded-xl border border-slate-200 dark:border-slate-800 p-3 space-y-3 bg-slate-50 dark:bg-slate-950/40">
-                  <div className="flex items-center justify-between gap-2 min-w-0">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 shrink-0">模型 {index + 1}</span>
-                      {model.id.trim() ? (
-                        <>
-                          <code className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100 truncate">{model.id}</code>
-                          {model.name?.trim() ? <span className="text-xs text-slate-400 dark:text-slate-500 truncate">{model.name}</span> : null}
-                        </>
-                      ) : (
-                        <span className="text-xs text-slate-400 dark:text-slate-500">（未获取到 id）</span>
-                      )}
-                    </div>
-                    <button onClick={() => handleRemoveProviderModel(index)} disabled={providerModels.length === 1} className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 cursor-pointer shrink-0"><Trash2 className="w-4 h-4" /></button>
-                  </div>
-
-                  <div>
-                    <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">能力</div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                      <div>
-                        <select value={model.api ?? ''} onChange={(e) => updateProviderModel(index, { api: e.target.value })} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950">
-                          <option value="">api（继承提供商）</option>
-                          <option value="openai-completions">openai-completions</option>
-                          <option value="openai-responses">openai-responses</option>
-                          <option value="anthropic-messages">anthropic-messages</option>
-                          <option value="google-generative-ai">google-generative-ai</option>
-                        </select>
-                      </div>
-                      <div className="flex flex-wrap gap-4 pt-1">
-                        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.reasoning} onChange={(e) => updateProviderModel(index, { reasoning: e.target.checked })} /> reasoning</label>
-                        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.inputImage} onChange={(e) => updateProviderModel(index, { inputImage: e.target.checked })} /> inputImage</label>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">input（可选）</label>
-                        <div className="flex flex-wrap gap-4">
-                          <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.input?.includes('text') ?? false} onChange={(e) => {
-                            const current = model.input ?? [];
-                            const next = e.target.checked ? [...current, 'text'] : current.filter((t) => t !== 'text');
-                            updateProviderModel(index, { input: next.length > 0 ? next : undefined });
-                          }} /> text</label>
-                          <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={model.input?.includes('image') ?? false} onChange={(e) => {
-                            const current = model.input ?? [];
-                            const next = e.target.checked ? [...current, 'image'] : current.filter((t) => t !== 'image');
-                            updateProviderModel(index, { input: next.length > 0 ? next : undefined });
-                          }} /> image</label>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">参数</div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div>
-                        <Select
-                          value={getContextPresetValue(model.contextWindow)}
-                          onChange={(v) => handleContextPresetChange(index, v)}
-                          options={CONTEXT_PRESET_OPTIONS}
-                          placeholder="contextWindow（可选）"
-                          className="w-full"
-                        />
-                        {(contextCustomModes[index] || getContextPresetValue(model.contextWindow) === 'custom') && (
-                          <input
-                            value={model.contextWindow ?? ''}
-                            onChange={(e) => handleContextWindowChange(index, e.target.value)}
-                            type="number"
-                            placeholder="自定义 contextWindow"
-                            className="w-full px-3 py-2 mt-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950"
-                          />
-                        )}
-                      </div>
-                      <input value={model.maxTokens ?? ''} onChange={(e) => updateProviderModel(index, { maxTokens: e.target.value ? Number(e.target.value) : undefined })} type="number" placeholder="maxTokens（可选）" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">价格</div>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                      <input value={model.cost?.input ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, input: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.input" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                      <input value={model.cost?.output ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, output: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.output" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                      <input value={model.cost?.cacheRead ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, cacheRead: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.cacheRead" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                      <input value={model.cost?.cacheWrite ?? ''} onChange={(e) => updateProviderModel(index, { cost: { ...model.cost, cacheWrite: e.target.value ? Number(e.target.value) : undefined } })} type="number" step="0.01" min="0" placeholder="cost.cacheWrite" className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950" />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">高级</div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">compat（可选）</label>
-                        <textarea value={model.compat ?? ''} onChange={(e) => handleModelCompatChange(index, e.target.value)} placeholder='例：{ &quot;forceAdaptiveThinking&quot;: true, &quot;thinkingFormat&quot;: &quot;deepseek&quot; }' rows={2} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 font-mono" />
-                        {modelJsonErrors[index]?.compat && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">thinkingLevelMap（可选）</label>
-                        <Select
-                          value={getThinkingPresetValue(model.thinkingLevelMap)}
-                          onChange={(v) => handleThinkingPresetChange(index, v)}
-                          options={THINKING_PRESET_OPTIONS}
-                          placeholder="选择预设"
-                          className="w-full"
-                        />
-                        {(thinkingCustomModes[index] || getThinkingPresetValue(model.thinkingLevelMap) === 'custom') && (
-                          <>
-                            <textarea value={model.thinkingLevelMap ?? ''} onChange={(e) => handleModelThinkingChange(index, e.target.value)} placeholder='例：{ &quot;off&quot;: null, &quot;medium&quot;: &quot;medium&quot;, &quot;high&quot;: &quot;high&quot; }' rows={2} className="w-full mt-2 px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 font-mono" />
-                            {modelJsonErrors[index]?.thinking && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {providerError && <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">{providerError}</div>}
-            {providerTestResult && <div className="text-xs text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-lg px-3 py-2">{providerTestResult}</div>}
-
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-150 dark:border-slate-800">
-              <button onClick={handleClose} className="px-3 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer">取消</button>
-              <button onClick={handleTestProvider} disabled={testProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer disabled:opacity-50">{testProviderMut.isPending ? '拉取中…' : '拉取模型列表'}</button>
-              <button onClick={handleSaveProvider} disabled={createProviderMut.isPending} className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-2xs transition cursor-pointer disabled:opacity-50">{createProviderMut.isPending ? '保存中…' : '保存'}</button>
-            </div>
-          </div>
-        )}
+        {/* Tab content: Edit（列表 / 编辑视图） */}
+        {providerTab === 'edit' && (editView === 'list' ? renderProviderList() : renderEditView())}
       </div>
     </Modal>
   );

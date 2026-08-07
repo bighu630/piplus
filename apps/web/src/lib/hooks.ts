@@ -36,12 +36,16 @@ import {
   gitCheckout,
   testModelProvider,
   createModelProvider,
+  getModelProviders,
+  updateModelProvider,
+  deleteModelProvider,
   getProjectRoleModels,
   setProjectRoleModels,
   getNativeModelProviders,
   setNativeProviderApiKey,
   type ModelInfo,
   type ProviderFormPayload,
+  type ProviderUpdatePayload,
   type SendSessionMessagePayload,
   getPackages,
   installPackage,
@@ -137,6 +141,45 @@ export function useCreateModelProviderMutation() {
     mutationFn: (payload: ProviderFormPayload) => createModelProvider(payload),
     onSuccess: async () => {
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['models', 'status'] }),
+        queryClient.invalidateQueries({ queryKey: ['models', 'providers'] }),
+      ]);
+    },
+  });
+}
+
+export function useModelProvidersQuery() {
+  return useQuery({
+    queryKey: ['models', 'providers'],
+    queryFn: getModelProviders,
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+export function useUpdateModelProviderMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerKey, payload }: { providerKey: string; payload: ProviderUpdatePayload }) =>
+      updateModelProvider(providerKey, payload),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['models', 'providers'] }),
+        queryClient.invalidateQueries({ queryKey: ['models'] }),
+        queryClient.invalidateQueries({ queryKey: ['models', 'status'] }),
+      ]);
+    },
+  });
+}
+
+export function useDeleteModelProviderMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (providerKey: string) => deleteModelProvider(providerKey),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['models', 'providers'] }),
         queryClient.invalidateQueries({ queryKey: ['models'] }),
         queryClient.invalidateQueries({ queryKey: ['models', 'status'] }),
       ]);

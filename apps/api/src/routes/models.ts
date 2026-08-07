@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type { Hono } from 'hono';
@@ -39,6 +39,64 @@ type ProviderCreateBody = ProviderTestBody & {
 
 type StoredModelsFile = {
   providers: Record<string, Record<string, unknown>>;
+};
+
+type ValidatedProviderBasics = {
+  providerKey: string;
+  baseUrl: string;
+  apiKey: string;
+  authHeader: boolean;
+};
+
+/** A provider as returned by GET /api/v1/models/providers (never includes apiKey) */
+type ProviderModelListItem = {
+  id: string;
+  name?: string;
+  api?: string;
+  reasoning?: boolean;
+  input?: string[];
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
+  compat?: Record<string, unknown>;
+  thinkingLevelMap?: Record<string, string | null>;
+};
+
+type ProviderListItem = {
+  providerKey: string;
+  baseUrl: string;
+  api?: string;
+  authHeader: boolean;
+  headers?: Record<string, string>;
+  compat?: Record<string, unknown>;
+  models: ProviderModelListItem[];
+};
+
+/** Payload shape passed to piClient.registerProvider */
+type ProviderRegistrationConfig = {
+  api: string;
+  baseUrl: string;
+  apiKey: string;
+  authHeader: boolean;
+  headers?: Record<string, string>;
+  compat?: Record<string, unknown>;
+  models: Array<{
+    id: string;
+    name?: string;
+    api?: string;
+    reasoning: boolean;
+    thinkingLevelMap?: Record<string, string | null>;
+    input: string[];
+    cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    contextWindow: number;
+    maxTokens: number;
+    compat?: Record<string, unknown>;
+  }>;
 };
 
 /** Piplus-managed providers file */
@@ -84,11 +142,13 @@ async function readPiplusModelsConfig(): Promise<StoredModelsFile> {
   }
 }
 
-/** Write only piplus-managed providers to the separate piplus-models.json */
+/** Write only piplus-managed providers to the separate piplus-models.json (atomic: temp + rename) */
 async function writePiplusModelsConfig(content: StoredModelsFile) {
   const filePath = getPiplusModelsFilePath();
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(content, null, 2) + '\n', 'utf-8');
+  const tmpPath = `${filePath}.tmp`;
+  await writeFile(tmpPath, JSON.stringify(content, null, 2) + '\n', 'utf-8');
+  await rename(tmpPath, filePath);
 }
 
 /** Check if a provider key already exists in either pi's models.json or piplus-models.json */
@@ -112,7 +172,7 @@ async function isProviderKeyTaken(providerKey: string): Promise<boolean> {
 function validateProviderBasics(body: ProviderTestBody) {
   const providerKey = String(body.providerKey ?? '').trim();
   const baseUrl = normalizeBaseUrl(String(body.baseUrl ?? '').trim());
-  const apiKey = String(body.apiKey ?? '');
+  const apiKey = String(body.apiKey ?? '').trim();
   const authHeader = Boolean(body.authHeader);
 
   if (!providerKey) {
@@ -123,6 +183,200 @@ function validateProviderBasics(body: ProviderTestBody) {
   }
 
   return { providerKey, baseUrl, apiKey, authHeader };
+}
+
+/** Validate that a create/update body has at least one model with a non-empty id */
+function validateProviderModels(body: ProviderCreateBody) {
+  const models = Array.isArray(body.models) ? body.models : [];
+  if (models.length === 0) {
+    return { error: { code: 'INVALID_MODELS', message: 'At least one model is required' }, status: 400 as const };
+  }
+
+  const invalidModel = models.find((model) => !String(model.id ?? '').trim());
+  if (invalidModel) {
+    return { error: { code: 'INVALID_MODEL_ID', message: 'Each model id is required' }, status: 400 as const };
+  }
+
+  return { models };
+}
+
+/**
+ * Build the provider config persisted to piplus-models.json.
+ * apiKey semantics: an empty/undefined body.apiKey keeps the stored key (existingApiKey),
+ * a non-empty body.apiKey overwrites it.
+ */
+function buildProviderConfig(
+  body: ProviderCreateBody,
+  validated: ValidatedProviderBasics,
+  existingApiKey?: string,
+): Record<string, unknown> {
+  const providerConfig: Record<string, unknown> = {
+    api: body.api?.trim() || 'openai-completions',
+    baseUrl: validated.baseUrl,
+    apiKey: validated.apiKey || existingApiKey || '',
+    authHeader: validated.authHeader,
+  };
+
+  if (body.headers && Object.keys(body.headers).length > 0) {
+    providerConfig.headers = body.headers;
+  }
+
+  if (body.compat && Object.keys(body.compat).length > 0) {
+    providerConfig.compat = body.compat;
+  }
+
+  providerConfig.models = (Array.isArray(body.models) ? body.models : []).map((model) => {
+    const modelEntry: Record<string, unknown> = {
+      id: String(model.id).trim(),
+    };
+
+    if (model.name?.trim()) {
+      modelEntry.name = model.name.trim();
+    }
+
+    if (model.api?.trim()) {
+      modelEntry.api = model.api.trim();
+    }
+
+    if (model.reasoning !== undefined) {
+      modelEntry.reasoning = model.reasoning;
+    }
+
+    if (model.contextWindow) {
+      modelEntry.contextWindow = Number(model.contextWindow);
+    }
+
+    if (model.maxTokens) {
+      modelEntry.maxTokens = Number(model.maxTokens);
+    }
+
+    if (model.cost) {
+      const cost: Record<string, number> = {};
+      if (model.cost.input != null) cost.input = Number(model.cost.input);
+      if (model.cost.output != null) cost.output = Number(model.cost.output);
+      if (model.cost.cacheRead != null) cost.cacheRead = Number(model.cost.cacheRead);
+      if (model.cost.cacheWrite != null) cost.cacheWrite = Number(model.cost.cacheWrite);
+      if (Object.keys(cost).length > 0) modelEntry.cost = cost;
+    }
+
+    if (model.compat && Object.keys(model.compat).length > 0) {
+      modelEntry.compat = model.compat;
+    }
+
+    if (model.thinkingLevelMap && Object.keys(model.thinkingLevelMap).length > 0) {
+      modelEntry.thinkingLevelMap = model.thinkingLevelMap;
+    }
+
+    // input: prefer explicit input array over inputImage shorthand
+    if (model.input && Array.isArray(model.input) && model.input.length > 0) {
+      modelEntry.input = model.input;
+    } else if (model.inputImage) {
+      modelEntry.input = ['text', 'image'];
+    } else {
+      modelEntry.input = ['text'];
+    }
+
+    return modelEntry;
+  });
+
+  return providerConfig;
+}
+
+/** Build the payload passed to piClient.registerProvider (full model replacement) */
+function buildRegistrationConfig(
+  body: ProviderCreateBody,
+  validated: ValidatedProviderBasics,
+  apiKey: string,
+): ProviderRegistrationConfig {
+  const models = Array.isArray(body.models) ? body.models : [];
+  return {
+    api: body.api?.trim() || 'openai-completions',
+    baseUrl: validated.baseUrl,
+    apiKey,
+    authHeader: validated.authHeader,
+    headers: body.headers,
+    compat: body.compat,
+    models: models.map((model) => ({
+      id: String(model.id).trim(),
+      name: model.name?.trim() || undefined,
+      api: model.api?.trim() || undefined,
+      reasoning: model.reasoning ?? false,
+      thinkingLevelMap: model.thinkingLevelMap,
+      input: model.input?.length
+        ? model.input
+        : model.inputImage
+          ? ['text', 'image']
+          : ['text'],
+      cost: {
+        input: model.cost?.input ?? 0,
+        output: model.cost?.output ?? 0,
+        cacheRead: model.cost?.cacheRead ?? 0,
+        cacheWrite: model.cost?.cacheWrite ?? 0,
+      },
+      contextWindow: model.contextWindow ? Number(model.contextWindow) : 128000,
+      maxTokens: model.maxTokens ? Number(model.maxTokens) : 16384,
+      compat: model.compat as Record<string, unknown> | undefined,
+    })),
+  };
+}
+
+/** Register (or re-register) a provider with Pi's model registry. Returns false if unavailable. */
+async function registerProviderConfig(
+  piClient: ReturnType<typeof createPiClient>,
+  providerKey: string,
+  config: ProviderRegistrationConfig,
+): Promise<boolean> {
+  if (!piClient.registerProvider) return false;
+  await piClient.registerProvider(providerKey, config);
+  return true;
+}
+
+/** Normalize a stored provider entry for the API response, stripping apiKey and filling only present fields */
+function normalizeProviderEntry(providerKey: string, raw: Record<string, unknown>): ProviderListItem {
+  const entry: ProviderListItem = {
+    providerKey,
+    baseUrl: String(raw.baseUrl ?? ''),
+    authHeader: Boolean(raw.authHeader),
+    models: [],
+  };
+
+  if (raw.api) {
+    entry.api = String(raw.api);
+  }
+
+  if (raw.headers && typeof raw.headers === 'object') {
+    entry.headers = raw.headers as Record<string, string>;
+  }
+
+  if (raw.compat && typeof raw.compat === 'object') {
+    entry.compat = raw.compat as Record<string, unknown>;
+  }
+
+  const models = Array.isArray(raw.models) ? raw.models : [];
+  entry.models = models.map((m) => {
+    const model = (m ?? {}) as Record<string, unknown>;
+    const item: ProviderModelListItem = { id: String(model.id ?? '') };
+
+    if (model.name) item.name = String(model.name);
+    if (model.api) item.api = String(model.api);
+    if (model.reasoning !== undefined) item.reasoning = Boolean(model.reasoning);
+    if (Array.isArray(model.input) && model.input.length > 0) item.input = model.input as string[];
+    if (model.contextWindow) item.contextWindow = Number(model.contextWindow);
+    if (model.maxTokens) item.maxTokens = Number(model.maxTokens);
+    if (model.cost && typeof model.cost === 'object') {
+      item.cost = model.cost as ProviderModelListItem['cost'];
+    }
+    if (model.compat && typeof model.compat === 'object') {
+      item.compat = model.compat as Record<string, unknown>;
+    }
+    if (model.thinkingLevelMap && typeof model.thinkingLevelMap === 'object') {
+      item.thinkingLevelMap = model.thinkingLevelMap as Record<string, string | null>;
+    }
+
+    return item;
+  });
+
+  return entry;
 }
 
 /** Re-register all piplus-managed providers with Pi's model registry at startup */
@@ -170,9 +424,10 @@ async function loadPiplusProviders(piClient: ReturnType<typeof createPiClient>) 
   }
 }
 
-export function registerModelRoutes(app: Hono) {
-  const piClient = createPiClient();
-
+export function registerModelRoutes(
+  app: Hono,
+  piClient: ReturnType<typeof createPiClient> = createPiClient(),
+) {
   // Load piplus-managed providers at startup — routes wait for this before handling requests
   const initPromise = loadPiplusProviders(piClient).catch((err) =>
     console.error('[models] Failed to load piplus providers at startup:', err),
@@ -224,15 +479,8 @@ export function registerModelRoutes(app: Hono) {
     const validated = validateProviderBasics(body);
     if ('error' in validated) return c.json({ error: validated.error }, validated.status);
 
-    const models = Array.isArray(body.models) ? body.models : [];
-    if (models.length === 0) {
-      return c.json({ error: { code: 'INVALID_MODELS', message: 'At least one model is required' } }, 400);
-    }
-
-    const invalidModel = models.find((model) => !String(model.id ?? '').trim());
-    if (invalidModel) {
-      return c.json({ error: { code: 'INVALID_MODEL_ID', message: 'Each model id is required' } }, 400);
-    }
+    const modelsResult = validateProviderModels(body);
+    if ('error' in modelsResult) return c.json({ error: modelsResult.error }, modelsResult.status);
 
     // Check both piplus and pi's models.json for duplicate provider keys
     if (await isProviderKeyTaken(validated.providerKey)) {
@@ -240,104 +488,18 @@ export function registerModelRoutes(app: Hono) {
     }
 
     // Build the provider config (same structure as pi's models.json expects)
-    const providerConfig: Record<string, unknown> = {
-      api: body.api?.trim() || 'openai-completions',
-      baseUrl: validated.baseUrl,
-      apiKey: validated.apiKey,
-      authHeader: validated.authHeader,
-    };
-
-    if (body.headers && Object.keys(body.headers).length > 0) {
-      providerConfig.headers = body.headers;
-    }
-
-    if (body.compat && Object.keys(body.compat).length > 0) {
-      providerConfig.compat = body.compat;
-    }
-
-    providerConfig.models = models.map((model) => {
-      const modelEntry: Record<string, unknown> = {
-        id: String(model.id).trim(),
-      };
-
-      if (model.name?.trim()) {
-        modelEntry.name = model.name.trim();
-      }
-
-      if (model.api?.trim()) {
-        modelEntry.api = model.api.trim();
-      }
-
-      if (model.reasoning !== undefined) {
-        modelEntry.reasoning = model.reasoning;
-      }
-
-      if (model.contextWindow) {
-        modelEntry.contextWindow = Number(model.contextWindow);
-      }
-
-      if (model.maxTokens) {
-        modelEntry.maxTokens = Number(model.maxTokens);
-      }
-
-      if (model.cost) {
-        const cost: Record<string, number> = {};
-        if (model.cost.input != null) cost.input = Number(model.cost.input);
-        if (model.cost.output != null) cost.output = Number(model.cost.output);
-        if (model.cost.cacheRead != null) cost.cacheRead = Number(model.cost.cacheRead);
-        if (model.cost.cacheWrite != null) cost.cacheWrite = Number(model.cost.cacheWrite);
-        if (Object.keys(cost).length > 0) modelEntry.cost = cost;
-      }
-
-      if (model.compat && Object.keys(model.compat).length > 0) {
-        modelEntry.compat = model.compat;
-      }
-
-      if (model.thinkingLevelMap && Object.keys(model.thinkingLevelMap).length > 0) {
-        modelEntry.thinkingLevelMap = model.thinkingLevelMap;
-      }
-
-      // input: prefer explicit input array over inputImage shorthand
-      if (model.input && Array.isArray(model.input) && model.input.length > 0) {
-        modelEntry.input = model.input;
-      } else if (model.inputImage) {
-        modelEntry.input = ['text', 'image'];
-      } else {
-        modelEntry.input = ['text'];
-      }
-
-      return modelEntry;
-    });
+    const providerConfig = buildProviderConfig(body, validated);
 
     // Register with Pi's model registry FIRST (may throw on invalid config).
     // If registration succeeds, models are immediately available for sessions.
-    if (!piClient.registerProvider) {
+    const registered = await registerProviderConfig(
+      piClient,
+      validated.providerKey,
+      buildRegistrationConfig(body, validated, validated.apiKey),
+    );
+    if (!registered) {
       return c.json({ error: { code: 'REGISTRATION_FAILED', message: 'Provider registration is not available' } }, 500);
     }
-    await piClient.registerProvider(validated.providerKey, {
-      api: body.api?.trim() || 'openai-completions',
-      baseUrl: validated.baseUrl,
-      apiKey: validated.apiKey,
-      authHeader: validated.authHeader,
-      headers: body.headers,
-      compat: body.compat,
-      models: models.map((model) => ({
-        id: String(model.id).trim(),
-        name: model.name?.trim() || undefined,
-        api: model.api?.trim() || undefined,
-        reasoning: model.reasoning ?? false,
-        thinkingLevelMap: model.thinkingLevelMap,
-        input: model.input?.length
-          ? model.input
-          : model.inputImage
-            ? ['text', 'image']
-            : ['text'],
-        cost: model.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: model.contextWindow ? Number(model.contextWindow) : 128000,
-        maxTokens: model.maxTokens ? Number(model.maxTokens) : 16384,
-        compat: model.compat as Record<string, unknown> | undefined,
-      })),
-    });
 
     // Then persist to disk (if this fails, the provider is still registered in-memory
     // for the current process lifetime; restart will pick it up from the file)
@@ -349,6 +511,87 @@ export function registerModelRoutes(app: Hono) {
     const refreshed = await piClient.listAvailableModels();
     const providerModels = refreshed.filter((model) => model.provider === validated.providerKey);
     return c.json({ ok: true, providerKey: validated.providerKey, models: providerModels });
+  });
+
+  // List piplus-managed custom providers (apiKey is never exposed)
+  app.get('/api/v1/models/providers', async (c) => {
+    await initPromise;
+    const config = await readPiplusModelsConfig();
+    const providers = Object.entries(config.providers)
+      .map(([providerKey, providerConfig]) => normalizeProviderEntry(providerKey, providerConfig))
+      .sort((a, b) => a.providerKey.localeCompare(b.providerKey));
+    return c.json({ ok: true, providers });
+  });
+
+  // Update an existing piplus-managed custom provider (apiKey from URL, body identical to create)
+  app.put('/api/v1/models/providers/:providerKey', async (c) => {
+    await initPromise;
+    const providerKey = String(c.req.param('providerKey') ?? '').trim();
+    if (!providerKey) {
+      return c.json({ error: { code: 'INVALID_PROVIDER_KEY', message: 'providerKey is required' } }, 400);
+    }
+
+    const body = await c.req.json().catch(() => ({})) as ProviderCreateBody;
+    const validated = validateProviderBasics({ ...body, providerKey });
+    if ('error' in validated) return c.json({ error: validated.error }, validated.status);
+
+    const modelsResult = validateProviderModels(body);
+    if ('error' in modelsResult) return c.json({ error: modelsResult.error }, modelsResult.status);
+
+    const config = await readPiplusModelsConfig();
+    const existing = config.providers[providerKey];
+    if (!existing) {
+      return c.json({ error: { code: 'PROVIDER_NOT_FOUND', message: 'Provider not found' } }, 404);
+    }
+
+    const existingApiKey =
+      typeof existing.apiKey === 'string' ? existing.apiKey : undefined;
+
+    // apiKey semantics: empty/undefined body.apiKey keeps the stored key, non-empty overwrites it
+    const providerConfig = buildProviderConfig(body, validated, existingApiKey);
+
+    // Register with Pi's model registry FIRST (may throw on invalid config).
+    // If registration fails, the file has not been touched, keeping disk,
+    // in-memory registry, and the user's view consistent — same as POST.
+    const registered = await registerProviderConfig(
+      piClient,
+      providerKey,
+      buildRegistrationConfig(body, validated, validated.apiKey || existingApiKey || ''),
+    );
+    if (!registered) {
+      return c.json({ error: { code: 'REGISTRATION_FAILED', message: 'Provider registration is not available' } }, 500);
+    }
+
+    // Then persist to disk (if this fails, the provider is still registered in-memory
+    // for the current process lifetime; restart will pick it up from the file)
+    config.providers[providerKey] = providerConfig;
+    await writePiplusModelsConfig(config);
+
+    // Return the freshly registered models
+    const refreshed = await piClient.listAvailableModels();
+    const providerModels = refreshed.filter((model) => model.provider === providerKey);
+    return c.json({ ok: true, providerKey, models: providerModels });
+  });
+
+  // Delete a piplus-managed custom provider. Deliberately no unregisterProvider call:
+  // models registered in the current process are reclaimed by the runtime automatically,
+  // and disappear on restart once the file no longer lists them.
+  app.delete('/api/v1/models/providers/:providerKey', async (c) => {
+    await initPromise;
+    const providerKey = String(c.req.param('providerKey') ?? '').trim();
+    if (!providerKey) {
+      return c.json({ error: { code: 'INVALID_PROVIDER_KEY', message: 'providerKey is required' } }, 400);
+    }
+
+    const config = await readPiplusModelsConfig();
+    if (!config.providers[providerKey]) {
+      return c.json({ error: { code: 'PROVIDER_NOT_FOUND', message: 'Provider not found' } }, 404);
+    }
+
+    delete config.providers[providerKey];
+    await writePiplusModelsConfig(config);
+
+    return c.json({ ok: true, providerKey });
   });
 
   // Native provider auth endpoints

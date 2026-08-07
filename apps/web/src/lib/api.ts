@@ -121,6 +121,48 @@ export function createModelProvider(payload: ProviderFormPayload) {
   });
 }
 
+export type ProviderListItemModel = {
+  id: string;
+  name?: string;
+  api?: string;
+  reasoning?: boolean;
+  input?: string[];
+  contextWindow?: number;
+  maxTokens?: number;
+  cost?: ProviderFormModel['cost'];
+  compat?: Record<string, unknown>;
+  thinkingLevelMap?: Record<string, string | null>;
+};
+
+export type ProviderListItem = {
+  providerKey: string;
+  baseUrl: string;
+  api?: string;
+  authHeader: boolean;
+  headers?: Record<string, string>;
+  compat?: Record<string, unknown>;
+  models: ProviderListItemModel[];
+};
+
+export type ProviderUpdatePayload = Omit<ProviderFormPayload, 'providerKey'>;
+
+export function getModelProviders() {
+  return request<{ ok: boolean; providers: ProviderListItem[] }>('/api/v1/models/providers');
+}
+
+export function updateModelProvider(providerKey: string, payload: ProviderUpdatePayload) {
+  return request<{ ok: boolean; providerKey: string; models: ModelInfo[] }>(`/api/v1/models/providers/${encodeURIComponent(providerKey)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteModelProvider(providerKey: string) {
+  return request<{ ok: boolean; providerKey: string }>(`/api/v1/models/providers/${encodeURIComponent(providerKey)}`, {
+    method: 'DELETE',
+  });
+}
+
 export function setSessionModel(sessionId: string, model: { provider: string; id: string }) {
   return request<{ session_id: string; model: ModelInfo }>(`/api/v1/sessions/${sessionId}/model`, {
     method: 'POST',
