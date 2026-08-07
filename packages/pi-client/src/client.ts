@@ -91,7 +91,7 @@ function normalizeImages(images: PiImageInput[] | undefined) {
   }));
 }
 
-function buildCompleteModelContext(input: PiCompleteModelInput) {
+function buildCompleteModelContext(input: PiCompleteModelInput): Parameters<typeof modelRuntime.completeSimple>[1] {
   return {
     systemPrompt: input.systemPrompt,
     messages: input.messages.map((msg) => ({
@@ -99,7 +99,7 @@ function buildCompleteModelContext(input: PiCompleteModelInput) {
       timestamp: Date.now(),
       content: msg.images?.length
         ? [
-            { type: 'text' as const, text: msg.content },
+            ...(msg.content ? [{ type: 'text' as const, text: msg.content }] : []),
             ...msg.images.map((image) => ({
               type: 'image' as const,
               data: image.dataBase64,
@@ -739,7 +739,7 @@ export function createPiClient(): PiClient {
       }
       const message = await modelRuntime.completeSimple(
         model,
-        buildCompleteModelContext(input) as unknown as Parameters<typeof modelRuntime.completeSimple>[1],
+        buildCompleteModelContext(input),
         {
           maxTokens: input.maxTokens,
           signal: input.signal,
@@ -749,7 +749,7 @@ export function createPiClient(): PiClient {
         .filter((block) => block.type === 'text')
         .map((block) => (block as { type: 'text'; text: string }).text)
         .join('\n');
-      return { text, stopReason: message.stopReason };
+      return { text, stopReason: message.stopReason, errorMessage: message.errorMessage };
     },
 
     async setSessionModel(sessionId, locator, modelRef, cwd) {

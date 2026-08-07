@@ -41,7 +41,7 @@ export type PiImageInput = {
 };
 
 export type PiCompleteModelMessage = {
-  role: 'user' | 'assistant';
+  role: 'user';
   content: string;
   images?: PiImageInput[];
 };
@@ -58,6 +58,7 @@ export type PiCompleteModelInput = {
 export type PiCompleteModelResult = {
   text: string;
   stopReason: string;
+  errorMessage?: string;
 };
 
 export type PiTextContentBlock = {

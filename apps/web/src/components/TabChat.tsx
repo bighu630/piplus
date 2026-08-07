@@ -426,9 +426,9 @@ function TabChat({
       await onSend(content, attachments);
       // 成功后不移除：等待 messages query 轮询拉到真实消息后由 reconcile 确认，
       // 避免 POST 返回与 refetch 完成之间的窗口期用户消息闪白（60s 兜底见下方 effect）
-    } catch {
+    } catch (err) {
       setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
-      throw new Error('send_failed');
+      throw err;
     }
   }, [onSend, clearStreamRuntimeErrors, selectedSessionId]);
 

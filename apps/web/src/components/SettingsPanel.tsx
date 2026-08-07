@@ -257,31 +257,35 @@ export default function SettingsPanel({
                     />
                   </div>
                 </div>
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    onClick={async () => {
-                      setVisionError(null);
-                      setVisionSaved(false);
-                      try {
-                        await updateSettingsMut.mutateAsync({
-                          vision_enabled: String(visionEnabled),
-                          vision_model: visionModel,
-                          vision_fallback_model: visionFallbackModel,
-                        });
-                        setVisionSaved(true);
-                        setVisionTouched(false);
-                      } catch (err) {
-                        setVisionError(err instanceof Error ? err.message : '保存失败');
-                      }
-                    }}
-                    disabled={!visionModel}
-                    className="px-3 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    保存
-                  </button>
-                  {visionSaved && <span className="text-[11px] text-emerald-600 dark:text-emerald-400">已保存</span>}
-                  {visionError && <span className="text-[11px] text-red-600 dark:text-red-400">{visionError}</span>}
-                </div>
+              </div>
+            )}
+
+            {/* 保存行在 visionEnabled 块之外：取消勾选后仍可保存关闭状态 */}
+            {visionTouched && (
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={async () => {
+                    setVisionError(null);
+                    setVisionSaved(false);
+                    try {
+                      await updateSettingsMut.mutateAsync({
+                        vision_enabled: String(visionEnabled),
+                        vision_model: visionModel,
+                        vision_fallback_model: visionFallbackModel,
+                      });
+                      setVisionSaved(true);
+                      setVisionTouched(false);
+                    } catch (err) {
+                      setVisionError(err instanceof Error ? err.message : '保存失败');
+                    }
+                  }}
+                  disabled={visionEnabled && !visionModel}
+                  className="px-3 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  保存
+                </button>
+                {visionSaved && <span className="text-[11px] text-emerald-600 dark:text-emerald-400">已保存</span>}
+                {visionError && <span className="text-[11px] text-red-600 dark:text-red-400">{visionError}</span>}
               </div>
             )}
           </div>

@@ -5,7 +5,7 @@ import { createDb } from '@piplus/db/client';
 import { messages, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
-import { stripMergedPromptPrefix } from './sessions';
+import { parseModelRef, buildVisionMergedContent, describeImagesWithFallback, stripMergedPromptPrefix } from './sessions';
 
 const imageCapableModelPromise = createPiClient().listAvailableModels().then((models) => models.at(-1) ?? models[0]);
 
@@ -584,5 +584,101 @@ describe('stripMergedPromptPrefix', () => {
   test('keeps content after the last separator occurrence', () => {
     const text = 'a\n\n请尊重用户的语言习惯，现在用户说：\n\nb\n\n请尊重用户的语言习惯，现在用户说：\n\nc';
     expect(stripMergedPromptPrefix(text)).toBe('c');
+  });
+});
+
+describe('parseModelRef', () => {
+  test("parses 'provider/id'", () => {
+    expect(parseModelRef('a/b')).toEqual({ provider: 'a', id: 'b' });
+  });
+
+  test("keeps the remainder as id for 'provider/id/sub'", () => {
+    expect(parseModelRef('a/b/c')).toEqual({ provider: 'a', id: 'b/c' });
+  });
+
+  test('returns null for empty, null and malformed refs', () => {
+    expect(parseModelRef('')).toBeNull();
+    expect(parseModelRef(null)).toBeNull();
+    expect(parseModelRef('   ')).toBeNull();
+    expect(parseModelRef('/leading')).toBeNull();
+    expect(parseModelRef('trailing/')).toBeNull();
+  });
+});
+
+describe('buildVisionMergedContent', () => {
+  test('appends description after user text', () => {
+    expect(buildVisionMergedContent('看下这个报错', 'ERR: xxx')).toBe('看下这个报错\n\n[图片内容识别]\nERR: xxx');
+  });
+
+  test('image-only message uses description only', () => {
+    expect(buildVisionMergedContent('', '图片描述')).toBe('[图片内容识别]\n图片描述');
+  });
+});
+
+describe('describeImagesWithFallback', () => {
+  const primary = { provider: 'vision', id: 'primary-model' };
+  const fallback = { provider: 'vision', id: 'fallback-model' };
+
+  test('primary success → ok and primary-only call', async () => {
+    const calls: string[] = [];
+    const piClient = {
+      completeModel: async (input: { provider: string; id: string }) => {
+        calls.push(`${input.provider}/${input.id}`);
+        return { text: '主模型描述', stopReason: 'stop' };
+      },
+    };
+    const outcome = await describeImagesWithFallback(piClient, primary, fallback, '内容', []);
+    expect(outcome).toEqual({ ok: true, description: '主模型描述' });
+    expect(calls).toEqual(['vision/primary-model']);
+  });
+
+  test('primary failure → fallback succeeds, both called', async () => {
+    const calls: string[] = [];
+    const piClient = {
+      completeModel: async (input: { provider: string; id: string }) => {
+        calls.push(`${input.provider}/${input.id}`);
+        if (calls.length === 1) throw new Error('primary down');
+        return { text: '备选描述', stopReason: 'stop' };
+      },
+    };
+    const outcome = await describeImagesWithFallback(piClient, primary, fallback, '内容', []);
+    expect(outcome).toEqual({ ok: true, description: '备选描述' });
+    expect(calls).toEqual(['vision/primary-model', 'vision/fallback-model']);
+  });
+
+  test('both fail → ok:false', async () => {
+    const piClient = {
+      completeModel: async () => {
+        throw new Error('down');
+      },
+    };
+    const outcome = await describeImagesWithFallback(piClient, primary, fallback, '内容', []);
+    expect(outcome).toEqual({ ok: false, error: '主备多模态模型均不可用' });
+  });
+
+  test('empty response counts as failure and triggers fallback', async () => {
+    const calls: string[] = [];
+    const piClient = {
+      completeModel: async (input: { provider: string; id: string }) => {
+        calls.push(`${input.provider}/${input.id}`);
+        return { text: '   \n  ', stopReason: 'stop' };
+      },
+    };
+    const outcome = await describeImagesWithFallback(piClient, primary, fallback, '内容', []);
+    expect(outcome).toEqual({ ok: false, error: '主备多模态模型均不可用' });
+    expect(calls).toEqual(['vision/primary-model', 'vision/fallback-model']);
+  });
+
+  test('stopReason error with errorMessage fails the model attempt', async () => {
+    const calls: string[] = [];
+    const piClient = {
+      completeModel: async (input: { provider: string; id: string }) => {
+        calls.push(`${input.provider}/${input.id}`);
+        return { text: '', stopReason: 'error', errorMessage: 'upstream 500' };
+      },
+    };
+    const outcome = await describeImagesWithFallback(piClient, primary, fallback, '内容', []);
+    expect(outcome).toEqual({ ok: false, error: '主备多模态模型均不可用' });
+    expect(calls).toEqual(['vision/primary-model', 'vision/fallback-model']);
   });
 });

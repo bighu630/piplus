@@ -214,9 +214,10 @@ const VISION_SYSTEM_PROMPT = [
   '只输出描述内容本身，不要客套话。',
 ].join('');
 
-const VISION_CALL_TIMEOUT_MS = 60_000;
+const VISION_RELAY_TIMEOUT_MS = 90_000;
 
-function parseModelRef(raw: string | null): { provider: string; id: string } | null {
+/** 解析 'provider/id' 形式的模型引用；'a/b/c' → provider 'a'、id 'b/c'；非法引用返回 null。 */
+export function parseModelRef(raw: string | null): { provider: string; id: string } | null {
   if (!raw) return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -229,47 +230,60 @@ function modelRefLabel(ref: { provider: string; id: string } | null): string {
   return ref ? `${ref.provider}/${ref.id}` : '未配置';
 }
 
-/** 用单个多模态模型识别图片；失败抛错（超时/网络/空响应均视为失败）。 */
+type VisionPiClient = Pick<ReturnType<typeof createPiClient>, 'completeModel'>;
+
+/** 用单个多模态模型识别图片；失败抛错（超时/网络/空响应均视为失败）。signal 由 describeImagesWithFallback 传入，共享总超时预算。 */
 async function describeImagesWithModel(
-  piClient: ReturnType<typeof createPiClient>,
+  piClient: VisionPiClient,
   ref: { provider: string; id: string },
   content: string,
   images: PiImageInput[],
+  signal: AbortSignal,
 ): Promise<string> {
   const result = await piClient.completeModel({
     provider: ref.provider,
     id: ref.id,
     systemPrompt: VISION_SYSTEM_PROMPT,
     messages: [{ role: 'user', content: content || '（无文本提示，请直接描述图片内容）', images }],
-    signal: AbortSignal.timeout(VISION_CALL_TIMEOUT_MS),
+    signal,
   });
+  // 把模型返回的错误明细计入抛错信息，便于日志排查
+  if (result.stopReason === 'error' && result.errorMessage) {
+    throw new Error(`模型调用失败：${result.errorMessage}`);
+  }
   const text = result.text.trim();
   if (!text) throw new Error('多模态模型返回了空响应');
   return text;
 }
 
-/** 主 → 备回退调用；全部失败返回 { ok: false, error }。 */
-async function describeImagesWithFallback(
-  piClient: ReturnType<typeof createPiClient>,
+/** 主 → 备回退调用（共享 VISION_RELAY_TIMEOUT_MS 总超时预算）；全部失败返回 { ok: false, error }。 */
+export async function describeImagesWithFallback(
+  piClient: VisionPiClient,
   primary: { provider: string; id: string },
   fallback: { provider: string; id: string } | null,
   content: string,
   images: PiImageInput[],
 ): Promise<{ ok: true; description: string } | { ok: false; error: string }> {
-  for (const ref of fallback ? [primary, fallback] : [primary]) {
-    try {
-      const description = await describeImagesWithModel(piClient, ref, content, images);
-      return { ok: true, description };
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      log.info('vision relay model failed', { model: modelRefLabel(ref), reason });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), VISION_RELAY_TIMEOUT_MS);
+  try {
+    for (const ref of fallback ? [primary, fallback] : [primary]) {
+      try {
+        const description = await describeImagesWithModel(piClient, ref, content, images, controller.signal);
+        return { ok: true, description };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        log.info('vision relay model failed', { model: modelRefLabel(ref), reason });
+      }
     }
+    return { ok: false, error: '主备多模态模型均不可用' };
+  } finally {
+    clearTimeout(timeout);
   }
-  return { ok: false, error: '主备多模态模型均不可用' };
 }
 
 /** 图片描述与用户文本合并（描述追加在文本后；纯图片消息仅描述）。 */
-function buildVisionMergedContent(content: string, description: string): string {
+export function buildVisionMergedContent(content: string, description: string): string {
   const desc = `[图片内容识别]\n${description}`;
   return content ? `${content}\n\n${desc}` : desc;
 }
@@ -657,15 +671,26 @@ export function registerSessionRoutes(app: Hono) {
     const currentModel = await resolveSessionModelWithCapabilities(piClient, session);
     let effectiveContent = rawContent;
     let effectiveImages = attachmentParse.images;
-    if (attachmentParse.images.length > 0 && !modelSupportsImageInput(currentModel)) {
+    if (attachmentParse.images.length > 0 && currentModel !== null && !modelSupportsImageInput(currentModel)) {
       const visionEnabled = (await getSetting(db, 'vision_enabled')) === 'true';
       const primaryRef = visionEnabled ? parseModelRef(await getSetting(db, 'vision_model')) : null;
       if (primaryRef) {
         const fallbackRef = parseModelRef(await getSetting(db, 'vision_fallback_model'));
+        // 原子认领 running：两个并发 POST 可能同时通过上方 busy 检查，
+        // 这里用条件更新保证只有一个请求进入 describe（最长 90s），防止双 describe / 双 run
+        const claimed = await db.update(sessions)
+          .set({ runtimeStatus: 'running', updatedAt: new Date() })
+          .where(and(eq(sessions.id, sessionId), eq(sessions.runtimeStatus, 'idle')))
+          .returning({ id: sessions.id });
+        if (claimed.length === 0) {
+          return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+        }
         const outcome = await describeImagesWithFallback(piClient, primaryRef, fallbackRef, rawContent, attachmentParse.images);
         if (!outcome.ok) {
           // 主备都失败：插入 error 历史消息，整条消息拒绝（不落库、不发给文本模型）
           await insertVisionFailureMessage(db, sessionId, primaryRef, fallbackRef, outcome.error);
+          // 认领失败路径恢复 idle（成功路径由 startSessionRun 内部管理状态）
+          await db.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date() }).where(eq(sessions.id, sessionId));
           return c.json({
             error: { code: 'VISION_DESCRIPTION_FAILED', message: '图片识别失败，消息未发送（多模态识别模型不可用）' },
           }, 400);
@@ -677,6 +702,9 @@ export function registerSessionRoutes(app: Hono) {
         // 未开启功能或未配置多模态模型：保持原有拒绝行为
         return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
       }
+    } else if (attachmentParse.images.length > 0 && !modelSupportsImageInput(currentModel)) {
+      // currentModel 为 null（模型解析失败）等边界：保持原有拒绝行为，避免进入 60s+ describe 再失败
+      return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
     }
 
     const contentBlocks: PiContentBlock[] = [

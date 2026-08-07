@@ -450,8 +450,12 @@ export default function App() {
 
   const handleSend = useCallback(async (content: string, attachments: SessionMessageImageAttachment[] = []) => {
     if (!selectedSessionId) return;
-    await sendMessageMut.mutateAsync({ content, attachments });
-    queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+    try {
+      await sendMessageMut.mutateAsync({ content, attachments });
+    } finally {
+      // 失败路径也要刷新：vision relay 插入的 error 历史消息需要出现在会话视图
+      queryClient.invalidateQueries({ queryKey: ['session', 'messages', selectedSessionId] });
+    }
   }, [selectedSessionId, sendMessageMut, queryClient]);
 
   const handleStop = useCallback(async () => {
