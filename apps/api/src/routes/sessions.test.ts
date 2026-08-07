@@ -273,6 +273,189 @@ describe('session routes', () => {
     expect(errorMsg!.content_text).toContain('图片识别失败');
   });
 
+  test('vision relay: successful description merges into content sent to text model and session stays idle', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+
+    const realClient = createPiClient();
+    let visionCalls = 0;
+    const captured: { content: string | null } = { content: null };
+    const stubClient = new Proxy(realClient, {
+      get(target, prop, receiver) {
+        if (prop === 'completeModel') {
+          return async () => {
+            visionCalls += 1;
+            return { text: '这是一张报错截图', stopReason: 'stop' };
+          };
+        }
+        if (prop === 'sendMessage') {
+          return async (_sessionId: string, content: string) => {
+            captured.content = content;
+            throw new Error('no_api_key_in_test');
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const app = createApp({ piClient: stubClient });
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Vision Relay Success', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 切换到纯文本模型（无图片支持）
+    const modelsRes = await app.request('/api/v1/models', { headers: { 'x-user-id': 'user_seed' } });
+    const modelsBody = await modelsRes.json();
+    const textOnlyModel = (modelsBody.models as Array<{ provider: string; id: string; input?: string[] }>).find(
+      (m) => Array.isArray(m.input) && !m.input.includes('image'),
+    );
+    if (textOnlyModel) {
+      await app.request(`/api/v1/sessions/${sessionId}/model`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
+      });
+    }
+
+    // 开启 vision relay，主/备模型用 stub 拦截（无需真实 API key）
+    const settingsRes = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        vision_enabled: 'true',
+        vision_model: 'fake-vision/fake-model',
+        vision_fallback_model: 'fake-vision/fallback-model',
+      }),
+    });
+    expect(settingsRes.status).toBe(200);
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+    // 不断言具体状态码：sendMessage stub 抛错在 startSessionRun 的后台 cleanup 中发生（void attemptSend），
+    // 响应本身是 202；本测试关注的是 vision 链路与状态恢复。
+    void sendRes;
+    expect(visionCalls).toBe(1); // 只调了一次主模型（无回退）
+    expect(captured.content).toContain('[图片内容识别]');
+    expect(captured.content).toContain('这是一张报错截图');
+    expect(captured.content).toContain('describe this'); // 用户原文本保留
+    expect(captured.content).not.toContain(Buffer.from('blocked').toString('base64')); // 图片 base64 不发给文本模型
+
+    // 会话状态未被卡死（回归点：修复前 startSessionRun 重新读库读到 running → session_busy → 永久卡死）
+    // sendMessage 抛错后由 startSessionRun 的 cleanup 异步恢复 idle，轮询等待
+    const db = createDb(`file:${path}`);
+    let sessionRow: { runtimeStatus: string } | undefined;
+    for (let i = 0; i < 200; i++) {
+      [sessionRow] = await db.select({ runtimeStatus: sessions.runtimeStatus }).from(sessions).where(eq(sessions.id, sessionId));
+      if (sessionRow?.runtimeStatus === 'idle') break;
+      await Bun.sleep(10);
+    }
+    expect(sessionRow?.runtimeStatus).toBe('idle');
+  });
+
+  test('vision relay: concurrent POST while describe in flight gets 409', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+
+    let releaseDescribe: (() => void) | null = null;
+    const describeGate = new Promise<void>((resolve) => { releaseDescribe = resolve; });
+    const realClient = createPiClient();
+    let visionCalls = 0;
+    const stubClient = new Proxy(realClient, {
+      get(target, prop, receiver) {
+        if (prop === 'completeModel') {
+          return async () => {
+            visionCalls += 1;
+            await describeGate;
+            return { text: '描述', stopReason: 'stop' };
+          };
+        }
+        if (prop === 'sendMessage') {
+          return async () => { throw new Error('no_api_key_in_test'); };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const app = createApp({ piClient: stubClient });
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Vision Relay Concurrent', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 切换到纯文本模型（同测试 A）
+    const modelsRes = await app.request('/api/v1/models', { headers: { 'x-user-id': 'user_seed' } });
+    const modelsBody = await modelsRes.json();
+    const textOnlyModel = (modelsBody.models as Array<{ provider: string; id: string; input?: string[] }>).find(
+      (m) => Array.isArray(m.input) && !m.input.includes('image'),
+    );
+    if (textOnlyModel) {
+      await app.request(`/api/v1/sessions/${sessionId}/model`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
+      });
+    }
+
+    const settingsRes = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        vision_enabled: 'true',
+        vision_model: 'fake-vision/fake-model',
+        vision_fallback_model: 'fake-vision/fallback-model',
+      }),
+    });
+    expect(settingsRes.status).toBe(200);
+
+    const imageMessage = () => ({
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+
+    // 第一个 POST 进入 describe 挂起（原子认领已完成，会话 running）
+    const firstPromise = app.request(`/api/v1/sessions/${sessionId}/chat/messages`, imageMessage());
+    // 轮询等待描述请求已发出：visionCalls===1 保证 claim 已完成（claim 在 describe 之前）
+    for (let i = 0; i < 100 && visionCalls === 0; i++) await Bun.sleep(10);
+    expect(visionCalls).toBe(1);
+
+    // 第二个 POST 读到 running → 409
+    const secondRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, imageMessage());
+    expect(secondRes.status).toBe(409);
+
+    // 放行第一个 POST，等待其完成（成功路径由 startSessionRun 管理状态）
+    releaseDescribe!();
+    await firstPromise;
+  });
+
   test('vision relay: enabled but no vision model keeps MODEL_DOES_NOT_SUPPORT_IMAGES', async () => {
     const path = makeDbPath();
     createSeedDb(path);

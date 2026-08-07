@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { serveStatic } from 'hono/bun';
 import { cors } from 'hono/cors';
+import type { PiClient } from '@piplus/pi-client';
 import { registerAuthRoutes } from './auth/routes';
 import { requireAuth } from './middleware/auth';
 import { registerProjectRoutes } from './routes/projects';
@@ -35,7 +36,7 @@ function parseCorsOrigins(): string[] | undefined {
     .filter((s): s is string => !!s);
 }
 
-export function createApp() {
+export function createApp(options?: { piClient?: PiClient }) {
   const app = new Hono();
   const corsOrigins = parseCorsOrigins();
   const hasWildcardCors = corsOrigins?.includes('*') ?? false;
@@ -83,7 +84,7 @@ export function createApp() {
   app.use('/api/v1/sessions/*', requireAuth);
   registerTreeRoutes(app);
   registerProjectRoutes(app);
-  registerSessionRoutes(app);
+  registerSessionRoutes(app, options?.piClient);
   registerSessionMutationRoutes(app);
   app.use('/api/v1/packages/*', requireAuth);
   registerModelRoutes(app);

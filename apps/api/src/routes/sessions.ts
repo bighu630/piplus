@@ -3,7 +3,7 @@ import { createDb } from '@piplus/db/client';
 import { messages, projects, roleTemplates, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
 import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
 import { createPiClient } from '@piplus/pi-client';
-import type { PiContentBlock, PiImageInput, PiModelInfo } from '@piplus/pi-client';
+import type { PiClient, PiContentBlock, PiImageInput, PiModelInfo } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import { getDbPath } from '../db-context';
 import { registerWebSocketRoutes, socketHub } from '../ws/server';
@@ -345,8 +345,7 @@ async function buildFileTree(rootPath: string, relativePath = '', depth = 0): Pr
   return nodes;
 }
 
-export function registerSessionRoutes(app: Hono) {
-  const piClient = createPiClient();
+export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiClient()) {
 
   /**
    * @swagger
@@ -685,12 +684,24 @@ export function registerSessionRoutes(app: Hono) {
         if (claimed.length === 0) {
           return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
         }
-        const outcome = await describeImagesWithFallback(piClient, primaryRef, fallbackRef, rawContent, attachmentParse.images);
+        let outcome: Awaited<ReturnType<typeof describeImagesWithFallback>> | undefined;
+        try {
+          outcome = await describeImagesWithFallback(piClient, primaryRef, fallbackRef, rawContent, attachmentParse.images);
+        } finally {
+          // run 尚未启动（startSessionRun 内部会重新认领 idle→running）：无论 describe 结果如何
+          // 都恢复 idle，防止 insertVisionFailureMessage 抛错等异常路径把会话卡死在 running
+          await db.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date() }).where(eq(sessions.id, sessionId));
+        }
+        if (!outcome) {
+          // describeImagesWithFallback 内部捕获全部模型错误，理论上不抛；此处兜底（如 finally 恢复失败导致的极端路径）
+          await insertVisionFailureMessage(db, sessionId, primaryRef, fallbackRef, '识别调用异常中止');
+          return c.json({
+            error: { code: 'VISION_DESCRIPTION_FAILED', message: '图片识别失败，消息未发送（多模态识别模型不可用）' },
+          }, 400);
+        }
         if (!outcome.ok) {
           // 主备都失败：插入 error 历史消息，整条消息拒绝（不落库、不发给文本模型）
           await insertVisionFailureMessage(db, sessionId, primaryRef, fallbackRef, outcome.error);
-          // 认领失败路径恢复 idle（成功路径由 startSessionRun 内部管理状态）
-          await db.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date() }).where(eq(sessions.id, sessionId));
           return c.json({
             error: { code: 'VISION_DESCRIPTION_FAILED', message: '图片识别失败，消息未发送（多模态识别模型不可用）' },
           }, 400);
