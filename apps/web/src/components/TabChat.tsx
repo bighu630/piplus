@@ -977,7 +977,7 @@ function TabChat({
           )}
           {showArchiveButton && onArchiveSession && (
             <button
-              onClick={onArchiveSession}
+              onClick={() => onArchiveSession?.()}
               className="flex items-center space-x-1 px-2.5 py-1 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-[11px] font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
               disabled={archivePending}
             >
