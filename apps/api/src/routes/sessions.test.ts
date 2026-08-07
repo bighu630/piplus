@@ -1,6 +1,6 @@
 import { createSeedDb } from '@piplus/db/init';
 import { describe, expect, test } from 'bun:test';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { messages, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
@@ -183,6 +183,131 @@ describe('session routes', () => {
         body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
       });
     }
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+    expect(sendRes.status).toBe(400);
+    expect(await sendRes.json()).toMatchObject({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } });
+  });
+
+  test('vision relay: both vision models fail → 400 + error history message, user message not stored', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Vision Relay Project', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 切换到纯文本模型（无图片支持）
+    const modelsRes = await app.request('/api/v1/models', { headers: { 'x-user-id': 'user_seed' } });
+    const modelsBody = await modelsRes.json();
+    const textOnlyModel = (modelsBody.models as Array<{ provider: string; id: string; input?: string[] }>).find(
+      (m) => Array.isArray(m.input) && !m.input.includes('image'),
+    );
+    if (textOnlyModel) {
+      await app.request(`/api/v1/sessions/${sessionId}/model`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
+      });
+    }
+
+    // 开启 vision relay，主模型指向不存在的模型（保证快速失败，无需真实 API key）
+    const settingsRes = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        vision_enabled: 'true',
+        vision_model: 'nonexistent-vision/nonexistent-model',
+        vision_fallback_model: 'nonexistent-vision/fallback-model',
+      }),
+    });
+    expect(settingsRes.status).toBe(200);
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+    expect(sendRes.status).toBe(400);
+    expect(await sendRes.json()).toMatchObject({ error: { code: 'VISION_DESCRIPTION_FAILED' } });
+
+    // 用户消息不落库
+    const db = createDb(`file:${path}`);
+    const userRows = await db.select().from(messages).where(and(eq(messages.sessionId, sessionId), eq(messages.role, 'user')));
+    expect(userRows).toHaveLength(0);
+
+    // error 历史消息可见
+    const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+    });
+    expect(histRes.status).toBe(200);
+    const histBody = await histRes.json();
+    const errorMsg = (histBody.messages as Array<{ message_kind: string; content_text: string }>).find((m) => m.message_kind === 'error');
+    expect(errorMsg).toBeTruthy();
+    expect(errorMsg!.content_text).toContain('图片识别失败');
+  });
+
+  test('vision relay: enabled but no vision model keeps MODEL_DOES_NOT_SUPPORT_IMAGES', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Vision Relay Unconfigured', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 切换到纯文本模型
+    const modelsRes = await app.request('/api/v1/models', { headers: { 'x-user-id': 'user_seed' } });
+    const modelsBody = await modelsRes.json();
+    const textOnlyModel = (modelsBody.models as Array<{ provider: string; id: string; input?: string[] }>).find(
+      (m) => Array.isArray(m.input) && !m.input.includes('image'),
+    );
+    if (textOnlyModel) {
+      await app.request(`/api/v1/sessions/${sessionId}/model`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
+      });
+    }
+
+    // 开启功能但不配置模型 → 保持原拒绝行为
+    const settingsRes = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ vision_enabled: 'true' }),
+    });
+    expect(settingsRes.status).toBe(200);
 
     const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
       method: 'POST',

@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
 import { messages, projects, roleTemplates, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
-import { and, desc, eq, lt, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
 import { createPiClient } from '@piplus/pi-client';
 import type { PiContentBlock, PiImageInput, PiModelInfo } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
@@ -10,7 +10,7 @@ import { registerWebSocketRoutes, socketHub } from '../ws/server';
 import { createEvent } from '../ws/protocol';
 import { mapPiStreamEventToFrames } from '../lib/pi-stream-bridge';
 import { createLogger } from '../lib/logger';
-import { createAuditService, findRoleTemplateByVersion, MERGED_USER_MESSAGE_SEPARATOR, startSessionRun } from '@piplus/domain';
+import { createAuditService, findRoleTemplateByVersion, getSetting, MERGED_USER_MESSAGE_SEPARATOR, startSessionRun } from '@piplus/domain';
 import { execSync } from 'node:child_process';
 import { readdir, readFile, appendFile, access, stat, writeFile, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -203,6 +203,100 @@ async function resolveSessionModelWithCapabilities(piClient: ReturnType<typeof c
 
 function modelSupportsImageInput(model: (PiModelInfo & { input?: string[] }) | null) {
   return Array.isArray(model?.input) && model!.input.includes('image');
+}
+
+// ---------- vision relay（实验性：多模态模型识别图片后转发给文本模型） ----------
+
+const VISION_SYSTEM_PROMPT = [
+  '你是一个图片识别助手。请结合用户的提示词，尽可能详细、准确地描述图片中的内容，',
+  '包括所有可见的文本（逐字转写代码、界面文字、报错信息）、图表、界面元素、布局与关键细节。',
+  '你的描述将代替图片交给另一个文本模型继续处理，请确保信息完整、不遗漏重要内容。',
+  '只输出描述内容本身，不要客套话。',
+].join('');
+
+const VISION_CALL_TIMEOUT_MS = 60_000;
+
+function parseModelRef(raw: string | null): { provider: string; id: string } | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const slashIndex = trimmed.indexOf('/');
+  if (slashIndex <= 0 || slashIndex === trimmed.length - 1) return null;
+  return { provider: trimmed.slice(0, slashIndex), id: trimmed.slice(slashIndex + 1) };
+}
+
+function modelRefLabel(ref: { provider: string; id: string } | null): string {
+  return ref ? `${ref.provider}/${ref.id}` : '未配置';
+}
+
+/** 用单个多模态模型识别图片；失败抛错（超时/网络/空响应均视为失败）。 */
+async function describeImagesWithModel(
+  piClient: ReturnType<typeof createPiClient>,
+  ref: { provider: string; id: string },
+  content: string,
+  images: PiImageInput[],
+): Promise<string> {
+  const result = await piClient.completeModel({
+    provider: ref.provider,
+    id: ref.id,
+    systemPrompt: VISION_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: content || '（无文本提示，请直接描述图片内容）', images }],
+    signal: AbortSignal.timeout(VISION_CALL_TIMEOUT_MS),
+  });
+  const text = result.text.trim();
+  if (!text) throw new Error('多模态模型返回了空响应');
+  return text;
+}
+
+/** 主 → 备回退调用；全部失败返回 { ok: false, error }。 */
+async function describeImagesWithFallback(
+  piClient: ReturnType<typeof createPiClient>,
+  primary: { provider: string; id: string },
+  fallback: { provider: string; id: string } | null,
+  content: string,
+  images: PiImageInput[],
+): Promise<{ ok: true; description: string } | { ok: false; error: string }> {
+  for (const ref of fallback ? [primary, fallback] : [primary]) {
+    try {
+      const description = await describeImagesWithModel(piClient, ref, content, images);
+      return { ok: true, description };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log.info('vision relay model failed', { model: modelRefLabel(ref), reason });
+    }
+  }
+  return { ok: false, error: '主备多模态模型均不可用' };
+}
+
+/** 图片描述与用户文本合并（描述追加在文本后；纯图片消息仅描述）。 */
+function buildVisionMergedContent(content: string, description: string): string {
+  const desc = `[图片内容识别]\n${description}`;
+  return content ? `${content}\n\n${desc}` : desc;
+}
+
+/** 主备都失败：插入 error 历史消息（用户可见），返回用户友好的错误文案。 */
+async function insertVisionFailureMessage(
+  db: ReturnType<typeof createDb>,
+  sessionId: string,
+  primary: { provider: string; id: string },
+  fallback: { provider: string; id: string } | null,
+  reason: string,
+) {
+  const messageId = randomId('message');
+  const now = nextMessageTime();
+  await db.insert(messages).values({
+    id: messageId,
+    sessionId,
+    piMessageId: null,
+    messageKind: 'error',
+    sourceSessionId: null,
+    role: 'assistant',
+    contentText: `图片识别失败，消息未发送。多模态识别模型（主：${modelRefLabel(primary)}，备：${modelRefLabel(fallback)}）${reason}。你可以稍后重试，或切换到支持图片的模型直接发送。`,
+    contentBlocksJson: null,
+    contentVersion: 1,
+    createdAt: now,
+  } as any);
+  log.info('vision relay failed, inserted error message', { sessionId, messageId });
 }
 
 async function buildFileTree(rootPath: string, relativePath = '', depth = 0): Promise<Array<{ name: string; path: string; kind: 'file' | 'directory'; children?: any[] }>> {
@@ -430,7 +524,7 @@ export function registerSessionRoutes(app: Hono) {
     let dbCommandMessages: Array<typeof pageRows[number]> = [];
     if (!cursor || cursor === '0') {
       const dbRows = await db.select().from(messages)
-        .where(and(eq(messages.sessionId, sessionId), eq(messages.messageKind, 'slash_command')))
+        .where(and(eq(messages.sessionId, sessionId), inArray(messages.messageKind, ['slash_command', 'error'])))
         .orderBy(desc(messages.createdAt))
         .limit(20);
       dbCommandMessages = dbRows.map((row) => ({
@@ -497,6 +591,7 @@ export function registerSessionRoutes(app: Hono) {
     const sessionId = decodeURIComponent(c.req.param('sessionId'));
     const body = await c.req.json().catch(() => ({}));
     const content = String((body as { content?: string }).content ?? '').trim();
+    const rawContent = content;
     let attachmentParse: ReturnType<typeof parseImageAttachments>;
     try {
       attachmentParse = parseImageAttachments((body as { attachments?: unknown }).attachments);
@@ -560,12 +655,32 @@ export function registerSessionRoutes(app: Hono) {
     }
 
     const currentModel = await resolveSessionModelWithCapabilities(piClient, session);
+    let effectiveContent = rawContent;
+    let effectiveImages = attachmentParse.images;
     if (attachmentParse.images.length > 0 && !modelSupportsImageInput(currentModel)) {
-      return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
+      const visionEnabled = (await getSetting(db, 'vision_enabled')) === 'true';
+      const primaryRef = visionEnabled ? parseModelRef(await getSetting(db, 'vision_model')) : null;
+      if (primaryRef) {
+        const fallbackRef = parseModelRef(await getSetting(db, 'vision_fallback_model'));
+        const outcome = await describeImagesWithFallback(piClient, primaryRef, fallbackRef, rawContent, attachmentParse.images);
+        if (!outcome.ok) {
+          // 主备都失败：插入 error 历史消息，整条消息拒绝（不落库、不发给文本模型）
+          await insertVisionFailureMessage(db, sessionId, primaryRef, fallbackRef, outcome.error);
+          return c.json({
+            error: { code: 'VISION_DESCRIPTION_FAILED', message: '图片识别失败，消息未发送（多模态识别模型不可用）' },
+          }, 400);
+        }
+        // 成功：描述与用户文本合并，图片本身不发给文本模型
+        effectiveContent = buildVisionMergedContent(rawContent, outcome.description);
+        effectiveImages = [];
+      } else {
+        // 未开启功能或未配置多模态模型：保持原有拒绝行为
+        return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
+      }
     }
 
     const contentBlocks: PiContentBlock[] = [
-      ...(content ? [{ type: 'text' as const, text: content }] : []),
+      ...(rawContent ? [{ type: 'text' as const, text: rawContent }] : []),
       ...attachmentParse.blocks,
     ];
 
@@ -578,7 +693,7 @@ export function registerSessionRoutes(app: Hono) {
       messageKind: 'normal',
       sourceSessionId: null,
       role: 'user',
-      contentText: content,
+      contentText: rawContent,
       contentBlocksJson: contentBlocks.length ? JSON.stringify(contentBlocks) : null,
       contentVersion: contentBlocks.length ? 2 : 1,
       createdAt: now,
@@ -602,8 +717,8 @@ export function registerSessionRoutes(app: Hono) {
       piClient,
       sessionId,
       userId,
-      content,
-      images: attachmentParse.images,
+      content: effectiveContent,
+      images: effectiveImages,
       startedAt: now,
       onStreamEvent: async (event) => {
         for (const frame of mapPiStreamEventToFrames(sessionId, event)) {

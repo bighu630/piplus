@@ -153,4 +153,66 @@ describe('settings routes', () => {
     const get = await app.request('/api/v1/settings', { method: 'GET', headers: AUTH_HEADERS });
     expect(await get.json()).toEqual({ subagent_timeout_minutes: '30' });
   });
+
+  test('PUT accepts vision_enabled boolean and model refs', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const res = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: AUTH_HEADERS,
+      body: JSON.stringify({
+        vision_enabled: 'true',
+        vision_model: 'anthropic/claude-sonnet-4-5',
+        vision_fallback_model: 'openai/gpt-4o',
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.vision_enabled).toBe('true');
+    expect(body.vision_model).toBe('anthropic/claude-sonnet-4-5');
+
+    const db = createDb(`file:${path}`);
+    const rows = await db.select().from(settings);
+    expect(rows).toHaveLength(3);
+  });
+
+  test('PUT rejects invalid vision_enabled / model ref values', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    for (const [body, needle] of [
+      [{ vision_enabled: 1 }, 'vision_enabled'],
+      [{ vision_enabled: 'yes' }, 'vision_enabled'],
+      [{ vision_model: 'no-slash-here' }, 'vision_model'],
+      [{ vision_model: 42 }, 'vision_model'],
+      [{ vision_fallback_model: '/leading-slash' }, 'vision_fallback_model'],
+    ] as const) {
+      const res = await app.request('/api/v1/settings', {
+        method: 'PUT',
+        headers: AUTH_HEADERS,
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain(needle);
+    }
+  });
+
+  test('PUT allows clearing vision model refs with empty string', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const res = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: AUTH_HEADERS,
+      body: JSON.stringify({ vision_model: '' }),
+    });
+    expect(res.status).toBe(200);
+  });
 });
