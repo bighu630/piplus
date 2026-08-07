@@ -108,6 +108,9 @@ function makePiClient(options?: { sendError?: Error }) {
     async setThinkingLevel() {
       return 'medium';
     },
+    async completeModel() {
+      throw new Error('not implemented in test mock');
+    },
   };
 
   return { client, state };

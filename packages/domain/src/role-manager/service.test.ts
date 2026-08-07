@@ -114,6 +114,9 @@ function makeRecordingPiClient() {
     async setThinkingLevel() {
       return 'medium';
     },
+    async completeModel() {
+      throw new Error('not implemented in test mock');
+    },
   };
 }
 
