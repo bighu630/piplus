@@ -135,6 +135,8 @@ export type PiRuntimeState = {
   ready: boolean;
   isFirst: boolean;
   prompt?: string;
+  /** 是否正在流式生成（safety timeout 的 abort 是 fire-and-forget，agent 可能仍在收尾）。 */
+  isStreaming?: boolean;
 };
 
 export type PiClient = {
@@ -172,6 +174,8 @@ export type PiClient = {
   completeModel(input: PiCompleteModelInput): Promise<PiCompleteModelResult>;
   stopSession(sessionId: string): Promise<PiStopSessionResult>;
   closeRuntime(sessionId: string): Promise<void>;
+  /** 删除/归档会话时释放 runtime 并删除 registry 条目（含 createSession 的 piSessionId 别名条目）。 */
+  disposeSession(sessionId: string, locator?: PiSessionLocator): Promise<void>;
   /** Close all idle runtimes. Running sessions are left untouched. Returns count of closed runtimes. */
   reloadIdleRuntimes(): Promise<number>;
   listAvailableModels(): Promise<PiModelInfo[]>;

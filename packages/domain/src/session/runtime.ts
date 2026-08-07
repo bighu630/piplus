@@ -1,12 +1,14 @@
 import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { and, eq, ne } from 'drizzle-orm';
 import type { PiClient, PiImageInput, PiSessionStreamEvent } from '@piplus/pi-client';
+import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from '@piplus/pi-client/constants';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
 import { setRequestContext, clearRequestContext, isCrossProjectWaiting, clearCrossProjectWait } from './request-context';
 
-const NON_WORKER_IDLE_RUNTIME_TTL_MS = 30 * 60 * 1000;
+// TTL 单一来源：与 client 层定时器共用 @piplus/pi-client/constants（值导入走 /constants 子路径，
+// 避免拉起整个 client.ts 模块及其 ModelRuntime 初始化副作用）。
 
 const idleRuntimeCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -126,10 +128,6 @@ export async function startSessionRun(input: StartSessionRunInput) {
     .limit(1);
   if (!project) throw new Error('session_not_found');
 
-  if (session.runtimeStatus === 'running' || session.runtimeStatus === 'stopping') {
-    throw new Error('session_busy');
-  }
-
   const locator = parseLocator(session.piSessionLocatorJson);
 
   // Load the role template key to determine which tools to expose
@@ -153,76 +151,106 @@ export async function startSessionRun(input: StartSessionRunInput) {
   const isFirst = input.piClient.isFirstConversation(input.sessionId);
   let hadOutput = false;
 
-  console.log('[session-runtime] ensureRuntime start', {
-    sessionId: input.sessionId,
-    projectId: project.id,
-    locatorFile: locator.sessionFile,
-    dbModelProvider: session.currentModelProvider,
-    dbModelId: session.currentModelId,
-  });
-  await input.piClient.ensureRuntime(input.sessionId, {
-    locator,
-    cwd: project.projectPath,
-    tools: toolDefs,
-    toolHandler: async (toolName, args) => {
-      return invokePlatformTool(toolName, args, {
-        db: input.db,
-        piClient: input.piClient,
-        sessionId: input.sessionId,
-        userId: input.userId,
-        onSessionCreated: input.onToolSessionCreated,
-        onRuntimeStatusChange: input.onRuntimeStatusChange,
-      });
-    },
-  });
+  // 原子认领（idle→running）。路由层 busy 检查是非原子读，两个并发 POST 可同时通过；
+  // 此条件更新保证同一时刻只有一个 run 启动（认领失败方抛 session_busy）。
+  // 'stopping' 等非 idle 状态同样认领失败，与原 busy 检查行为一致。
+  // 认领前只做只读步骤（parseLocator/roleTmpl/buildAllToolDefs/isFirstConversation）：
+  // 它们抛错时无状态变更，会话保持 idle（与旧行为一致）；
+  // 认领之后任何失败都必须复位 idle（下方 try/catch 与 markSessionRunning 的 catch）。
+  const claimed = await input.db.update(sessions)
+    .set({ runtimeStatus: 'running', updatedAt: startedAt })
+    .where(and(eq(sessions.id, input.sessionId), eq(sessions.runtimeStatus, 'idle')))
+    .returning({ id: sessions.id });
+  if (claimed.length === 0) {
+    throw new Error('session_busy');
+  }
 
-  // Get runtimeState AFTER ensureRuntime — the prompt is stored under piSessionId,
-  // and ensureRuntime's restoreRuntime migrates it to the domain sessionId.
-  // Reading it before ensureRuntime would return null for spawn_session cases.
-  const runtimeState = input.piClient.getRuntimeState(input.sessionId);
-
-  // Merge role prompt with user content for first conversation.
-  // Replaces the old injectPromptIfNeeded approach which sent the prompt
-  // as a separate LLM turn, breaking the single-turn merge semantics.
+  // 认领（idle→running）之后到 markSessionRunning 之间的代码包进 try/catch：
+  // 任一步抛错（ensureRuntime 失败、模型绑定失败等）都必须把会话复位为 idle，
+  // 否则会话会卡死在 running，只能等重启 recoverStuckSessions 兜底。
   let finalContent = input.content;
-  if (isFirst && runtimeState?.prompt && input.content) {
-    finalContent = `${runtimeState.prompt}${MERGED_USER_MESSAGE_SEPARATOR}${input.content}`;
-    console.log('[session-runtime] merged prompt + user message (first conversation)', { sessionId: input.sessionId });
-  } else if (isFirst && runtimeState?.prompt) {
-    // spawn_session: content is empty, just inject prompt
-    finalContent = runtimeState.prompt;
-    console.log('[session-runtime] injecting role prompt only (spawn session)', { sessionId: input.sessionId });
-  }
-
-  if (session.currentModelProvider && session.currentModelId) {
-    console.log('[session-runtime] enforce model from db', {
+  try {
+    console.log('[session-runtime] ensureRuntime start', {
       sessionId: input.sessionId,
-      provider: session.currentModelProvider,
-      id: session.currentModelId,
+      projectId: project.id,
+      locatorFile: locator.sessionFile,
+      dbModelProvider: session.currentModelProvider,
+      dbModelId: session.currentModelId,
     });
-    await input.piClient.setSessionModel(
-      input.sessionId,
+    await input.piClient.ensureRuntime(input.sessionId, {
       locator,
-      { provider: session.currentModelProvider, id: session.currentModelId },
-      project.projectPath,
-    );
-  } else {
-    console.log('[session-runtime] no db model to enforce', { sessionId: input.sessionId });
+      cwd: project.projectPath,
+      tools: toolDefs,
+      toolHandler: async (toolName, args) => {
+        return invokePlatformTool(toolName, args, {
+          db: input.db,
+          piClient: input.piClient,
+          sessionId: input.sessionId,
+          userId: input.userId,
+          onSessionCreated: input.onToolSessionCreated,
+          onRuntimeStatusChange: input.onRuntimeStatusChange,
+        });
+      },
+    });
+
+    // Get runtimeState AFTER ensureRuntime — the prompt is stored under piSessionId,
+    // and ensureRuntime's restoreRuntime migrates it to the domain sessionId.
+    // Reading it before ensureRuntime would return null for spawn_session cases.
+    const runtimeState = input.piClient.getRuntimeState(input.sessionId);
+
+    // safety timeout 的 abort 是 fire-and-forget：DB 已 idle 但 agent 可能仍在收尾。
+    // 此时拒绝新 run（干净 session_busy），并重新武装 domain 定时器让陈旧 runtime 最终被回收。
+    if (runtimeState?.isStreaming) {
+      scheduleIdleRuntimeCleanup(input.piClient, input.sessionId);
+      throw new Error('session_busy');
+    }
+
+    // Merge role prompt with user content for first conversation.
+    // Replaces the old injectPromptIfNeeded approach which sent the prompt
+    // as a separate LLM turn, breaking the single-turn merge semantics.
+    if (isFirst && runtimeState?.prompt && input.content) {
+      finalContent = `${runtimeState.prompt}${MERGED_USER_MESSAGE_SEPARATOR}${input.content}`;
+      console.log('[session-runtime] merged prompt + user message (first conversation)', { sessionId: input.sessionId });
+    } else if (isFirst && runtimeState?.prompt) {
+      // spawn_session: content is empty, just inject prompt
+      finalContent = runtimeState.prompt;
+      console.log('[session-runtime] injecting role prompt only (spawn session)', { sessionId: input.sessionId });
+    }
+
+    if (session.currentModelProvider && session.currentModelId) {
+      console.log('[session-runtime] enforce model from db', {
+        sessionId: input.sessionId,
+        provider: session.currentModelProvider,
+        id: session.currentModelId,
+      });
+      await input.piClient.setSessionModel(
+        input.sessionId,
+        locator,
+        { provider: session.currentModelProvider, id: session.currentModelId },
+        project.projectPath,
+      );
+    } else {
+      console.log('[session-runtime] no db model to enforce', { sessionId: input.sessionId });
+    }
+
+    const runtimeModel = await input.piClient.getCurrentModel(input.sessionId);
+    console.log('[session-runtime] runtime model after ensureRuntime', {
+      sessionId: input.sessionId,
+      provider: runtimeModel?.provider ?? null,
+      id: runtimeModel?.id ?? null,
+    });
+
+    const boundRuntimeModel = await input.piClient.getCurrentModel(input.sessionId);
+    console.log('[session-runtime] runtime model after ensureRuntime', {
+      sessionId: input.sessionId,
+      provider: boundRuntimeModel?.provider ?? null,
+      id: boundRuntimeModel?.id ?? null,
+    });
+  } catch (err) {
+    // 释放认领：runtime 未就绪，不能让会话停在 running（否则只能等重启 recoverStuckSessions）
+    await markSessionIdle(input.db, input.sessionId, new Date(), null).catch(() => {});
+    throw err;
   }
-
-  const runtimeModel = await input.piClient.getCurrentModel(input.sessionId);
-  console.log('[session-runtime] runtime model after ensureRuntime', {
-    sessionId: input.sessionId,
-    provider: runtimeModel?.provider ?? null,
-    id: runtimeModel?.id ?? null,
-  });
-
-  const boundRuntimeModel = await input.piClient.getCurrentModel(input.sessionId);
-  console.log('[session-runtime] runtime model after ensureRuntime', {
-    sessionId: input.sessionId,
-    provider: boundRuntimeModel?.provider ?? null,
-    id: boundRuntimeModel?.id ?? null,
-  });
 
   let cleanupDone = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -332,7 +360,14 @@ export async function startSessionRun(input: StartSessionRunInput) {
     scheduleTimeoutCheck();
   };
 
-  await markSessionRunning(input.db, input.sessionId, startedAt);
+  // markSessionRunning 失败也要复位：认领已把状态置为 running，
+  // 这条失败路径是新暴露的（旧代码此时才首次写 running），不兜底同样会卡死会话。
+  try {
+    await markSessionRunning(input.db, input.sessionId, startedAt);
+  } catch (err) {
+    await markSessionIdle(input.db, input.sessionId, new Date(), null).catch(() => {});
+    throw err;
+  }
 
   // Bind request context for cross-session wait coordination
   if (input.requestId) {

@@ -12,7 +12,8 @@ function makeDbPath() {
   return `/tmp/piplus-session-runtime-${crypto.randomUUID()}.sqlite`;
 }
 
-function makePiClient(options?: { sendError?: Error }) {
+function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error; streaming?: boolean }) {
+  const opts = options;
   const state: {
     runtimeEnsured: Array<{ sessionId: string; cwd?: string }>;
     promptsInjected: string[];
@@ -40,12 +41,15 @@ function makePiClient(options?: { sendError?: Error }) {
     },
     async ensureRuntime(sessionId, options) {
       state.runtimeEnsured.push({ sessionId, cwd: options.cwd });
+      // 模拟 ensureRuntime 抛错（如 runtime 无法恢复）——认领后失败必须复位 idle
+      if (opts?.ensureRuntimeError) throw opts.ensureRuntimeError;
     },
     isFirstConversation() {
       return false;
     },
     getRuntimeState() {
-      return null;
+      // streaming: true 模拟 safety timeout 后 agent 仍在后台生成（isStreaming 守卫）
+      return opts?.streaming ? { ready: true, isFirst: false, isStreaming: true } : null;
     },
     async injectPromptIfNeeded(sessionId) {
       state.promptsInjected.push(sessionId);
@@ -62,7 +66,7 @@ function makePiClient(options?: { sendError?: Error }) {
     },
     async sendMessage(sessionId, content) {
       state.sent.push({ sessionId, content });
-      if (options?.sendError) throw options.sendError;
+      if (opts?.sendError) throw opts.sendError;
       return { sessionId, runId: 'run_pi' };
     },
     async stopSession() {
@@ -70,6 +74,10 @@ function makePiClient(options?: { sendError?: Error }) {
     },
     async closeRuntime(sessionId: string) {
       state.closeRuntimeCalls.push(sessionId);
+      return;
+    },
+    async disposeSession() {
+      // 删除/归档路径的释放逻辑在 API 路由测试中覆盖，domain 层 mock 无需跟踪
       return;
     },
     async reloadIdleRuntimes() {
@@ -627,5 +635,95 @@ describe('startSessionRun', () => {
     // session_run_timeout is an internal safety timeout — not surfaced to the user
     expect(session?.lastRuntimeError).toBeNull();
     expect(state.unsubscribed).toContain('session_test_runtime');
+  });
+
+  // ─── #6 原子认领：并发双 POST 只有一个能启动 run ─────────────────────────
+  test('#6 concurrent startSessionRun: atomic claim allows exactly one run', async () => {
+    const { db } = await setupSession({ sessionId: 'session_concurrent_claim' });
+    const { client, state } = makePiClient();
+
+    const results = await Promise.allSettled([
+      startSessionRun({ db, piClient: client, sessionId: 'session_concurrent_claim', userId: 'user_seed', content: 'first' }),
+      startSessionRun({ db, piClient: client, sessionId: 'session_concurrent_claim', userId: 'user_seed', content: 'second' }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason?.message).toBe('session_busy');
+
+    // 轮询等待胜利方 doCleanup 把会话复位 idle（慢 CI 上固定 sleep 可能 flake）；
+    // doCleanup 在 sendMessage 之后执行，DB idle 即意味着 sendMessage 已发出
+    let sessionRow: { runtimeStatus: string; lastRuntimeError: string | null } | undefined;
+    for (let i = 0; i < 200; i++) {
+      [sessionRow] = await db.select({ runtimeStatus: sessions.runtimeStatus, lastRuntimeError: sessions.lastRuntimeError })
+        .from(sessions)
+        .where(eq(sessions.id, 'session_concurrent_claim'));
+      if (sessionRow?.runtimeStatus === 'idle') break;
+      await Bun.sleep(10);
+    }
+
+    // 只有一个 sendMessage 真正发出
+    expect(state.sent).toHaveLength(1);
+    expect(state.sent[0]?.content).toBe('first');
+    expect(sessionRow?.runtimeStatus).toBe('idle');
+    expect(sessionRow?.lastRuntimeError).toBeNull();
+
+    // 非 worker 的 doCleanup 会调度 30min 定时器，取消避免污染模块级 Map
+    clearIdleRuntimeCleanup('session_concurrent_claim');
+  });
+
+  // ─── #6 认领后失败复位：ensureRuntime 抛错不能把会话卡死在 running ───────
+  test('#6 ensureRuntime failure resets claimed status back to idle', async () => {
+    const { db } = await setupSession({ sessionId: 'session_claim_reset' });
+    const { client } = makePiClient({ ensureRuntimeError: new Error('ensure_failed') });
+
+    await expect(
+      startSessionRun({ db, piClient: client, sessionId: 'session_claim_reset', userId: 'user_seed', content: 'hi' }),
+    ).rejects.toThrow('ensure_failed');
+
+    // 认领已发生（idle→running），失败后必须复位 idle，否则只能等重启 recoverStuckSessions
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_claim_reset')).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+    expect(session?.lastRuntimeError).toBeNull();
+  });
+
+  // ─── #6 认领前失败：只读步骤（parseLocator 等）抛错时无状态变更，会话保持 idle ──
+  test('#6 pre-claim failure (corrupt locator) leaves session idle — no stuck running', async () => {
+    const { db } = await setupSession({ sessionId: 'session_corrupt_locator' });
+    // 认领前只有只读步骤：parseLocator 对 corrupt JSON 抛错，此时不得把会话置为 running
+    await db.update(sessions)
+      .set({ piSessionLocatorJson: 'not-json{{{', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_corrupt_locator'));
+    const { client } = makePiClient();
+
+    await expect(
+      startSessionRun({ db, piClient: client, sessionId: 'session_corrupt_locator', userId: 'user_seed', content: 'hi' }),
+    ).rejects.toThrow(); // parseLocator 的 JSON.parse 抛 SyntaxError（corrupt JSON），认领前即失败
+
+    // 认领尚未发生：会话保持 idle，与旧行为一致（回归点：认领提前后曾会卡死在 running）
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_corrupt_locator')).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+  });
+
+  // ─── #7 isStreaming 守卫：safety timeout 后 agent 仍在生成 → 拒绝新 run ────
+  test('#7 isStreaming guard rejects with session_busy and restores idle', async () => {
+    const { db } = await setupSession({ sessionId: 'session_streaming_guard' });
+    const { client, state } = makePiClient({ streaming: true });
+
+    await expect(
+      startSessionRun({ db, piClient: client, sessionId: 'session_streaming_guard', userId: 'user_seed', content: 'hi' }),
+    ).rejects.toThrow('session_busy');
+
+    // 守卫在 ensureRuntime 之后检查，runtime 确实被确保了
+    expect(state.runtimeEnsured).toEqual([{ sessionId: 'session_streaming_guard', cwd: '/tmp/runtime-project' }]);
+    // 守卫抛错后 #6 的 catch 复位 DB idle
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_streaming_guard')).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+    expect(session?.lastRuntimeError).toBeNull();
+
+    // 守卫重新武装了 domain 回收定时器（默认 30min），取消避免污染模块级 Map
+    clearIdleRuntimeCleanup('session_streaming_guard');
   });
 });
