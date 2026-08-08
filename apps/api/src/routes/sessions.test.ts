@@ -1,9 +1,9 @@
 import { createSeedDb } from '@piplus/db/init';
 import { describe, expect, test } from 'bun:test';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { createDb } from '@piplus/db/client';
-import { messages, sessions } from '@piplus/db/schema';
+import { messages, messageInjections, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
 import { parseModelRef, buildVisionMergedContent, describeImagesWithFallback, stripMergedPromptPrefix } from './sessions';
@@ -263,6 +263,13 @@ describe('session routes', () => {
     const userRows = await db.select().from(messages).where(and(eq(messages.sessionId, sessionId), eq(messages.role, 'user')));
     expect(userRows).toHaveLength(0);
 
+    // error 消息落注入表（message_injections）
+    const injectionRows = await db.select().from(messageInjections)
+      .where(and(eq(messageInjections.sessionId, sessionId), eq(messageInjections.messageKind, 'error')));
+    expect(injectionRows).toHaveLength(1);
+    expect(injectionRows[0].role).toBe('assistant');
+    expect(injectionRows[0].contentText).toContain('图片识别失败');
+
     // error 历史消息可见
     const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
@@ -367,6 +374,17 @@ describe('session routes', () => {
       await Bun.sleep(10);
     }
     expect(sessionRow?.runtimeStatus).toBe('idle');
+
+    // vision relay 成功：用户消息落注入表（messageKind='vision_relay'），messages 表无该用户消息行
+    const injectionRows = await db.select().from(messageInjections)
+      .where(and(eq(messageInjections.sessionId, sessionId), eq(messageInjections.messageKind, 'vision_relay')));
+    expect(injectionRows).toHaveLength(1);
+    expect(injectionRows[0].role).toBe('user');
+    expect(injectionRows[0].contentText).toBe('describe this');
+    expect(injectionRows[0].contentBlocksJson).toContain('image/png');
+    expect(injectionRows[0].contentBlocksJson).toContain('blocked.png');
+    const userRows = await db.select().from(messages).where(and(eq(messages.sessionId, sessionId), eq(messages.role, 'user')));
+    expect(userRows).toHaveLength(0);
   });
 
   test('vision relay: history shows original user text and image attachments instead of merged description', async () => {
@@ -620,6 +638,59 @@ describe('session routes', () => {
     });
     expect(sendRes.status).toBe(400);
     expect(await sendRes.json()).toMatchObject({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } });
+  });
+
+  test('slash command messages are stored in message_injections', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Slash Command Project', mode: 'existing', path: '/tmp' }),
+    });
+    expect(projectRes.status).toBe(201);
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // /help 是内置 slash command，executeCommand 无需运行时会话即可执行
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ content: '/help' }),
+    });
+    expect(sendRes.status).toBe(202);
+
+    // 注入表含 role=user 与 role=assistant 两条 slash_command 行
+    const db = createDb(`file:${path}`);
+    const injectionRows = await db.select().from(messageInjections)
+      .where(and(eq(messageInjections.sessionId, sessionId), eq(messageInjections.messageKind, 'slash_command')))
+      .orderBy(asc(messageInjections.createdAt));
+    expect(injectionRows).toHaveLength(2);
+    expect(injectionRows[0].role).toBe('user');
+    expect(injectionRows[0].contentText).toBe('/help');
+    expect(injectionRows[1].role).toBe('assistant');
+    expect(injectionRows[1].contentText).toContain('可用命令');
+
+    // messages 表无新行（slash_command 不再落 messages 表）
+    const msgRows = await db.select().from(messages).where(eq(messages.sessionId, sessionId));
+    expect(msgRows).toHaveLength(0);
+
+    // GET 历史中可见两条 slash_command 消息（双读合并：注入表新数据）
+    const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(histRes.status).toBe(200);
+    const histBody = await histRes.json();
+    const slashMessages = (histBody.messages as Array<{ message_kind: string; role: string; content_text: string }>)
+      .filter((m) => m.message_kind === 'slash_command');
+    expect(slashMessages).toHaveLength(2);
+    const slashUser = slashMessages.find((m) => m.role === 'user');
+    expect(slashUser?.content_text).toBe('/help');
+    const slashAssistant = slashMessages.find((m) => m.role === 'assistant');
+    expect(slashAssistant?.content_text).toContain('可用命令');
   });
 
   test('create top-level session inherits project planner model', async () => {

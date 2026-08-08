@@ -111,6 +111,22 @@ function ensureSettingsTable(sqlite: Database) {
   }
 }
 
+function ensureMessageInjectionsTable(sqlite: Database) {
+  const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='message_injections'").all();
+  if (tables.length === 0) {
+    sqlite.exec(`CREATE TABLE IF NOT EXISTS message_injections (
+  id TEXT PRIMARY KEY NOT NULL,
+  session_id TEXT NOT NULL,
+  message_kind TEXT NOT NULL,
+  role TEXT NOT NULL,
+  content_text TEXT NOT NULL,
+  content_blocks_json TEXT,
+  created_at INTEGER NOT NULL
+)`);
+    sqlite.exec('CREATE INDEX IF NOT EXISTS idx_message_injections_session_time ON message_injections(session_id, created_at)');
+  }
+}
+
 function ensureModelFallbacksColumn(sqlite: Database) {
   const columns = sqlite.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>;
   if (!columns.some((col) => col.name === 'model_fallbacks_json')) {
@@ -343,6 +359,7 @@ export function createSeedDb(path: string) {
   ensureProjectPinnedAtColumn(sqlite);
   ensureProjectTodosTable(sqlite);
   ensureSettingsTable(sqlite);
+  ensureMessageInjectionsTable(sqlite);
   ensureBuiltinRows(sqlite);
   ensureModelFallbacksColumn(sqlite);
   ensureSessionWorktreePathColumn(sqlite);
