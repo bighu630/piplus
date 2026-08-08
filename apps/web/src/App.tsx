@@ -676,6 +676,8 @@ export default function App() {
     return unsub;
   }, [subscribeToMessages, selectedSessionId, sendRaw]);
 
+  if (authStatusQuery.isPending) return null;
+
   if (!isLoggedIn) {
     return (
       <LoginScreen

@@ -7,17 +7,7 @@ import { messages, messageInjections, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
 import { parseModelRef, buildVisionMergedContent, describeImagesWithFallback, stripMergedPromptPrefix } from './sessions';
-
-async function withPasswordAuth<T>(fn: () => T | Promise<T>): Promise<T> {
-  const prev = Bun.env.APP_PASSWORD;
-  Bun.env.APP_PASSWORD = 'test-secret';
-  try {
-    return await fn();
-  } finally {
-    if (prev === undefined) delete Bun.env.APP_PASSWORD;
-    else Bun.env.APP_PASSWORD = prev;
-  }
-}
+import { withPasswordAuth } from '../test-utils';
 
 const imageCapableModelPromise = createPiClient().listAvailableModels().then((models) => models.at(-1) ?? models[0]);
 

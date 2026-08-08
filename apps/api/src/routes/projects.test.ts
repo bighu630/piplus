@@ -6,17 +6,7 @@ import { projects, sessions } from '@piplus/db/schema';
 import { createApp } from '../app';
 import { createPiClient } from '@piplus/pi-client';
 import { getDbPath } from '../db-context';
-
-async function withPasswordAuth<T>(fn: () => T | Promise<T>): Promise<T> {
-  const prev = Bun.env.APP_PASSWORD;
-  Bun.env.APP_PASSWORD = 'test-secret';
-  try {
-    return await fn();
-  } finally {
-    if (prev === undefined) delete Bun.env.APP_PASSWORD;
-    else Bun.env.APP_PASSWORD = prev;
-  }
-}
+import { withPasswordAuth } from '../test-utils';
 
 function makeDbPath() {
   return `/tmp/piplus-api-project-${crypto.randomUUID()}.sqlite`;

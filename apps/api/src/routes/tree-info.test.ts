@@ -4,17 +4,7 @@ import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
 import { sessions } from '@piplus/db/schema';
 import { createApp } from '../app';
-
-async function withPasswordAuth<T>(fn: () => T | Promise<T>): Promise<T> {
-  const prev = Bun.env.APP_PASSWORD;
-  Bun.env.APP_PASSWORD = 'test-secret';
-  try {
-    return await fn();
-  } finally {
-    if (prev === undefined) delete Bun.env.APP_PASSWORD;
-    else Bun.env.APP_PASSWORD = prev;
-  }
-}
+import { withPasswordAuth } from '../test-utils';
 
 function makeDbPath(label: string) {
   return `/tmp/piplus-${label}-${crypto.randomUUID()}.sqlite`;

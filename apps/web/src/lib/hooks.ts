@@ -92,11 +92,11 @@ export function useAuthSession() {
   return useQuery({
     queryKey: ['auth', 'session'],
     queryFn: async () => {
-      if (!requiresPassword) return { ok: true as const, user: { id: 'local-user', name: 'Piplus' } };
       const token = localStorage.getItem('piplus_token');
       if (!token) return null;
       return checkAuth(token);
     },
+    enabled: requiresPassword,
     retry: false,
     staleTime: 5 * 60_000,
   });
