@@ -271,6 +271,11 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
     }
   }, [updateProviderModel]);
 
+  /** 该模型是否处于 contextWindow 自定义模式（手选「自定义…」或当前值为非预设值） */
+  const isContextCustomMode = useCallback((index: number) => {
+    return Boolean(contextCustomModes[index] || getContextPresetValue(providerModels[index]?.contextWindow) === 'custom');
+  }, [contextCustomModes, providerModels]);
+
   const buildProviderPayload = useCallback(() => {
     const compatObj: Record<string, unknown> = {
       supportsDeveloperRole,
@@ -678,21 +683,22 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
             <div>
               <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">参数</div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
+                <div className="flex gap-2 items-start">
                   <Select
                     value={getContextPresetValue(model.contextWindow)}
                     onChange={(v) => handleContextPresetChange(index, v)}
                     options={CONTEXT_PRESET_OPTIONS}
                     placeholder="contextWindow（可选）"
-                    className="w-full"
+                    dropdownMinWidth="220px"
+                    className={isContextCustomMode(index) ? 'w-40 shrink-0' : 'w-full'}
                   />
-                  {(contextCustomModes[index] || getContextPresetValue(model.contextWindow) === 'custom') && (
+                  {isContextCustomMode(index) && (
                     <input
                       value={model.contextWindow ?? ''}
                       onChange={(e) => handleContextWindowChange(index, e.target.value)}
                       type="number"
                       placeholder="自定义 contextWindow"
-                      className="w-full px-3 py-2 mt-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950"
+                      className="flex-1 min-w-0 px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950"
                     />
                   )}
                 </div>
