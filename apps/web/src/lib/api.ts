@@ -99,6 +99,10 @@ export function checkAuth(token: string) {
   });
 }
 
+export function getAuthStatus() {
+  return request<{ requiresPassword: boolean }>('/api/v1/auth/status');
+}
+
 export function getModelsStatus() {
   return request<{ ok: boolean; count: number; models: ModelInfo[] }>('/api/v1/models/status');
 }

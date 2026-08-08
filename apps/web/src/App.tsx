@@ -34,6 +34,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { useWebSocket, useWebSocketConnected } from './lib/ws-provider';
 import {
   useAuthSession,
+  useAuthStatus,
   useTree,
   useSessionInfo,
   useSessionMessages,
@@ -146,8 +147,9 @@ function useIsMobile(breakpoint = 768): boolean {
 }
 
 export default function App() {
+  const authStatusQuery = useAuthStatus();
   const authQuery = useAuthSession();
-  const isLoggedIn = Boolean(authQuery.data?.ok);
+  const isLoggedIn = authStatusQuery.data?.requiresPassword === false || Boolean(authQuery.data?.ok);
   const modelsStatusQuery = useModelsStatus();
   const loginMutation = useLoginMutation();
   const logoutMutation = useLogoutMutation();
