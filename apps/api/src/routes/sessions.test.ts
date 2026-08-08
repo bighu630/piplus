@@ -936,6 +936,138 @@ describe('session routes', () => {
     const body = await res.json();
     expect(body).toMatchObject({ error: { code: 'NOT_FOUND' } });
   });
+
+  test('legacy messages-table injections still merged via GET (dual-read compatibility)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Legacy Injection Project', mode: 'existing', path: '/tmp' }),
+    });
+    expect(projectRes.status).toBe(201);
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 模拟 5e1e146 之前的存量数据：直接向 messages 表插入旧风格注入行
+    const db = createDb(`file:${path}`);
+    const now = Date.now();
+    const slashUserAt = new Date(now - 60_000);
+    const slashAssistantAt = new Date(now - 59_000);
+    const errorAt = new Date(now - 58_000);
+    const visionAt = new Date(now - 30_000);
+    await db.insert(messages).values([
+      {
+        id: crypto.randomUUID(),
+        sessionId,
+        piMessageId: null,
+        messageKind: 'slash_command',
+        sourceSessionId: null,
+        role: 'user',
+        contentText: '/help',
+        contentBlocksJson: null,
+        contentVersion: 1,
+        createdAt: slashUserAt,
+      },
+      {
+        id: crypto.randomUUID(),
+        sessionId,
+        piMessageId: null,
+        messageKind: 'slash_command',
+        sourceSessionId: null,
+        role: 'assistant',
+        contentText: '旧版 slash 执行结果',
+        contentBlocksJson: null,
+        contentVersion: 1,
+        createdAt: slashAssistantAt,
+      },
+      {
+        id: crypto.randomUUID(),
+        sessionId,
+        piMessageId: null,
+        messageKind: 'error',
+        sourceSessionId: null,
+        role: 'assistant',
+        contentText: '旧版错误注入',
+        contentBlocksJson: null,
+        contentVersion: 1,
+        createdAt: errorAt,
+      },
+      {
+        id: crypto.randomUUID(),
+        sessionId,
+        piMessageId: null,
+        messageKind: 'normal',
+        sourceSessionId: null,
+        role: 'user',
+        contentText: '旧图片消息',
+        contentBlocksJson: JSON.stringify([
+          { type: 'text', text: '旧图片消息' },
+          { type: 'image', mimeType: 'image/png', mediaType: 'image/png', filename: 'old.png', uri: null, dataBase64: 'b2xk' },
+        ]),
+        contentVersion: 1,
+        createdAt: visionAt,
+      },
+    ] as any);
+
+    // 模拟旧版 pi 会话文件：注入一条带 [图片内容识别] 合并标记的用户消息（时间戳贴近 vision 旧行）
+    const [sessionRow] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    const locator = JSON.parse(sessionRow.piSessionLocatorJson) as { sessionFile: string };
+    const manager = SessionManager.open(locator.sessionFile);
+    manager.appendMessage({
+      role: 'user',
+      content: '旧图片消息\n\n[图片内容识别]\n旧版图片描述',
+      timestamp: visionAt.getTime() + 1000,
+    });
+
+    // 轮询 GET 直到 vision 旧行替换生效（pi 文件写入后可见）
+    type HistoryMessage = {
+      role: string;
+      message_kind: string;
+      content_text: string;
+      content_blocks: Array<{ type: string; data_base64?: string }> | null;
+    };
+    let histBody: { messages: HistoryMessage[] } | null = null;
+    for (let i = 0; i < 200; i++) {
+      const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
+        headers: { 'x-user-id': 'user_seed' },
+      });
+      expect(histRes.status).toBe(200);
+      histBody = await histRes.json();
+      if (histBody!.messages.some((m) => m.role === 'user' && m.content_text === '旧图片消息')) break;
+      await Bun.sleep(10);
+    }
+    const historyMessages = histBody!.messages;
+
+    // slash_command 旧行：两条（user + assistant）从 messages 表归并可见
+    const slashMessages = historyMessages.filter((m) => m.message_kind === 'slash_command');
+    expect(slashMessages).toHaveLength(2);
+    expect(slashMessages.find((m) => m.role === 'user')?.content_text).toBe('/help');
+    expect(slashMessages.find((m) => m.role === 'assistant')?.content_text).toBe('旧版 slash 执行结果');
+
+    // error 旧行：一条从 messages 表归并可见
+    const errorMessages = historyMessages.filter((m) => m.message_kind === 'error');
+    expect(errorMessages).toHaveLength(1);
+    expect(errorMessages[0].content_text).toContain('旧版错误注入');
+
+    // vision_relay 旧行：替换 pi 合并文本显示，原始文本 + 图片附件，无合并标记残留
+    const visionUserMessages = historyMessages.filter((m) => m.role === 'user' && m.content_text === '旧图片消息');
+    expect(visionUserMessages).toHaveLength(1);
+    expect(visionUserMessages[0].content_text).not.toContain('[图片内容识别]');
+    expect(historyMessages.some((m) => m.content_text.includes('[图片内容识别]'))).toBe(false);
+    const imageBlock = visionUserMessages[0].content_blocks?.find((b) => b.type === 'image');
+    expect(imageBlock).toBeTruthy();
+    expect(imageBlock!.data_base64).toBe('b2xk');
+
+    // 无重复：四类旧行各恰好一条，无合并文本残留
+    const expectedTexts = ['/help', '旧版 slash 执行结果', '旧版错误注入', '旧图片消息'];
+    for (const text of expectedTexts) {
+      expect(historyMessages.filter((m) => m.content_text === text)).toHaveLength(1);
+    }
+  });
 });
 
 describe('stripMergedPromptPrefix', () => {
