@@ -34,6 +34,7 @@ import { LoginScreen } from './components/LoginScreen';
 import { useWebSocket, useWebSocketConnected } from './lib/ws-provider';
 import {
   useAuthSession,
+  useAuthStatus,
   useTree,
   useSessionInfo,
   useSessionMessages,
@@ -146,8 +147,9 @@ function useIsMobile(breakpoint = 768): boolean {
 }
 
 export default function App() {
+  const authStatusQuery = useAuthStatus();
   const authQuery = useAuthSession();
-  const isLoggedIn = Boolean(authQuery.data?.ok);
+  const isLoggedIn = authStatusQuery.data?.requiresPassword === false || Boolean(authQuery.data?.ok);
   const modelsStatusQuery = useModelsStatus();
   const loginMutation = useLoginMutation();
   const logoutMutation = useLogoutMutation();
@@ -471,6 +473,9 @@ export default function App() {
   }, [selectedSessionId, compactSessionMut]);
 
   const handleArchiveSession = useCallback(async (sessionId?: string) => {
+    // TabChat 的 onClick 直绑会把 React MouseEvent 作为首个实参传入（truthy），
+    // 导致 targetId 变成 '[object Object]' 而 404 —— 此处强制类型守卫。
+    if (typeof sessionId !== 'string') sessionId = undefined;
     const targetId = sessionId ?? selectedSessionId;
     if (!targetId) return;
     const targetNode = findSessionNode(tree, targetId);
@@ -670,6 +675,8 @@ export default function App() {
     });
     return unsub;
   }, [subscribeToMessages, selectedSessionId, sendRaw]);
+
+  if (authStatusQuery.isPending) return null;
 
   if (!isLoggedIn) {
     return (

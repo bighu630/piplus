@@ -20,6 +20,7 @@ import ContextUsageRing from './ContextUsageRing';
 import Modal from './Modal';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
+import { THINKING_LEVEL_LABELS, THINKING_LEVEL_DISPLAY_LABELS } from '../lib/thinking-levels';
 import ChatInput from './ChatInput';
 import { useChatStream, useWebSocket } from '../lib/ws-provider';
 
@@ -949,24 +950,9 @@ function TabChat({
                 onChange={onThinkingLevelSelect}
                 options={thinkingLevelOptions.map((level) => ({
                   value: level,
-                  label: ({
-                    off: '关',
-                    minimal: '最低',
-                    low: '低',
-                    medium: '中',
-                    high: '高',
-                    xhigh: '最高',
-                  })[level] ?? level,
+                  label: THINKING_LEVEL_LABELS[level] ?? level,
                 }))}
-                getDisplayValue={(opt) => ({
-                  off: '思考：关',
-                  minimal: '思考：最低',
-                  low: '思考：低',
-                  medium: '思考：中',
-                  high: '思考：高',
-                  xhigh: '思考：最高',
-                  max: '思考：max',
-                })[opt.value] ?? opt.label}
+                getDisplayValue={(opt) => THINKING_LEVEL_DISPLAY_LABELS[opt.value] ?? opt.label}
                 placeholder="思考层级"
                 dropdownMaxHeight="max-h-56"
                 dropdownMinWidth="100px"
@@ -977,7 +963,7 @@ function TabChat({
           )}
           {showArchiveButton && onArchiveSession && (
             <button
-              onClick={onArchiveSession}
+              onClick={() => onArchiveSession?.()}
               className="flex items-center space-x-1 px-2.5 py-1 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-[11px] font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
               disabled={archivePending}
             >

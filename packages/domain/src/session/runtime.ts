@@ -259,6 +259,8 @@ export async function startSessionRun(input: StartSessionRunInput) {
   const doCleanup = async (error: unknown = null) => {
     if (cleanupDone) return;
     cleanupDone = true;
+    // 捕获超时窗口起点（下方会清空 timeoutStartedAt），供超时日志统计
+    const lastActivityAt = timeoutStartedAt;
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
       timeoutHandle = null;
@@ -268,6 +270,15 @@ export async function startSessionRun(input: StartSessionRunInput) {
     // Internal safety timeout: agent produced zero events for too long.
     // This is not a real agent loop error — don't surface it to the user.
     const isSafetyTimeout = error instanceof Error && error.message === 'session_run_timeout';
+
+    if (isSafetyTimeout) {
+      console.warn('[session-runtime] safety timeout fired — session produced no stream events for the full window', {
+        sessionId: input.sessionId,
+        roleKey,
+        safetyTimeoutMs,
+        elapsedSinceLastActivityMs: lastActivityAt ? Date.now() - lastActivityAt : null,
+      });
+    }
 
     // Abort the running agent if cleanup was triggered by error or timeout.
     // The agent may still be generating; abort fires in background to avoid blocking.
@@ -285,15 +296,19 @@ export async function startSessionRun(input: StartSessionRunInput) {
     }
     clearRequestContext(input.sessionId);
     clearCrossProjectWait(input.sessionId);
-    await markSessionIdle(input.db, input.sessionId, new Date(), runtimeError);
-    await input.onRuntimeStatusChange?.({
-      sessionId: input.sessionId,
-      projectId: project.id,
-      runtimeStatus: 'idle',
-      error: runtimeError,
-    });
-
-    unsubscribe();
+    // markSessionIdle / onRuntimeStatusChange 抛错时也必须取消订阅，
+    // 否则 listener 泄漏（子会话现已持有真实订阅）。
+    try {
+      await markSessionIdle(input.db, input.sessionId, new Date(), runtimeError);
+      await input.onRuntimeStatusChange?.({
+        sessionId: input.sessionId,
+        projectId: project.id,
+        runtimeStatus: 'idle',
+        error: runtimeError,
+      });
+    } finally {
+      unsubscribe();
+    }
 
     if (roleKey === 'worker') {
       // Worker: reclaim runtime immediately after completion
@@ -388,20 +403,22 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
   // Activity-based timeout: reset on every stream event so the safety
   // timeout only fires when the agent is truly stuck (no events at all).
-  const wrappedListener = input.onStreamEvent
-    ? (event: PiSessionStreamEvent) => {
-        resetTimeout();
-        // Track whether any output has been produced
-        if (event.type === 'message_start' || event.type === 'text_delta') {
-          hadOutput = true;
-        }
-        try { void input.onStreamEvent!(event); } catch { /* isolate async handler */ }
-      }
-    : undefined;
+  // 安全计时器是 runtime 内部职责，不能依赖调用方传 onStreamEvent：
+  // startChildSessionRun（spawn_session 的 worker 子会话）没有 UI 消费方、
+  // 从不传 onStreamEvent，但流事件必须照样重置计时器，否则 10 分钟硬超时
+  // 会误杀仍在正常思考/执行工具的子会话。onStreamEvent 仅为可选转发。
+  const wrappedListener = (event: PiSessionStreamEvent) => {
+    resetTimeout();
+    // Track whether any output has been produced
+    if (event.type === 'message_start' || event.type === 'text_delta') {
+      hadOutput = true;
+    }
+    if (input.onStreamEvent) {
+      try { void input.onStreamEvent(event); } catch { /* isolate async handler */ }
+    }
+  };
 
-  const unsubscribe = wrappedListener
-    ? await input.piClient.subscribeSession(input.sessionId, wrappedListener)
-    : () => {};
+  const unsubscribe = await input.piClient.subscribeSession(input.sessionId, wrappedListener);
 
   const candidateModels = input.candidateModels ?? [];
   let currentCandidateIndex = 0;

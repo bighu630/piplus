@@ -6,29 +6,31 @@ import { projects, sessions } from '@piplus/db/schema';
 import { createApp } from '../app';
 import { createPiClient } from '@piplus/pi-client';
 import { getDbPath } from '../db-context';
+import { withPasswordAuth } from '../test-utils';
 
 function makeDbPath() {
   return `/tmp/piplus-api-project-${crypto.randomUUID()}.sqlite`;
 }
 
 describe('project routes', () => {
-  test('create project requires authentication', async () => {
-    const path = makeDbPath();
-    createSeedDb(path);
-    Bun.env.DATABASE_URL = `file:${path}`;
-    const app = createApp();
+  test('create project requires authentication', () =>
+    withPasswordAuth(async () => {
+      const path = makeDbPath();
+      createSeedDb(path);
+      Bun.env.DATABASE_URL = `file:${path}`;
+      const app = createApp();
 
-    const res = await app.request('/api/v1/projects', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'API Project' }),
-    });
+      const res = await app.request('/api/v1/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'API Project' }),
+      });
 
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({
-      error: { code: 'UNAUTHENTICATED', message: 'Missing or invalid token' },
-    });
-  });
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({
+        error: { code: 'UNAUTHENTICATED', message: 'Missing or invalid token' },
+      });
+    }));
 
   test('create project auto-creates a planner session with requested model', async () => {
     const path = makeDbPath();

@@ -7,6 +7,7 @@ import {
   getSessionMessages,
   getPlannerRolePrompt,
   checkAuth,
+  getAuthStatus,
   login,
   getModelsStatus,
   getModels,
@@ -76,7 +77,18 @@ import {
   type RoleConfigEntry,
 } from './api';
 
+export function useAuthStatus() {
+  return useQuery({
+    queryKey: ['auth', 'status'],
+    queryFn: getAuthStatus,
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
+}
+
 export function useAuthSession() {
+  const statusQuery = useAuthStatus();
+  const requiresPassword = statusQuery.data?.requiresPassword ?? true;
   return useQuery({
     queryKey: ['auth', 'session'],
     queryFn: async () => {
@@ -84,6 +96,7 @@ export function useAuthSession() {
       if (!token) return null;
       return checkAuth(token);
     },
+    enabled: requiresPassword,
     retry: false,
     staleTime: 5 * 60_000,
   });

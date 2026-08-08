@@ -2,7 +2,7 @@ import { upgradeWebSocket } from 'hono/bun';
 import type { Hono } from 'hono';
 import { createEvent, parseClientMessage } from './protocol';
 import { registerSocket } from './session';
-import { verifyToken } from '../auth/token';
+import { verifyToken, isAuthEnabled } from '../auth/token';
 import { TerminalManager } from '../lib/terminal-manager';
 import { createDb } from '@piplus/db/client';
 import { projects, sessions } from '@piplus/db/schema';
@@ -50,7 +50,7 @@ export function registerWebSocketRoutes(app: Hono) {
       const rawHeaders = c.req.raw.headers;
       const header = rawHeaders.get('Authorization') ?? '';
       const token = header.replace(/^Bearer\s+/i, '');
-      const userId = verifyToken(token) ? 'local-user' : c.req.header('x-user-id');
+      const userId = verifyToken(token) ? 'local-user' : c.req.header('x-user-id') ?? (isAuthEnabled() ? undefined : 'local-user');
       if (userId) {
         (ws as any).__userId = userId;
       }

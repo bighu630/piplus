@@ -75,6 +75,8 @@ describe('model routes', () => {
       expect(model).toHaveProperty('provider');
       expect(model).toHaveProperty('id');
       expect(model).toHaveProperty('label');
+      expect(Array.isArray(model.availableThinkingLevels)).toBe(true);
+      expect(model.availableThinkingLevels.length).toBeGreaterThan(0);
     }
   });
 

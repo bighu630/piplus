@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
-import { messages, projects, roleTemplates, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
-import { and, desc, eq, inArray, lt, or } from 'drizzle-orm';
+import { messages, messageInjections, projects, roleTemplates, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
+import { and, asc, desc, eq, inArray, lt, or } from 'drizzle-orm';
 import { createPiClient } from '@piplus/pi-client';
 import type { PiClient, PiContentBlock, PiImageInput, PiModelInfo } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
@@ -283,9 +283,23 @@ export async function describeImagesWithFallback(
 }
 
 /** 图片描述与用户文本合并（描述追加在文本后；纯图片消息仅描述）。 */
+/** 图片描述合并进用户消息时的标记前缀（GET /chat/messages 据此识别并替换回原始消息）。 */
+const VISION_MERGED_MARKER = '[图片内容识别]';
+
 export function buildVisionMergedContent(content: string, description: string): string {
-  const desc = `[图片内容识别]\n${description}`;
+  const desc = `${VISION_MERGED_MARKER}\n${description}`;
   return content ? `${content}\n\n${desc}` : desc;
+}
+
+/** 解析落库的 contentBlocksJson（PiContentBlock[]）；非法/空返回 null。 */
+function parseStoredContentBlocks(json: string | null): PiContentBlock[] | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? (parsed as PiContentBlock[]) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 主备都失败：插入 error 历史消息（用户可见），返回用户友好的错误文案。 */
@@ -298,16 +312,13 @@ async function insertVisionFailureMessage(
 ) {
   const messageId = randomId('message');
   const now = nextMessageTime();
-  await db.insert(messages).values({
+  await db.insert(messageInjections).values({
     id: messageId,
     sessionId,
-    piMessageId: null,
     messageKind: 'error',
-    sourceSessionId: null,
     role: 'assistant',
     contentText: `图片识别失败，消息未发送。多模态识别模型（主：${modelRefLabel(primary)}，备：${modelRefLabel(fallback)}）${reason}。你可以稍后重试，或切换到支持图片的模型直接发送。`,
     contentBlocksJson: null,
-    contentVersion: 1,
     createdAt: now,
   } as any);
   log.info('vision relay failed, inserted error message', { sessionId, messageId });
@@ -533,14 +544,21 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
     const piPage = await piClient.getHistory(sessionId, parseLocator(session.piSessionLocatorJson), cursor ?? null, limit);
     const pageRows = piPage.messages;
 
-    // Merge slash_command messages from DB (not in Pi session file)
+    // Merge slash_command / error messages from DB (not in Pi session file).
+    // 双读兼容：新数据在 message_injections 表，历史旧数据仍在 messages 表，两源按时间归并。
     let dbCommandMessages: Array<typeof pageRows[number]> = [];
     if (!cursor || cursor === '0') {
-      const dbRows = await db.select().from(messages)
-        .where(and(eq(messages.sessionId, sessionId), inArray(messages.messageKind, ['slash_command', 'error'])))
-        .orderBy(desc(messages.createdAt))
-        .limit(20);
-      dbCommandMessages = dbRows.map((row) => ({
+      const [dbRows, injectionRows] = await Promise.all([
+        db.select().from(messages)
+          .where(and(eq(messages.sessionId, sessionId), inArray(messages.messageKind, ['slash_command', 'error'])))
+          .orderBy(desc(messages.createdAt))
+          .limit(20),
+        db.select().from(messageInjections)
+          .where(and(eq(messageInjections.sessionId, sessionId), inArray(messageInjections.messageKind, ['slash_command', 'error'])))
+          .orderBy(desc(messageInjections.createdAt))
+          .limit(20),
+      ]);
+      const mapCommandRow = (row: typeof messages.$inferSelect | typeof messageInjections.$inferSelect) => ({
         id: row.id,
         role: row.role as 'user' | 'assistant',
         text: row.contentText,
@@ -549,7 +567,63 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
         toolName: undefined,
         toolArgs: undefined,
         contentBlocks: undefined,
-      }));
+      });
+      dbCommandMessages = [...dbRows.map(mapCommandRow), ...injectionRows.map(mapCommandRow)]
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+
+    // Vision relay 用户消息替换（仅首页）：pi 历史中保存的是合并了 "[图片内容识别]" 描述的消息，
+    // 用 DB 中保留原始文本 + 图片附件的消息行替换，历史展示原始图片而非描述文本。
+    // 必须在 allMessages 组装之前执行（展开 pageRows 后修改不再影响结果）。
+    // DB createdAt 由 nextMessageTime() 生成（与 pi 历史时间戳毫秒级对齐），按时间顺序一一配对。
+    // 双读兼容：新数据在 message_injections（messageKind='vision_relay'），历史旧数据仍在 messages 表（role='user' + blocks 含 image）。
+    if (!cursor || cursor === '0') {
+      const [dbUserRows, injectionRelayRows] = await Promise.all([
+        db.select().from(messages)
+          .where(and(
+            eq(messages.sessionId, sessionId),
+            eq(messages.role, 'user'),
+            eq(messages.messageKind, 'normal'),
+          ))
+          .orderBy(asc(messages.createdAt)),
+        db.select().from(messageInjections)
+          .where(and(
+            eq(messageInjections.sessionId, sessionId),
+            eq(messageInjections.messageKind, 'vision_relay'),
+          ))
+          .orderBy(asc(messageInjections.createdAt)),
+      ]);
+      const visionRelayRows = [
+        ...dbUserRows.filter((row) => {
+          const blocks = parseStoredContentBlocks(row.contentBlocksJson);
+          return blocks !== null && blocks.some((block) => block.type === 'image');
+        }),
+        ...injectionRelayRows,
+      ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      if (visionRelayRows.length > 0) {
+        // pi 历史中带合并标记的用户消息，按时间升序
+        const mergedIndexes = pageRows
+          .map((m, i) => ({ index: i, time: m.createdAt ? new Date(m.createdAt).getTime() : 0 }))
+          .filter(({ index }) => pageRows[index].role === 'user' && pageRows[index].text.includes(VISION_MERGED_MARKER))
+          .sort((a, b) => a.time - b.time);
+        for (let i = 0; i < visionRelayRows.length && i < mergedIndexes.length; i++) {
+          const row = visionRelayRows[i];
+          const target = mergedIndexes[i];
+          // 时间容差防御：顺序错乱（极端场景）时保守跳过
+          const rowTime = new Date(row.createdAt).getTime();
+          if (Math.abs(rowTime - target.time) > 5 * 60_000) continue;
+          pageRows[target.index] = {
+            id: row.id,
+            role: row.role as 'user',
+            text: row.contentText,
+            messageKind: 'normal',
+            createdAt: new Date(row.createdAt).toISOString(),
+            toolName: undefined,
+            toolArgs: undefined,
+            contentBlocks: parseStoredContentBlocks(row.contentBlocksJson) ?? undefined,
+          } as typeof pageRows[number];
+        }
+      }
     }
 
     const allMessages = [...dbCommandMessages.reverse(), ...pageRows];
@@ -637,17 +711,17 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
         const userMsgId = randomId('message');
         const assistantMsgId = randomId('message');
 
-        await db.insert(messages).values({
-          id: userMsgId, sessionId, piMessageId: null, messageKind: 'slash_command',
-          sourceSessionId: null, role: 'user', contentText: content,
-          contentBlocksJson: null, contentVersion: 1, createdAt: now,
+        await db.insert(messageInjections).values({
+          id: userMsgId, sessionId, messageKind: 'slash_command',
+          role: 'user', contentText: content,
+          contentBlocksJson: null, createdAt: now,
         } as any);
 
         const responseNow = nextMessageTime();
-        await db.insert(messages).values({
-          id: assistantMsgId, sessionId, piMessageId: null, messageKind: 'slash_command',
-          sourceSessionId: null, role: 'assistant', contentText: commandResult,
-          contentBlocksJson: null, contentVersion: 1, createdAt: responseNow,
+        await db.insert(messageInjections).values({
+          id: assistantMsgId, sessionId, messageKind: 'slash_command',
+          role: 'assistant', contentText: commandResult,
+          contentBlocksJson: null, createdAt: responseNow,
         } as any);
 
         log.info('slash command executed', { sessionId, content });
@@ -670,6 +744,8 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
     const currentModel = await resolveSessionModelWithCapabilities(piClient, session);
     let effectiveContent = rawContent;
     let effectiveImages = attachmentParse.images;
+    // vision relay 成功标记：落库时据此决定走注入表（vision_relay）而非 messages 表
+    let visionRelayUsed = false;
     if (attachmentParse.images.length > 0 && currentModel !== null && !modelSupportsImageInput(currentModel)) {
       const visionEnabled = (await getSetting(db, 'vision_enabled')) === 'true';
       const primaryRef = visionEnabled ? parseModelRef(await getSetting(db, 'vision_model')) : null;
@@ -709,6 +785,7 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
         // 成功：描述与用户文本合并，图片本身不发给文本模型
         effectiveContent = buildVisionMergedContent(rawContent, outcome.description);
         effectiveImages = [];
+        visionRelayUsed = true;
       } else {
         // 未开启功能或未配置多模态模型：保持原有拒绝行为
         return c.json({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES', message: 'Current model does not support image input' } }, 400);
@@ -725,18 +802,32 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
 
     const now = nextMessageTime();
     const messageId = randomId('message');
-    await db.insert(messages).values({
-      id: messageId,
-      sessionId,
-      piMessageId: null,
-      messageKind: 'normal',
-      sourceSessionId: null,
-      role: 'user',
-      contentText: rawContent,
-      contentBlocksJson: contentBlocks.length ? JSON.stringify(contentBlocks) : null,
-      contentVersion: contentBlocks.length ? 2 : 1,
-      createdAt: now,
-    } as any);
+    if (visionRelayUsed) {
+      // vision relay 成功：原始用户消息（文本 + 图片 blocks）落注入表，不落 messages 表；
+      // GET /chat/messages 用该行替换 pi 历史中的合并描述消息（见上方 vision relay 替换逻辑）
+      await db.insert(messageInjections).values({
+        id: messageId,
+        sessionId,
+        messageKind: 'vision_relay',
+        role: 'user',
+        contentText: rawContent,
+        contentBlocksJson: contentBlocks.length ? JSON.stringify(contentBlocks) : null,
+        createdAt: now,
+      } as any);
+    } else {
+      await db.insert(messages).values({
+        id: messageId,
+        sessionId,
+        piMessageId: null,
+        messageKind: 'normal',
+        sourceSessionId: null,
+        role: 'user',
+        contentText: rawContent,
+        contentBlocksJson: contentBlocks.length ? JSON.stringify(contentBlocks) : null,
+        contentVersion: contentBlocks.length ? 2 : 1,
+        createdAt: now,
+      } as any);
+    }
 
     log.info('message sent', { sessionId, messageId });
     await createAuditService(db).record(userId, "message.sent", "session", sessionId, { message_id: messageId });
@@ -797,6 +888,7 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
         // 用户重试会重新插入。审计记录保留（系统审计日志不随业务行删除）。
         try {
           await db.delete(messages).where(eq(messages.id, messageId));
+          await db.delete(messageInjections).where(eq(messageInjections.id, messageId));
           await db.delete(sessionEvents).where(eq(sessionEvents.id, eventId));
         } catch (cleanupErr) {
           log.warn('chat 409: ghost message cleanup failed', { sessionId, messageId, error: String(cleanupErr) });

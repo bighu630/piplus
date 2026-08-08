@@ -425,7 +425,9 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       },
       async restoreRuntime() { return; },
       async subscribeSession() { return () => {}; },
-      async getHistory() { return { messages: [], nextCursor: null }; },
+      // 子会话输出信号现在走 getHistory（读 .jsonl 会话文件，不再查 DB messages 表）：
+      // 返回 assistant 消息模拟“子会话已有输出”，走含 requestId 的提醒路径
+      async getHistory() { return { messages: [{ id: 'msg_asst_1', role: 'assistant', text: 'working...', createdAt: null }], nextCursor: null }; },
       async stopSession() { return { status: 'stopped' as const }; },
       async closeRuntime() { return; },
       async listAvailableModels() { return []; },
@@ -443,18 +445,8 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
         state.sent.push({ sessionId, content, requestId: reqCtx?.requestId ?? null });
         if (!firstRequestId) {
           firstRequestId = reqCtx?.requestId ?? null;
-          // Simulate child producing some output so model fallback logic doesn't fire
-          await db.insert(messages).values({
-            id: `msg_asst_${crypto.randomUUID().slice(0, 8)}`,
-            sessionId,
-            piMessageId: null,
-            messageKind: 'normal',
-            role: 'assistant',
-            contentText: '',
-            contentVersion: 1,
-            requestId: null,
-            createdAt: new Date(nowMs),
-          } as any);
+          // 子会话输出信号由 getHistory mock 提供（hasNoOutput = false），
+          // 不再需要向 DB 插 assistant 消息模拟输出
           setTimeout(async () => {
             await db.update(sessions).set({ runtimeStatus: 'idle', updatedAt: new Date(nowMs) }).where(eq(sessions.id, sessionId));
             nowMs += 61_000;

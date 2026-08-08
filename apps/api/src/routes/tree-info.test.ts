@@ -4,21 +4,23 @@ import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
 import { sessions } from '@piplus/db/schema';
 import { createApp } from '../app';
+import { withPasswordAuth } from '../test-utils';
 
 function makeDbPath(label: string) {
   return `/tmp/piplus-${label}-${crypto.randomUUID()}.sqlite`;
 }
 
 describe('tree and session info routes', () => {
-  test('tree requires authentication', async () => {
-    const path = makeDbPath('tree-auth');
-    createSeedDb(path);
-    Bun.env.DATABASE_URL = `file:${path}`;
-    const app = createApp();
+  test('tree requires authentication', () =>
+    withPasswordAuth(async () => {
+      const path = makeDbPath('tree-auth');
+      createSeedDb(path);
+      Bun.env.DATABASE_URL = `file:${path}`;
+      const app = createApp();
 
-    const treeRes = await app.request('/api/v1/tree');
-    expect(treeRes.status).toBe(401);
-  });
+      const treeRes = await app.request('/api/v1/tree');
+      expect(treeRes.status).toBe(401);
+    }));
 
   test('manual session creation creates a top-level blank session and tree stays backend-shaped', async () => {
     const path = makeDbPath('tree');
@@ -75,7 +77,9 @@ describe('tree and session info routes', () => {
     });
     const projectBody = await projectRes.json();
 
-    const unauthenticatedRes = await app.request(`/api/v1/sessions/${projectBody.sessionId}/info`);
+    const unauthenticatedRes = await withPasswordAuth(() =>
+      app.request(`/api/v1/sessions/${projectBody.sessionId}/info`),
+    );
     expect(unauthenticatedRes.status).toBe(401);
 
     const infoRes = await app.request(`/api/v1/sessions/${projectBody.sessionId}/info`, {

@@ -1,7 +1,20 @@
 import type { Hono } from 'hono';
-import { createToken, verifyPassword, verifyToken } from './token';
+import { createToken, isAuthEnabled, verifyPassword, verifyToken } from './token';
 
 export function registerAuthRoutes(app: Hono) {
+  /**
+   * @swagger
+   * /api/v1/auth/status:
+   *   get:
+   *     summary: 查询是否启用密码登录
+   *     tags: [Auth]
+   *     description: 返回 requiresPassword 指示前端是否需要展示登录页。无需认证。
+   *     responses:
+   *       200:
+   *         description: 认证模式。
+   */
+  app.get('/api/v1/auth/status', (c) => c.json({ requiresPassword: isAuthEnabled() }));
+
   /**
    * @swagger
    * /api/v1/auth/login:

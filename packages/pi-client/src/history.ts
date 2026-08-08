@@ -1,4 +1,5 @@
-import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { existsSync, readFileSync } from 'node:fs';
+import { parseSessionEntries } from '@earendil-works/pi-coding-agent';
 import type { PiContentBlock, PiHistoryMessage, PiHistoryPage, PiImageContentBlock } from './types';
 import type { PiSessionLocator } from './locator';
 
@@ -111,8 +112,20 @@ function toUserContentBlocks(content: string | Array<ContentBlock> | undefined):
 }
 
 export function readHistory(locator: PiSessionLocator, cursor?: string | null, limit = 50): PiHistoryPage {
-  const manager = SessionManager.open(locator.sessionFile);
-  const rawEntries = manager.getEntries() as SessionMessageEntry[];
+  // 只读加载：SessionManager.open(persist=true) 对旧版本文件会触发
+  // migrateToCurrentVersion 全量重写，读路径不应可写。
+  // 包入口未导出 loadEntriesFromFile（exports map 亦拦截深路径导入），
+  // 故用公开导出的 parseSessionEntries 实现等价只读加载：
+  // 文件不存在 / 空文件 / 非法头部均返回空数组，不写盘、不迁移。
+  let rawEntries: SessionMessageEntry[] = [];
+  const sessionFile = locator.sessionFile;
+  if (existsSync(sessionFile)) {
+    const entries = parseSessionEntries(readFileSync(sessionFile, 'utf8'));
+    const header = entries[0];
+    if (header?.type === 'session' && typeof header.id === 'string') {
+      rawEntries = entries as SessionMessageEntry[];
+    }
+  }
 
   const messages: PiHistoryMessage[] = [];
 

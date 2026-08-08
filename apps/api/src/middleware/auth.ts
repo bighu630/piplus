@@ -1,5 +1,5 @@
 import type { Context, Next } from 'hono';
-import { verifyToken } from '../auth/token';
+import { isAuthEnabled, verifyToken } from '../auth/token';
 import { getServerConfig } from '../server-config';
 
 export async function requireAuth(c: Context, next: Next) {
@@ -17,6 +17,13 @@ export async function requireAuth(c: Context, next: Next) {
   if (headerUserId && getServerConfig().nodeEnv !== 'production') {
     c.set('userId', headerUserId);
     c.set('userName', headerUserId);
+    return await next();
+  }
+
+  // No-auth mode: when APP_PASSWORD is not explicitly set, allow anonymous access
+  if (!isAuthEnabled()) {
+    c.set('userId', 'local-user');
+    c.set('userName', 'Piplus');
     return await next();
   }
 

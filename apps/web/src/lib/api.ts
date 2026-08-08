@@ -19,6 +19,7 @@ export type ModelInfo = {
   reasoning?: boolean;
   input?: string[];
   thinkingLevelMap?: Record<string, string | null>;
+  availableThinkingLevels?: string[];
 };
 
 export type ProviderFormModel = {
@@ -97,6 +98,10 @@ export function checkAuth(token: string) {
   return request<{ ok: true; user: { id: string; name: string } }>('/api/v1/auth/check', {
     headers: { Authorization: `Bearer ${token}` },
   });
+}
+
+export function getAuthStatus() {
+  return request<{ requiresPassword: boolean }>('/api/v1/auth/status');
 }
 
 export function getModelsStatus() {

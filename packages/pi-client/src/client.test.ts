@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
-import { createPiClient } from './client';
+import { createPiClient, mapAgentSessionEvent } from './client';
 
 describe('pi client gateway', () => {
   test('createSession returns a persistent pi session locator path', async () => {
@@ -209,6 +209,24 @@ describe('pi client gateway', () => {
     expect(models[0]).toHaveProperty('provider');
     expect(models[0]).toHaveProperty('id');
     expect(models[0]).toHaveProperty('label');
+
+    // availableThinkingLevels 由后端按 SDK 规则权威计算，这里手算对照验证：
+    // 非 reasoning 模型只有 ['off']；null 剔除；xhigh/max 必须显式列出；off..high 无条件支持。
+    const extendedLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const expectLevels = (model: (typeof models)[number]): string[] => {
+      if (!model.reasoning) return ['off'];
+      return extendedLevels.filter((level) => {
+        const mapped = model.thinkingLevelMap?.[level];
+        if (mapped === null) return false;
+        if (level === 'xhigh' || level === 'max') return mapped !== undefined;
+        return true;
+      });
+    };
+
+    for (const model of models) {
+      expect(Array.isArray(model.availableThinkingLevels)).toBe(true);
+      expect(model.availableThinkingLevels).toEqual(expectLevels(model));
+    }
   });
 
   test('setSessionModel persists model_change into session file across runtime restore', async () => {
@@ -423,5 +441,39 @@ describe('pi client gateway', () => {
     // 生成结束后 closeRuntime 正常 dispose
     await client.closeRuntime(created.sessionId);
     expect(client.getRuntimeState(created.sessionId)?.ready).toBe(false);
+  });
+});
+
+describe('mapAgentSessionEvent', () => {
+  test('thinking delta → activity (safety timer reset signal)', () => {
+    const event = mapAgentSessionEvent('sess_act_1', 'run_1', {
+      type: 'message_update',
+      message: {} as never,
+      assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'thinking...', partial: {} as never },
+    });
+    expect(event).toEqual({ type: 'activity', sessionId: 'sess_act_1', runId: 'run_1' });
+  });
+
+  test('tool_execution_start → activity (safety timer reset signal)', () => {
+    const event = mapAgentSessionEvent('sess_act_2', 'run_2', {
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'bash',
+      args: { command: 'ls' },
+    });
+    expect(event).toEqual({ type: 'activity', sessionId: 'sess_act_2', runId: 'run_2' });
+  });
+
+  test('text_delta still maps to text_delta (regression)', () => {
+    const event = mapAgentSessionEvent('sess_act_3', 'run_3', {
+      type: 'message_update',
+      message: {} as never,
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'hello', partial: {} as never },
+    });
+    expect(event).toEqual({ type: 'text_delta', sessionId: 'sess_act_3', runId: 'run_3', delta: 'hello' });
+  });
+
+  test('unmapped events (agent_start) are dropped', () => {
+    expect(mapAgentSessionEvent('sess_act_4', 'run_4', { type: 'agent_start' })).toBeNull();
   });
 });

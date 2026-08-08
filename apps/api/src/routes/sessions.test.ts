@@ -1,11 +1,13 @@
 import { createSeedDb } from '@piplus/db/init';
 import { describe, expect, test } from 'bun:test';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { createDb } from '@piplus/db/client';
-import { messages, sessions } from '@piplus/db/schema';
+import { messages, messageInjections, sessions } from '@piplus/db/schema';
 import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
 import { parseModelRef, buildVisionMergedContent, describeImagesWithFallback, stripMergedPromptPrefix } from './sessions';
+import { withPasswordAuth } from '../test-utils';
 
 const imageCapableModelPromise = createPiClient().listAvailableModels().then((models) => models.at(-1) ?? models[0]);
 
@@ -32,22 +34,23 @@ async function createImageCapableSession(app: ReturnType<typeof createApp>, name
 }
 
 describe('session routes', () => {
-  test('chat message history requires authentication', async () => {
-    const path = makeDbPath();
-    createSeedDb(path);
-    Bun.env.DATABASE_URL = `file:${path}`;
-    const app = createApp();
+  test('chat message history requires authentication', () =>
+    withPasswordAuth(async () => {
+      const path = makeDbPath();
+      createSeedDb(path);
+      Bun.env.DATABASE_URL = `file:${path}`;
+      const app = createApp();
 
-    const projectRes = await app.request('/api/v1/projects', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'Private Session Project', mode: 'existing', path: '/tmp' }),
-    });
-    const projectBody = await projectRes.json();
+      const projectRes = await app.request('/api/v1/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ name: 'Private Session Project', mode: 'existing', path: '/tmp' }),
+      });
+      const projectBody = await projectRes.json();
 
-    const historyRes = await app.request(`/api/v1/sessions/${projectBody.sessionId}/chat/messages?limit=2&cursor=0`);
-    expect(historyRes.status).toBe(401);
-  });
+      const historyRes = await app.request(`/api/v1/sessions/${projectBody.sessionId}/chat/messages?limit=2&cursor=0`);
+      expect(historyRes.status).toBe(401);
+    }));
 
   test('message history returns user and assistant messages from pi session file', async () => {
     const path = makeDbPath();
@@ -262,6 +265,13 @@ describe('session routes', () => {
     const userRows = await db.select().from(messages).where(and(eq(messages.sessionId, sessionId), eq(messages.role, 'user')));
     expect(userRows).toHaveLength(0);
 
+    // error 消息落注入表（message_injections）
+    const injectionRows = await db.select().from(messageInjections)
+      .where(and(eq(messageInjections.sessionId, sessionId), eq(messageInjections.messageKind, 'error')));
+    expect(injectionRows).toHaveLength(1);
+    expect(injectionRows[0].role).toBe('assistant');
+    expect(injectionRows[0].contentText).toContain('图片识别失败');
+
     // error 历史消息可见
     const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
       headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
@@ -366,6 +376,129 @@ describe('session routes', () => {
       await Bun.sleep(10);
     }
     expect(sessionRow?.runtimeStatus).toBe('idle');
+
+    // vision relay 成功：用户消息落注入表（messageKind='vision_relay'），messages 表无该用户消息行
+    const injectionRows = await db.select().from(messageInjections)
+      .where(and(eq(messageInjections.sessionId, sessionId), eq(messageInjections.messageKind, 'vision_relay')));
+    expect(injectionRows).toHaveLength(1);
+    expect(injectionRows[0].role).toBe('user');
+    expect(injectionRows[0].contentText).toBe('describe this');
+    expect(injectionRows[0].contentBlocksJson).toContain('image/png');
+    expect(injectionRows[0].contentBlocksJson).toContain('blocked.png');
+    const userRows = await db.select().from(messages).where(and(eq(messages.sessionId, sessionId), eq(messages.role, 'user')));
+    expect(userRows).toHaveLength(0);
+  });
+
+  test('vision relay: history shows original user text and image attachments instead of merged description', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+
+    const realClient = createPiClient();
+    const capturedRaw: { messages: Array<{ role: string; text: string }> | null } = { messages: null };
+    const stubClient = new Proxy(realClient, {
+      get(target, prop, receiver) {
+        if (prop === 'completeModel') {
+          return async () => ({ text: '这是一张报错截图', stopReason: 'stop' });
+        }
+        if (prop === 'sendMessage') {
+          // 成功返回（stub 不写 pi 历史）：随后测试手动注入合并文本消息模拟真实 pi 会话文件
+          return async (_sessionId: string, _content: string) => ({ sessionId: _sessionId, runId: 'stub-run' });
+        }
+        if (prop === 'getHistory') {
+          // 记录 pi 会话文件里的原始历史（未经过替换），用于证明替换确实发生
+          return async (...args: Parameters<typeof target.getHistory>) => {
+            const result = await target.getHistory(...args);
+            capturedRaw.messages = result.messages.map((m) => ({ role: m.role, text: m.text }));
+            return result;
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const app = createApp({ piClient: stubClient });
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Vision Relay History', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 切换到纯文本模型
+    const modelsRes = await app.request('/api/v1/models', { headers: { 'x-user-id': 'user_seed' } });
+    const modelsBody = await modelsRes.json();
+    const textOnlyModel = (modelsBody.models as Array<{ provider: string; id: string; input?: string[] }>).find(
+      (m) => Array.isArray(m.input) && !m.input.includes('image'),
+    );
+    if (textOnlyModel) {
+      await app.request(`/api/v1/sessions/${sessionId}/model`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
+      });
+    }
+
+    await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ vision_enabled: 'true', vision_model: 'fake-vision/fake-model' }),
+    });
+
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+    expect(sendRes.status).toBe(202);
+
+    // 模拟真实 pi 会话文件：往文件追加一条 vision relay 合并文本用户消息（时间戳贴近 DB 落库时间）
+    const db = createDb(`file:${path}`);
+    const [sessionRow] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    const locator = JSON.parse(sessionRow.piSessionLocatorJson) as { sessionFile: string };
+    const manager = SessionManager.open(locator.sessionFile);
+    manager.appendMessage({
+      role: 'user',
+      content: 'describe this\n\n[图片内容识别]\n这是一张报错截图',
+      timestamp: Date.now(),
+    });
+
+    // 轮询 GET 历史直到用户消息可见（pi 历史已包含注入消息）
+    type HistoryMessage = {
+      role: string;
+      content_text: string;
+      content_blocks: Array<{ type: string; data_base64?: string }> | null;
+    };
+    let histBody: { messages: HistoryMessage[] } | null = null;
+    for (let i = 0; i < 200; i++) {
+      const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      });
+      const body = (await histRes.json()) as { messages: HistoryMessage[] };
+      histBody = body;
+      if (body.messages.some((m) => m.role === 'user' && m.content_text.includes('describe this'))) break;
+      await Bun.sleep(10);
+    }
+
+    // pi 原始历史确实包含合并文本消息（替换前提成立）
+    expect(capturedRaw.messages?.some((m) => m.role === 'user' && m.text.includes('[图片内容识别]')) ?? false).toBe(true);
+
+    // GET 响应中该用户消息被替换为原始文本 + 图片附件
+    const userMsg = histBody!.messages.find((m) => m.role === 'user' && m.content_text.includes('describe this'));
+    expect(userMsg).toBeTruthy();
+    expect(userMsg!.content_text).not.toContain('[图片内容识别]');
+    const imageBlock = userMsg!.content_blocks?.find((b) => b.type === 'image');
+    expect(imageBlock).toBeTruthy();
+    expect(imageBlock!.data_base64).toBe(Buffer.from('blocked').toString('base64'));
   });
 
   test('vision relay: concurrent POST while describe in flight gets 409', async () => {
@@ -509,6 +642,59 @@ describe('session routes', () => {
     expect(await sendRes.json()).toMatchObject({ error: { code: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } });
   });
 
+  test('slash command messages are stored in message_injections', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Slash Command Project', mode: 'existing', path: '/tmp' }),
+    });
+    expect(projectRes.status).toBe(201);
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // /help 是内置 slash command，executeCommand 无需运行时会话即可执行
+    const sendRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ content: '/help' }),
+    });
+    expect(sendRes.status).toBe(202);
+
+    // 注入表含 role=user 与 role=assistant 两条 slash_command 行
+    const db = createDb(`file:${path}`);
+    const injectionRows = await db.select().from(messageInjections)
+      .where(and(eq(messageInjections.sessionId, sessionId), eq(messageInjections.messageKind, 'slash_command')))
+      .orderBy(asc(messageInjections.createdAt));
+    expect(injectionRows).toHaveLength(2);
+    expect(injectionRows[0].role).toBe('user');
+    expect(injectionRows[0].contentText).toBe('/help');
+    expect(injectionRows[1].role).toBe('assistant');
+    expect(injectionRows[1].contentText).toContain('可用命令');
+
+    // messages 表无新行（slash_command 不再落 messages 表）
+    const msgRows = await db.select().from(messages).where(eq(messages.sessionId, sessionId));
+    expect(msgRows).toHaveLength(0);
+
+    // GET 历史中可见两条 slash_command 消息（双读合并：注入表新数据）
+    const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
+      headers: { 'x-user-id': 'user_seed' },
+    });
+    expect(histRes.status).toBe(200);
+    const histBody = await histRes.json();
+    const slashMessages = (histBody.messages as Array<{ message_kind: string; role: string; content_text: string }>)
+      .filter((m) => m.message_kind === 'slash_command');
+    expect(slashMessages).toHaveLength(2);
+    const slashUser = slashMessages.find((m) => m.role === 'user');
+    expect(slashUser?.content_text).toBe('/help');
+    const slashAssistant = slashMessages.find((m) => m.role === 'assistant');
+    expect(slashAssistant?.content_text).toContain('可用命令');
+  });
+
   test('create top-level session inherits project planner model', async () => {
     const path = makeDbPath();
     createSeedDb(path);
@@ -624,19 +810,20 @@ describe('session routes', () => {
     expect(info.session.title).toBe('Renamed Session');
   });
 
-  test('patch session title requires authentication', async () => {
-    const path = makeDbPath();
-    createSeedDb(path);
-    Bun.env.DATABASE_URL = `file:${path}`;
-    const app = createApp();
+  test('patch session title requires authentication', () =>
+    withPasswordAuth(async () => {
+      const path = makeDbPath();
+      createSeedDb(path);
+      Bun.env.DATABASE_URL = `file:${path}`;
+      const app = createApp();
 
-    const res = await app.request('/api/v1/sessions/session_nonexistent', {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'No Auth' }),
-    });
-    expect(res.status).toBe(401);
-  });
+      const res = await app.request('/api/v1/sessions/session_nonexistent', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'No Auth' }),
+      });
+      expect(res.status).toBe(401);
+    }));
 
   // ─── Stop session / error resilience ──────────────────────────────────────
 
@@ -725,18 +912,19 @@ describe('session routes', () => {
     expect(r2.status).toBe(202);
   });
 
-  test('POST /api/v1/sessions/:id/stop requires authentication', async () => {
-    const path = makeDbPath();
-    createSeedDb(path);
-    Bun.env.DATABASE_URL = `file:${path}`;
-    const app = createApp();
+  test('POST /api/v1/sessions/:id/stop requires authentication', () =>
+    withPasswordAuth(async () => {
+      const path = makeDbPath();
+      createSeedDb(path);
+      Bun.env.DATABASE_URL = `file:${path}`;
+      const app = createApp();
 
-    const res = await app.request('/api/v1/sessions/session_nonexistent/stop', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-    });
-    expect(res.status).toBe(401);
-  });
+      const res = await app.request('/api/v1/sessions/session_nonexistent/stop', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(401);
+    }));
 
   test('POST /api/v1/sessions/:id/stop returns 404 for nonexistent session', async () => {
     const path = makeDbPath();
@@ -751,6 +939,138 @@ describe('session routes', () => {
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body).toMatchObject({ error: { code: 'NOT_FOUND' } });
+  });
+
+  test('legacy messages-table injections still merged via GET (dual-read compatibility)', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Legacy Injection Project', mode: 'existing', path: '/tmp' }),
+    });
+    expect(projectRes.status).toBe(201);
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 模拟 5e1e146 之前的存量数据：直接向 messages 表插入旧风格注入行
+    const db = createDb(`file:${path}`);
+    const now = Date.now();
+    const slashUserAt = new Date(now - 60_000);
+    const slashAssistantAt = new Date(now - 59_000);
+    const errorAt = new Date(now - 58_000);
+    const visionAt = new Date(now - 30_000);
+    await db.insert(messages).values([
+      {
+        id: crypto.randomUUID(),
+        sessionId,
+        piMessageId: null,
+        messageKind: 'slash_command',
+        sourceSessionId: null,
+        role: 'user',
+        contentText: '/help',
+        contentBlocksJson: null,
+        contentVersion: 1,
+        createdAt: slashUserAt,
+      },
+      {
+        id: crypto.randomUUID(),
+        sessionId,
+        piMessageId: null,
+        messageKind: 'slash_command',
+        sourceSessionId: null,
+        role: 'assistant',
+        contentText: '旧版 slash 执行结果',
+        contentBlocksJson: null,
+        contentVersion: 1,
+        createdAt: slashAssistantAt,
+      },
+      {
+        id: crypto.randomUUID(),
+        sessionId,
+        piMessageId: null,
+        messageKind: 'error',
+        sourceSessionId: null,
+        role: 'assistant',
+        contentText: '旧版错误注入',
+        contentBlocksJson: null,
+        contentVersion: 1,
+        createdAt: errorAt,
+      },
+      {
+        id: crypto.randomUUID(),
+        sessionId,
+        piMessageId: null,
+        messageKind: 'normal',
+        sourceSessionId: null,
+        role: 'user',
+        contentText: '旧图片消息',
+        contentBlocksJson: JSON.stringify([
+          { type: 'text', text: '旧图片消息' },
+          { type: 'image', mimeType: 'image/png', mediaType: 'image/png', filename: 'old.png', uri: null, dataBase64: 'b2xk' },
+        ]),
+        contentVersion: 1,
+        createdAt: visionAt,
+      },
+    ] as any);
+
+    // 模拟旧版 pi 会话文件：注入一条带 [图片内容识别] 合并标记的用户消息（时间戳贴近 vision 旧行）
+    const [sessionRow] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    const locator = JSON.parse(sessionRow.piSessionLocatorJson) as { sessionFile: string };
+    const manager = SessionManager.open(locator.sessionFile);
+    manager.appendMessage({
+      role: 'user',
+      content: '旧图片消息\n\n[图片内容识别]\n旧版图片描述',
+      timestamp: visionAt.getTime() + 1000,
+    });
+
+    // 轮询 GET 直到 vision 旧行替换生效（pi 文件写入后可见）
+    type HistoryMessage = {
+      role: string;
+      message_kind: string;
+      content_text: string;
+      content_blocks: Array<{ type: string; data_base64?: string }> | null;
+    };
+    let histBody: { messages: HistoryMessage[] } | null = null;
+    for (let i = 0; i < 200; i++) {
+      const histRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=50&cursor=0`, {
+        headers: { 'x-user-id': 'user_seed' },
+      });
+      expect(histRes.status).toBe(200);
+      histBody = await histRes.json();
+      if (histBody!.messages.some((m) => m.role === 'user' && m.content_text === '旧图片消息')) break;
+      await Bun.sleep(10);
+    }
+    const historyMessages = histBody!.messages;
+
+    // slash_command 旧行：两条（user + assistant）从 messages 表归并可见
+    const slashMessages = historyMessages.filter((m) => m.message_kind === 'slash_command');
+    expect(slashMessages).toHaveLength(2);
+    expect(slashMessages.find((m) => m.role === 'user')?.content_text).toBe('/help');
+    expect(slashMessages.find((m) => m.role === 'assistant')?.content_text).toBe('旧版 slash 执行结果');
+
+    // error 旧行：一条从 messages 表归并可见
+    const errorMessages = historyMessages.filter((m) => m.message_kind === 'error');
+    expect(errorMessages).toHaveLength(1);
+    expect(errorMessages[0].content_text).toContain('旧版错误注入');
+
+    // vision_relay 旧行：替换 pi 合并文本显示，原始文本 + 图片附件，无合并标记残留
+    const visionUserMessages = historyMessages.filter((m) => m.role === 'user' && m.content_text === '旧图片消息');
+    expect(visionUserMessages).toHaveLength(1);
+    expect(visionUserMessages[0].content_text).not.toContain('[图片内容识别]');
+    expect(historyMessages.some((m) => m.content_text.includes('[图片内容识别]'))).toBe(false);
+    const imageBlock = visionUserMessages[0].content_blocks?.find((b) => b.type === 'image');
+    expect(imageBlock).toBeTruthy();
+    expect(imageBlock!.data_base64).toBe('b2xk');
+
+    // 无重复：四类旧行各恰好一条，无合并文本残留
+    const expectedTexts = ['/help', '旧版 slash 执行结果', '旧版错误注入', '旧图片消息'];
+    for (const text of expectedTexts) {
+      expect(historyMessages.filter((m) => m.content_text === text)).toHaveLength(1);
+    }
   });
 });
 

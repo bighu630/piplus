@@ -95,6 +95,16 @@ export const messages = sqliteTable('messages', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 });
 
+export const messageInjections = sqliteTable('message_injections', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  messageKind: text('message_kind').notNull(),
+  role: text('role').notNull(),
+  contentText: text('content_text').notNull(),
+  contentBlocksJson: text('content_blocks_json'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
 export const sessionEvents = sqliteTable('session_events', {
   id: text('id').primaryKey(),
   sessionId: text('session_id').notNull(),
@@ -149,6 +159,7 @@ export const schema = {
   roleTemplates,
   sessions,
   messages,
+  messageInjections,
   sessionEvents,
   sessionSyncStates,
   projectTodos,

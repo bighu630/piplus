@@ -45,7 +45,9 @@
 
 下载对应平台的最新包，从 [Releases](https://github.com/bighu630/piplus/releases) 获取。
 
-登陆密码： `piplus-local`
+默认免登录，直接使用即可。
+
+**公网部署时设置登录密码：** 在环境变量中配置 `APP_PASSWORD` 即可启用登录页（例如 `APP_PASSWORD=your-password`），登录密码即该值；不设置则保持免登录。
 
 **Linux：**
 ```bash

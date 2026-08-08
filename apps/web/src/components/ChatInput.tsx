@@ -132,13 +132,19 @@ export default function ChatInput({
   const handleSubmit = async () => {
     const content = draft.trim();
     if ((!content && attachments.length === 0) || sending) return;
+    // 乐观清空：点击发送立即清空输入框（vision relay 时 POST 需等图片识别完成，可能耗时较长），
+    // 失败时在 catch 中恢复内容，避免用户误以为未发出而重复提交。
+    const pendingContent = content;
+    const pendingAttachments = attachments;
+    setDraft('');
+    setAttachments([]);
+    setAttachmentError(null);
     try {
-      await onSend(content, attachments);
-      setDraft('');
-      setAttachments([]);
-      setAttachmentError(null);
+      await onSend(pendingContent, pendingAttachments);
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
+      setDraft(pendingContent);
+      setAttachments(pendingAttachments);
       if (/does not support image input/i.test(message)) {
         setAttachmentError('当前模型不支持图片输入，请切换到支持图片的模型。');
         return;
