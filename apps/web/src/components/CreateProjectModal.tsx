@@ -4,6 +4,7 @@ import Select from './Select';
 import { PlusCircle } from 'lucide-react';
 import { useRoleTemplates } from '../lib/hooks';
 import { renderRoleIcon } from '../lib/role-icons';
+import { THINKING_LEVEL_DISPLAY_LABELS } from '../lib/thinking-levels';
 import type { RoleConfigEntry } from '../lib/api';
 
 interface CreateProjectModalProps {
@@ -46,29 +47,16 @@ function getAllRoleKeys(templates: Array<{ key: string; name: string; isBuiltin:
   return [...ROLE_CONFIG_KEYS, ...customRoles];
 }
 
-const THINKING_LABELS: Record<string, string> = {
-  off: '思考：关',
-  minimal: '思考：最低',
-  low: '思考：低',
-  medium: '思考：中',
-  high: '思考：高',
-  xhigh: '思考：最高',
-  max: '思考：max',
-};
-
 const getModelThinkingLevels = (modelKey: string, modelsQueryData: any): string[] => {
   if (!modelKey || !modelsQueryData) return [];
   const [provider, id] = modelKey.split('/');
   if (!provider || !id) return [];
   const model = modelsQueryData.find((m: any) => m.provider === provider && m.id === id);
-  if (!model) return [];
-  if (!model.reasoning) return ['off'];
-  if (!model.thinkingLevelMap) return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
-  return Object.keys(model.thinkingLevelMap);
+  return model?.availableThinkingLevels ?? [];
 };
 
 const thinkingLevelOptionsForSelect = (levels: string[]) =>
-  levels.map((level) => ({ value: level, label: THINKING_LABELS[level] ?? level }));
+  levels.map((level) => ({ value: level, label: THINKING_LEVEL_DISPLAY_LABELS[level] ?? level }));
 
 export default function CreateProjectModal({
   isOpen,

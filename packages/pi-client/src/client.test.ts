@@ -209,6 +209,24 @@ describe('pi client gateway', () => {
     expect(models[0]).toHaveProperty('provider');
     expect(models[0]).toHaveProperty('id');
     expect(models[0]).toHaveProperty('label');
+
+    // availableThinkingLevels 由后端按 SDK 规则权威计算，这里手算对照验证：
+    // 非 reasoning 模型只有 ['off']；null 剔除；xhigh/max 必须显式列出；off..high 无条件支持。
+    const extendedLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const expectLevels = (model: (typeof models)[number]): string[] => {
+      if (!model.reasoning) return ['off'];
+      return extendedLevels.filter((level) => {
+        const mapped = model.thinkingLevelMap?.[level];
+        if (mapped === null) return false;
+        if (level === 'xhigh' || level === 'max') return mapped !== undefined;
+        return true;
+      });
+    };
+
+    for (const model of models) {
+      expect(Array.isArray(model.availableThinkingLevels)).toBe(true);
+      expect(model.availableThinkingLevels).toEqual(expectLevels(model));
+    }
   });
 
   test('setSessionModel persists model_change into session file across runtime restore', async () => {

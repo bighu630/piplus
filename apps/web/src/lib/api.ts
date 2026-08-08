@@ -19,6 +19,7 @@ export type ModelInfo = {
   reasoning?: boolean;
   input?: string[];
   thinkingLevelMap?: Record<string, string | null>;
+  availableThinkingLevels?: string[];
 };
 
 export type ProviderFormModel = {

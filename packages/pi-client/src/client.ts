@@ -7,6 +7,7 @@ import {
   ModelRuntime,
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
+import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -809,6 +810,7 @@ export function createPiClient(): PiClient {
         reasoning: m.reasoning ?? false,
         input: m.input as string[] | undefined,
         thinkingLevelMap: m.thinkingLevelMap as Record<string, string | null> | undefined,
+        availableThinkingLevels: getSupportedThinkingLevels(m),
       }));
     },
 

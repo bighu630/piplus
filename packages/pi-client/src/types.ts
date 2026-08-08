@@ -105,6 +105,7 @@ export type PiModelInfo = {
   reasoning?: boolean;
   input?: string[];
   thinkingLevelMap?: Record<string, string | null>;
+  availableThinkingLevels?: string[];
 };
 
 export type PiSessionStreamEvent =
