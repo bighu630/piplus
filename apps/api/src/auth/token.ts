@@ -7,6 +7,11 @@ function getAppPassword() {
   return getServerConfig().appPassword ?? DEFAULT_PASSWORD;
 }
 
+export function isAuthEnabled(): boolean {
+  const password = getServerConfig().appPassword;
+  return password !== undefined && password !== '';
+}
+
 export function verifyPassword(password: string) {
   return password === getAppPassword();
 }

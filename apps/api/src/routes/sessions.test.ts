@@ -8,6 +8,17 @@ import { createPiClient } from '@piplus/pi-client';
 import { createApp } from '../app';
 import { parseModelRef, buildVisionMergedContent, describeImagesWithFallback, stripMergedPromptPrefix } from './sessions';
 
+async function withPasswordAuth<T>(fn: () => T | Promise<T>): Promise<T> {
+  const prev = Bun.env.APP_PASSWORD;
+  Bun.env.APP_PASSWORD = 'test-secret';
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete Bun.env.APP_PASSWORD;
+    else Bun.env.APP_PASSWORD = prev;
+  }
+}
+
 const imageCapableModelPromise = createPiClient().listAvailableModels().then((models) => models.at(-1) ?? models[0]);
 
 function makeDbPath() {
@@ -33,22 +44,23 @@ async function createImageCapableSession(app: ReturnType<typeof createApp>, name
 }
 
 describe('session routes', () => {
-  test('chat message history requires authentication', async () => {
-    const path = makeDbPath();
-    createSeedDb(path);
-    Bun.env.DATABASE_URL = `file:${path}`;
-    const app = createApp();
+  test('chat message history requires authentication', () =>
+    withPasswordAuth(async () => {
+      const path = makeDbPath();
+      createSeedDb(path);
+      Bun.env.DATABASE_URL = `file:${path}`;
+      const app = createApp();
 
-    const projectRes = await app.request('/api/v1/projects', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
-      body: JSON.stringify({ name: 'Private Session Project', mode: 'existing', path: '/tmp' }),
-    });
-    const projectBody = await projectRes.json();
+      const projectRes = await app.request('/api/v1/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ name: 'Private Session Project', mode: 'existing', path: '/tmp' }),
+      });
+      const projectBody = await projectRes.json();
 
-    const historyRes = await app.request(`/api/v1/sessions/${projectBody.sessionId}/chat/messages?limit=2&cursor=0`);
-    expect(historyRes.status).toBe(401);
-  });
+      const historyRes = await app.request(`/api/v1/sessions/${projectBody.sessionId}/chat/messages?limit=2&cursor=0`);
+      expect(historyRes.status).toBe(401);
+    }));
 
   test('message history returns user and assistant messages from pi session file', async () => {
     const path = makeDbPath();
@@ -808,19 +820,20 @@ describe('session routes', () => {
     expect(info.session.title).toBe('Renamed Session');
   });
 
-  test('patch session title requires authentication', async () => {
-    const path = makeDbPath();
-    createSeedDb(path);
-    Bun.env.DATABASE_URL = `file:${path}`;
-    const app = createApp();
+  test('patch session title requires authentication', () =>
+    withPasswordAuth(async () => {
+      const path = makeDbPath();
+      createSeedDb(path);
+      Bun.env.DATABASE_URL = `file:${path}`;
+      const app = createApp();
 
-    const res = await app.request('/api/v1/sessions/session_nonexistent', {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'No Auth' }),
-    });
-    expect(res.status).toBe(401);
-  });
+      const res = await app.request('/api/v1/sessions/session_nonexistent', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'No Auth' }),
+      });
+      expect(res.status).toBe(401);
+    }));
 
   // ─── Stop session / error resilience ──────────────────────────────────────
 
@@ -909,18 +922,19 @@ describe('session routes', () => {
     expect(r2.status).toBe(202);
   });
 
-  test('POST /api/v1/sessions/:id/stop requires authentication', async () => {
-    const path = makeDbPath();
-    createSeedDb(path);
-    Bun.env.DATABASE_URL = `file:${path}`;
-    const app = createApp();
+  test('POST /api/v1/sessions/:id/stop requires authentication', () =>
+    withPasswordAuth(async () => {
+      const path = makeDbPath();
+      createSeedDb(path);
+      Bun.env.DATABASE_URL = `file:${path}`;
+      const app = createApp();
 
-    const res = await app.request('/api/v1/sessions/session_nonexistent/stop', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-    });
-    expect(res.status).toBe(401);
-  });
+      const res = await app.request('/api/v1/sessions/session_nonexistent/stop', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(401);
+    }));
 
   test('POST /api/v1/sessions/:id/stop returns 404 for nonexistent session', async () => {
     const path = makeDbPath();
