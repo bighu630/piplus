@@ -206,6 +206,7 @@ function TabChat({
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
   const [previewImage, setPreviewImage] = useState<ChatImageContentBlockDTO | null>(null);
+  const [previewFit, setPreviewFit] = useState<'fit' | 'original'>('fit');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
@@ -1017,17 +1018,54 @@ function TabChat({
 
       <Modal
         isOpen={Boolean(previewImage)}
-        onClose={() => setPreviewImage(null)}
+        onClose={() => {
+          setPreviewImage(null);
+          setPreviewFit('fit');
+        }}
         title={previewImage?.filename ?? '图片预览'}
         maxWidthClassName="max-w-4xl"
       >
         {previewImage && imageBlockToDataUrl(previewImage) && (
-          <div className="flex items-center justify-center">
-            <img
-              src={imageBlockToDataUrl(previewImage)!}
-              alt={previewImage.filename ?? 'preview'}
-              className="max-h-[70vh] max-w-full w-auto rounded-xl border border-slate-200 dark:border-slate-700"
-            />
+          <div className="flex flex-col gap-3 h-full">
+            {/* 图片区：fit 模式居中自适应，original 模式原始尺寸可滚动查看细节；点击切换 */}
+            <div
+              className={`flex-1 overflow-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-950/50 ${
+                previewFit === 'fit' ? 'flex items-center justify-center' : ''
+              }`}
+            >
+              <img
+                src={imageBlockToDataUrl(previewImage)!}
+                alt={previewImage.filename ?? 'preview'}
+                onClick={() => setPreviewFit((prev) => (prev === 'fit' ? 'original' : 'fit'))}
+                title={previewFit === 'fit' ? '点击查看原始尺寸（1:1）' : '点击适应窗口'}
+                className={`${previewFit === 'fit' ? 'max-h-[48vh] max-w-full w-auto' : 'max-w-none'} cursor-zoom-in select-none`}
+              />
+            </div>
+            {/* 操作栏：1:1 切换 / 下载 / 新窗口打开 */}
+            <div className="flex items-center justify-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setPreviewFit((prev) => (prev === 'fit' ? 'original' : 'fit'))}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition cursor-pointer"
+              >
+                {previewFit === 'fit' ? '1:1 原始尺寸' : '适应窗口'}
+              </button>
+              <a
+                href={imageBlockToDataUrl(previewImage)!}
+                download={previewImage.filename ?? 'image.png'}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition cursor-pointer"
+              >
+                下载
+              </a>
+              <a
+                href={imageBlockToDataUrl(previewImage)!}
+                target="_blank"
+                rel="noreferrer"
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition cursor-pointer"
+              >
+                新窗口打开
+              </a>
+            </div>
           </div>
         )}
       </Modal>
