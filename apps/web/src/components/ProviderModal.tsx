@@ -610,7 +610,7 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
           <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">headers（JSON，可选）</label>
           <textarea value={providerHeaders} onChange={(e) => handleProviderHeadersChange(e.target.value)} placeholder='{
   "x-custom-header": "value"
-}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
+}' rows={6} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
           {providerHeadersJsonError && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
         </div>
         <div>
@@ -619,7 +619,7 @@ export default function ProviderModal({ isOpen, onClose }: ProviderModalProps) {
   "supportsUsageInStreaming": false,
   "maxTokensField": "max_tokens",
   "thinkingFormat": "deepseek"
-}' rows={3} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
+}' rows={6} className="w-full px-3 py-2 text-xs border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-950 font-mono" />
           {providerCompatJsonError && <div className="text-[10px] text-red-500 dark:text-red-400 mt-1">JSON 格式错误</div>}
         </div>
       </div>
