@@ -208,7 +208,8 @@ function TabChat({
 }: TabChatProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
-  const [previewImage, setPreviewImage] = useState<ChatImageContentBlockDTO | null>(null);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
@@ -301,6 +302,28 @@ function TabChat({
           created_at: new Date().toISOString(),
         },
       ];
+
+  // 会话内全部图片构成画廊（谷歌相册式）：左右切换浏览本会话所有图片，点击定位到对应 index
+  const sessionImageSlides = useMemo(() => {
+    const slides: Array<{ src: string; filename: string }> = [];
+    for (const msg of displayMessages) {
+      for (const block of msg.content_blocks ?? []) {
+        if (block.type !== 'image') continue;
+        const src = imageBlockToDataUrl(block);
+        if (!src) continue;
+        slides.push({ src, filename: block.filename ?? `image-${slides.length + 1}.png` });
+      }
+    }
+    return slides;
+  }, [displayMessages]);
+
+  const openImagePreview = useCallback((block: ChatImageContentBlockDTO) => {
+    const src = imageBlockToDataUrl(block);
+    if (!src) return;
+    const idx = sessionImageSlides.findIndex((s) => s.src === src);
+    setLightboxIndex(idx >= 0 ? idx : 0);
+    setLightboxOpen(true);
+  }, [sessionImageSlides]);
 
   // 触顶加载判定：首消息 id 变化即视为 prepend（排除底部流式增长误判）
   const prevFirstMsgIdRef = useRef<string | undefined>(displayMessages[0]?.id);
@@ -779,7 +802,7 @@ function TabChat({
                             <button
                               key={`${msg.id}-image-${index}`}
                               type="button"
-                              onClick={() => setPreviewImage(block)}
+                              onClick={() => openImagePreview(block)}
                               className="overflow-hidden rounded-2xl border border-blue-400/30 bg-blue-500/10 hover:opacity-90 transition cursor-pointer"
                               title={block.filename ?? '预览图片'}
                             >
@@ -1015,25 +1038,19 @@ function TabChat({
         wsConnected={wsConnected}
         selectedSessionId={selectedSessionId ?? null}
         isMobile={isMobile}
-        onPreviewImage={setPreviewImage}
+        onPreviewImage={openImagePreview}
       />
 
       {/* 图片预览：谷歌相册式 lightbox（暗色蒙版 + 居中图片 + 右上角关闭 + 底部工具栏），
-          缩放/拖拽由 Zoom 插件提供，下载由 Download 插件提供（保留原始文件名） */}
+          左右箭头在会话全部图片间切换；缩放/拖拽由 Zoom 插件提供，下载由 Download 插件提供（保留原始文件名） */}
       <Lightbox
-        open={Boolean(previewImage)}
-        close={() => setPreviewImage(null)}
-        slides={
-          previewImage && imageBlockToDataUrl(previewImage)
-            ? [{
-                src: imageBlockToDataUrl(previewImage)!,
-                download: {
-                  url: imageBlockToDataUrl(previewImage)!,
-                  filename: previewImage.filename ?? 'image.png',
-                },
-              }]
-            : []
-        }
+        open={lightboxOpen}
+        close={() => setLightboxOpen(false)}
+        index={lightboxIndex}
+        slides={sessionImageSlides.map((slide) => ({
+          src: slide.src,
+          download: { url: slide.src, filename: slide.filename },
+        }))}
         plugins={[Zoom, Download]}
       />
     </div>
