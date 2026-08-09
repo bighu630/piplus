@@ -1084,6 +1084,70 @@ describe('stripMergedPromptPrefix', () => {
     expect(stripMergedPromptPrefix('普通消息')).toBe('普通消息');
   });
 
+  test('vision relay replacement works on paginated (non-first) pages', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Vision Relay Pagination', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 往 pi 会话文件注入 25 条普通用户消息，第 3 条（旧位置）为 vision relay 合并文本（时间 T0）
+    const db = createDb(`file:${path}`);
+    const [sessionRow] = await db.select().from(sessions).where(eq(sessions.id, sessionId));
+    const locator = JSON.parse(sessionRow.piSessionLocatorJson) as { sessionFile: string };
+    const manager = SessionManager.open(locator.sessionFile);
+    const t0 = Date.now();
+    for (let i = 1; i <= 25; i++) {
+      const text = i === 3
+        ? 'describe this\n\n[图片内容识别]\n分页场景描述'
+        : `普通消息-${i}`;
+      manager.appendMessage({ role: 'user', content: text, timestamp: t0 - (25 - i) * 60_000 });
+    }
+
+    // 注入表写入 vision_relay 行（时间 T0，与第 3 条合并消息配对）
+    await db.insert(messageInjections).values({
+      id: `inject_${crypto.randomUUID().slice(0, 8)}`,
+      sessionId,
+      messageKind: 'vision_relay',
+      role: 'user',
+      contentText: 'describe this',
+      contentBlocksJson: JSON.stringify([
+        { type: 'text', text: 'describe this' },
+        { type: 'image', mimeType: 'image/png', mediaType: 'image/png', filename: 'blocked.png', uri: null, dataBase64: 'YmxvY2tlZA==' },
+      ]),
+      createdAt: new Date(t0),
+    } as any);
+
+    // 首页（limit=20）：返回最新 20 条（第 6~25 条），不含第 3 条
+    const firstRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=20&cursor=0`, {
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+    });
+    const firstBody = await firstRes.json();
+    expect(firstBody.next_cursor).toBe('5');
+    expect(firstBody.messages.some((m: { content_text: string }) => m.content_text.includes('[图片内容识别]'))).toBe(false);
+
+    // 第 2 页（cursor=5）：返回第 1~5 条，第 3 条应为替换后的原始文本 + 图片 block
+    const secondRes = await app.request(`/api/v1/sessions/${sessionId}/chat/messages?limit=20&cursor=5`, {
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+    });
+    const secondBody = await secondRes.json();
+    const third = secondBody.messages.find((m: { content_text: string }) => m.content_text === 'describe this');
+    expect(third).toBeTruthy();
+    expect(third.content_text).not.toContain('[图片内容识别]');
+    const imageBlock = (third.content_blocks ?? []).find((b: { type: string }) => b.type === 'image');
+    expect(imageBlock).toBeTruthy();
+    expect(imageBlock.data_base64).toBe('YmxvY2tlZA==');
+    // 页内其余消息保持原样
+    expect(secondBody.messages.some((m: { content_text: string }) => m.content_text.includes('[图片内容识别]'))).toBe(false);
+  });
+
   test('keeps content after the last separator occurrence', () => {
     const text = 'a\n\n请尊重用户的语言习惯，现在用户说：\n\nb\n\n请尊重用户的语言习惯，现在用户说：\n\nc';
     expect(stripMergedPromptPrefix(text)).toBe('c');

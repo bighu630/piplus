@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
 import { messages, messageInjections, projects, roleTemplates, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
-import { and, asc, desc, eq, inArray, lt, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, like, lt, or } from 'drizzle-orm';
 import { createPiClient } from '@piplus/pi-client';
 import type { PiClient, PiContentBlock, PiImageInput, PiModelInfo } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
@@ -572,18 +572,21 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }
 
-    // Vision relay 用户消息替换（仅首页）：pi 历史中保存的是合并了 "[图片内容识别]" 描述的消息，
+    // Vision relay 用户消息替换（所有分页）：pi 历史中保存的是合并了 "[图片内容识别]" 描述的消息，
     // 用 DB 中保留原始文本 + 图片附件的消息行替换，历史展示原始图片而非描述文本。
     // 必须在 allMessages 组装之前执行（展开 pageRows 后修改不再影响结果）。
-    // DB createdAt 由 nextMessageTime() 生成（与 pi 历史时间戳毫秒级对齐），按时间顺序一一配对。
+    // DB createdAt 由 nextMessageTime() 生成（与 pi 历史时间戳毫秒级对齐）。
     // 双读兼容：新数据在 message_injections（messageKind='vision_relay'），历史旧数据仍在 messages 表（role='user' + blocks 含 image）。
-    if (!cursor || cursor === '0') {
+    // 配对策略：对页内每条带合并标记的消息，在全部 vision relay 行中找时间最接近的未使用行（贪心，5 分钟容差）。
+    // 不用顺序一一配对——分页时页内只是全量消息的子集，顺序会错位。
+    {
       const [dbUserRows, injectionRelayRows] = await Promise.all([
         db.select().from(messages)
           .where(and(
             eq(messages.sessionId, sessionId),
             eq(messages.role, 'user'),
             eq(messages.messageKind, 'normal'),
+            like(messages.contentBlocksJson, '%"type":"image"%'),
           ))
           .orderBy(asc(messages.createdAt)),
         db.select().from(messageInjections)
@@ -599,19 +602,29 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
           return blocks !== null && blocks.some((block) => block.type === 'image');
         }),
         ...injectionRelayRows,
-      ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      ];
       if (visionRelayRows.length > 0) {
-        // pi 历史中带合并标记的用户消息，按时间升序
+        // 页内带合并标记的用户消息（按时间升序）
         const mergedIndexes = pageRows
           .map((m, i) => ({ index: i, time: m.createdAt ? new Date(m.createdAt).getTime() : 0 }))
           .filter(({ index }) => pageRows[index].role === 'user' && pageRows[index].text.includes(VISION_MERGED_MARKER))
           .sort((a, b) => a.time - b.time);
-        for (let i = 0; i < visionRelayRows.length && i < mergedIndexes.length; i++) {
-          const row = visionRelayRows[i];
-          const target = mergedIndexes[i];
-          // 时间容差防御：顺序错乱（极端场景）时保守跳过
-          const rowTime = new Date(row.createdAt).getTime();
-          if (Math.abs(rowTime - target.time) > 5 * 60_000) continue;
+        const usedRows = new Set<number>();
+        for (const target of mergedIndexes) {
+          // 时间最近贪心配对：在未使用的 vision relay 行中找与当前合并消息时间最接近的
+          let best = -1;
+          let bestDiff = Infinity;
+          for (let j = 0; j < visionRelayRows.length; j++) {
+            if (usedRows.has(j)) continue;
+            const diff = Math.abs(new Date(visionRelayRows[j].createdAt).getTime() - target.time);
+            if (diff < bestDiff) {
+              bestDiff = diff;
+              best = j;
+            }
+          }
+          if (best === -1 || bestDiff > 5 * 60_000) continue;
+          usedRows.add(best);
+          const row = visionRelayRows[best];
           pageRows[target.index] = {
             id: row.id,
             role: row.role as 'user',
