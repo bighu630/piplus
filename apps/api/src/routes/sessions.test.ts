@@ -1199,6 +1199,23 @@ describe('describeImagesWithFallback', () => {
     expect(calls).toEqual(['vision/primary-model']);
   });
 
+  test('multiple images are passed together in a single vision call', async () => {
+    const receivedImages: Array<Array<{ dataBase64: string; mimeType?: string }>> = [];
+    const piClient = {
+      completeModel: async (input: { messages: Array<{ images?: Array<{ dataBase64: string; mimeType?: string }> }> }) => {
+        receivedImages.push(input.messages[0].images ?? []);
+        return { text: '多图描述', stopReason: 'stop' };
+      },
+    };
+    const twoImages = [
+      { dataBase64: 'AAA=', mimeType: 'image/png' },
+      { dataBase64: 'BBB=', mimeType: 'image/jpeg' },
+    ];
+    const outcome = await describeImagesWithFallback(piClient, primary, fallback, '看这两张图', twoImages);
+    expect(outcome).toEqual({ ok: true, description: '多图描述' });
+    expect(receivedImages).toEqual([twoImages]); // 一次调用、两张图一起传入
+  });
+
   test('primary failure → fallback succeeds, both called', async () => {
     const calls: string[] = [];
     const piClient = {
