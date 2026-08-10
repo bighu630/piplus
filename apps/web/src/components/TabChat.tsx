@@ -625,15 +625,11 @@ function TabChat({
 
             return (
               <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
-                {isThisToolRunning && (
-                  <div className="mr-2 pt-2 shrink-0">
-                    <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
-                  </div>
-                )}
                 <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                  <div
-                    className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
-                  >
+                  <div className="flex items-start min-w-0">
+                    <div
+                      className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
+                    >
                     <div className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none" onClick={toggleExpand}>
                       {isExpanded ? (
                         <ChevronDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
@@ -684,6 +680,12 @@ function TabChat({
                     </div>
                   )
                   }
+                    </div>
+                    {isThisToolRunning && (
+                      <div className="ml-2 pt-2 shrink-0">
+                        <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
+                      </div>
+                    )}
                   </div>
                   <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
                     {new Date(msg.created_at).toLocaleTimeString()}
