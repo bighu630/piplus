@@ -23,6 +23,62 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
+
+/** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
+const ImageThumbnail = React.memo(function ImageThumbnail({
+  src,
+  alt,
+  mimeType,
+  className,
+}: {
+  src: string;
+  alt: string;
+  mimeType?: string;
+  className: string;
+}) {
+  const [thumb, setThumb] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) {
+        setThumb(src);
+        return;
+      }
+      const MAX = 320; // 缩略图最长边
+      const scale = Math.min(1, MAX / Math.max(w, h));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        setThumb(src);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      let out: string | null = null;
+      try {
+        // 非动图且格式受支持时保持原 mime，否则回落默认（png）
+        const canEncode = mimeType && mimeType.startsWith('image/') && mimeType !== 'image/gif';
+        out = canvas.toDataURL(canEncode ? mimeType : undefined, 0.85);
+      } catch {
+        out = canvas.toDataURL();
+      }
+      setThumb(out);
+    };
+    img.onerror = () => setThumb(src);
+    img.src = src;
+    return () => {
+      cancelled = true;
+    };
+  }, [src, mimeType]);
+
+  return <img src={thumb ?? src} alt={alt} className={className} loading="lazy" />;
+});
 import { THINKING_LEVEL_LABELS, THINKING_LEVEL_DISPLAY_LABELS } from '../lib/thinking-levels';
 import ChatInput from './ChatInput';
 import { useChatStream, useWebSocket } from '../lib/ws-provider';
@@ -827,10 +883,15 @@ function TabChat({
                               key={`${msg.id}-image-${index}`}
                               type="button"
                               onClick={() => openImagePreview(block)}
-                              className="overflow-hidden rounded-2xl border border-blue-400/30 bg-blue-500/10 hover:opacity-90 transition cursor-pointer"
+                              className="overflow-hidden rounded-xl border border-blue-400/30 bg-blue-500/10 hover:opacity-95 transition cursor-pointer shrink-0"
                               title={block.filename ?? '预览图片'}
                             >
-                              <img src={src} alt={block.filename ?? `attachment-${index + 1}`} className="h-20 w-20 object-cover" loading="lazy" />
+                              <ImageThumbnail
+                                src={src}
+                                alt={block.filename ?? `attachment-${index + 1}`}
+                                mimeType={block.mime_type}
+                                className="max-h-20 max-w-56 h-auto w-auto object-contain transition-transform duration-150 hover:scale-[1.03]"
+                              />
                             </button>
                           );
                         })}
