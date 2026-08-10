@@ -1137,6 +1137,7 @@ function TabChat({
           download: { url: slide.src, filename: slide.filename },
         }))}
         plugins={[Zoom, Download]}
+        controller={{ closeOnBackdropClick: true }}
         styles={{ root: { '--yarl__color_backdrop': 'rgba(0, 0, 0, 0.5)' } }}
       />
     </div>
