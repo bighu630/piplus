@@ -5,6 +5,8 @@ import type { Options as MarkdownOptions } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
 import { Check, Copy } from 'lucide-react';
 
 interface MarkdownRendererProps {
@@ -47,7 +49,7 @@ const USER_REMARK_PLUGINS: MarkdownOptions['remarkPlugins'] = [remarkGfm, remark
 /** assistant / compact 变体 remarkPlugins */
 const PLAIN_REMARK_PLUGINS: MarkdownOptions['remarkPlugins'] = [remarkGfm];
 /** 所有变体共用 rehypePlugins */
-const REHYPE_PLUGINS: MarkdownOptions['rehypePlugins'] = [[rehypeHighlight, { detect: false }]];
+const REHYPE_PLUGINS: MarkdownOptions['rehypePlugins'] = [rehypeRaw, rehypeSanitize, [rehypeHighlight, { detect: false }]];
 
 /** user 变体：蓝色用户气泡配置（无代码块复制按钮，含表格、图片） */
 const USER_COMPONENTS = {

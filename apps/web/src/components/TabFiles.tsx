@@ -4,6 +4,8 @@ import type { SessionFileContentResponseDTO, SessionFileTreeNodeDTO, SessionFile
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
 import hljs from 'highlight.js';
 import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import MermaidBlock from './MermaidBlock';
@@ -36,6 +38,11 @@ function isMarkdownFile(filePath: string | null): boolean {
 function isImageFile(filePath: string | null): boolean {
   if (!filePath) return false;
   return /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(filePath);
+}
+
+function isHtmlFile(filePath: string | null): boolean {
+  if (!filePath) return false;
+  return /\.html?$/i.test(filePath);
 }
 
 function getLanguageFromPath(filePath: string | null): string {
@@ -302,7 +309,7 @@ function RichMarkdown({ content }: { content: string }) {
     <div className="markdown-body p-4">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: false }]]}
+        rehypePlugins={[rehypeRaw, rehypeSanitize, [rehypeHighlight, { detect: false }]]}
         components={{
           pre({ children }) {
             return <pre className="code-block">{children}</pre>;
@@ -414,6 +421,18 @@ function CodePreview({ filePath, content }: { filePath: string | null; content: 
         dangerouslySetInnerHTML={{ __html: highlighted }}
       />
     </pre>
+  );
+}
+
+// sandbox 空字符串 = 无脚本、无同源、opaque origin；srcdoc 中相对路径资源（img/css）无法解析到文件系统，属已知限制
+function HtmlPreview({ filePath, content }: { filePath: string | null; content: string }) {
+  return (
+    <iframe
+      title={filePath ?? 'HTML preview'}
+      srcDoc={content}
+      sandbox=""
+      className="w-full h-full border-0"
+    />
   );
 }
 
@@ -709,7 +728,7 @@ function TabFiles({
             ) : null}
           </div>
           <div className="text-[11px] text-slate-400 shrink-0">
-            {isImageFile(selectedPath) ? '图片预览' : isMarkdownFile(selectedPath) ? 'Markdown 预览' : '代码预览'}
+            {isImageFile(selectedPath) ? '图片预览' : isHtmlFile(selectedPath) ? 'HTML 预览' : isMarkdownFile(selectedPath) ? 'Markdown 预览' : '代码预览'}
           </div>
         </div>
 
@@ -744,7 +763,7 @@ function TabFiles({
           ) : (
             <div className="h-full flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
               <div className="shrink-0 px-4 py-2 border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between gap-3">
-                <span className="truncate">{isMarkdownFile(selectedPath) ? 'Markdown 渲染' : getLanguageFromPath(selectedPath)}</span>
+                <span className="truncate">{isMarkdownFile(selectedPath) ? 'Markdown 渲染' : isHtmlFile(selectedPath) ? 'HTML 渲染' : getLanguageFromPath(selectedPath)}</span>
                 {contentResponse.truncated ? <span>已截断（最多 1MB）</span> : null}
               </div>
               <div className="flex-1 min-h-0 overflow-auto">
@@ -758,6 +777,8 @@ function TabFiles({
                 ) : (
                   isMarkdownFile(selectedPath) ? (
                     <RichMarkdown content={contentResponse.content} />
+                  ) : isHtmlFile(selectedPath) ? (
+                    <HtmlPreview filePath={selectedPath} content={contentResponse.content} />
                   ) : (
                     <CodePreview filePath={selectedPath} content={contentResponse.content} />
                   )
