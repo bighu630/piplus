@@ -747,7 +747,7 @@ function TabChat({
                   };
 
             return (
-              <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+              <div key={msg.id} className="flex justify-start items-start w-full min-w-0 group">
                 <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
                   <div className={`${colorScheme.bg} ${colorScheme.border} rounded-xl overflow-hidden`}>
                     <div className="px-3 py-2 flex items-center gap-2">
@@ -780,9 +780,31 @@ function TabChat({
                       </div>
                     ) : null}
                   </div>
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
+                  <div className="flex items-center gap-2 mt-1 px-1">
+                    {msg.content_text ? (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyMessage(msg.id, msg.content_text)}
+                        className="md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer"
+                        title="复制消息"
+                      >
+                        {copiedMessageId === msg.id ? (
+                          <>
+                            <Check className="w-3 h-3 text-green-600" />
+                            <span className="text-green-600 font-medium">已复制</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>复制</span>
+                          </>
+                        )}
+                      </button>
+                    ) : null}
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                      {new Date(msg.created_at).toLocaleTimeString()}
+                    </span>
+                  </div>
                 </div>
               </div>
             );
