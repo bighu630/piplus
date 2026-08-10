@@ -785,7 +785,7 @@ function TabChat({
                       <button
                         type="button"
                         onClick={() => handleCopyMessage(msg.id, msg.content_text)}
-                        className="md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer"
+                        className="md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer order-2"
                         title="复制消息"
                       >
                         {copiedMessageId === msg.id ? (
@@ -801,7 +801,7 @@ function TabChat({
                         )}
                       </button>
                     ) : null}
-                    <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono order-1">
                       {new Date(msg.created_at).toLocaleTimeString()}
                     </span>
                   </div>
@@ -856,7 +856,7 @@ function TabChat({
                     <button
                       type="button"
                       onClick={() => handleCopyMessage(msg.id, msg.content_text)}
-                      className="md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer"
+                      className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer ${isUser ? '' : 'order-2'}`}
                       title="复制消息"
                     >
                       {copiedMessageId === msg.id ? (
@@ -872,7 +872,7 @@ function TabChat({
                       )}
                     </button>
                   ) : null}
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                  <span className={`text-[10px] text-slate-400 dark:text-slate-500 font-mono ${isUser ? '' : 'order-1'}`}>
                     {new Date(msg.created_at).toLocaleTimeString()}
                   </span>
                 </div>
