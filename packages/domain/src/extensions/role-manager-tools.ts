@@ -78,7 +78,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
           task: { type: 'string', description: 'The specific task to execute (optional)' },
           wait: {
             type: 'boolean',
-            description: 'Whether to wait for the child session to complete and return its results. Use true for workers, false for roles that need to interact with the user independently.',
+            description: 'Whether to wait for the child session to complete and return its results (required — must be explicitly true or false). Use true for workers, false for roles that need to interact with the user independently.',
           },
           constraints: {
             type: 'array',
@@ -86,7 +86,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
             description: 'Optional extra restrictions',
           },
         },
-        required: ['role', 'objective', 'title'],
+        required: ['role', 'objective', 'title', 'wait'],
       },
     },
     {
@@ -190,6 +190,12 @@ export async function invokeRoleManagerTool(
       .limit(1);
     if (!parent) throw new Error('parent_session_not_found');
 
+    // schema 已要求 wait 必填；此处兜底仅防御平台漏校验/非平台直调路径
+    if (args.wait === undefined) {
+      console.warn('[role-manager-tools] spawn_session called without required `wait` argument, defaulting to false', {
+        parentSessionId: ctx.sessionId,
+      });
+    }
     const wait = Boolean(args.wait ?? false);
     const role = String(args.role ?? 'worker');
     const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
