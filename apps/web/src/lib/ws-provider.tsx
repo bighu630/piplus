@@ -30,11 +30,6 @@ const WebSocketContext = createContext<WebSocketContextValue | null>(null);
 
 
 const NOTIFIABLE_ROLE_KEYS = new Set(['planner', 'feature_lead', 'bugfix_lead']);
-const NOTIFICATION_ROLE_LABELS: Record<string, string> = {
-  planner: 'Planner',
-  feature_lead: 'Feature Lead',
-  bugfix_lead: 'Bugfix Lead',
-};
 
 function systemNotificationsEnabled(): boolean {
   try { return localStorage.getItem('pi-system-notifications') === 'true'; } catch { return false; }
@@ -121,8 +116,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                       const errorKey = `error:${msg.scope.session_id}:${errorText}`;
                       if (!notifiedRef.current.has(errorKey)) {
                         notifiedRef.current.add(errorKey);
-                        const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
-                        sendSystemNotification(`PiPlus：${label} 出错`, {
+                        sendSystemNotification(`PiPlus：${node.title} 出错`, {
                           body: `会话「${node.title}」发生错误：${errorText}`,
                         });
                       }
@@ -222,8 +216,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                       const errorKey = `error:${eventSessionId}:${idleError}`;
                       if (!notifiedRef.current.has(errorKey)) {
                         notifiedRef.current.add(errorKey);
-                        const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
-                        sendSystemNotification(`PiPlus：${label} 出错`, {
+                        sendSystemNotification(`PiPlus：${node.title} 出错`, {
                           body: `会话「${node.title}」发生错误：${idleError}`,
                         });
                       }
@@ -231,8 +224,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                       const doneKey = `done:${eventSessionId}`;
                       if (!notifiedRef.current.has(doneKey)) {
                         notifiedRef.current.add(doneKey);
-                        const label = NOTIFICATION_ROLE_LABELS[node.role_template_key] ?? node.role_template_key;
-                        sendSystemNotification(`PiPlus：${label} 已完成`, {
+                        sendSystemNotification(`PiPlus：${node.title} 已完成`, {
                           body: `会话「${node.title}」已完成。`,
                         });
                       }
