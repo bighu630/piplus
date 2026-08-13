@@ -29,9 +29,13 @@ case "$TARGET" in
     bun build --compile src/index.ts --target="$BUN_TARGET" --outfile dist/piplus-api
     ;;
   linux)
-    # musl 构建提升跨发行版兼容性（避免 glibc 版本门槛）；
-    # 若遇到 pty 原生库兼容问题，可退回 host 构建：bun build --compile src/index.ts --outfile dist/piplus-api
-    bun build --compile src/index.ts --target=bun-linux-x64-musl --outfile dist/piplus-api
+    # 历史决策：曾用 --target=bun-linux-x64-musl 提升跨发行版兼容性，
+    # 但 bun 1.3.x 的 musl 编译产物是动态链接的（依赖系统安装的
+    # /lib/ld-musl-x86_64.so.1 + libc.musl），绝大多数桌面发行版默认无
+    # musl loader，二进制直接无法启动（cannot execute: required file not found）。
+    # bun 亦无静态 musl 选项（oven-sh/bun#23910），故退回 host（glibc）构建。
+    # 已知限制：产物要求主机 glibc >= 2.43（bun 1.3.14 编译符号需求）。
+    bun build --compile src/index.ts --outfile dist/piplus-api
     ;;
   *)
     echo "Usage: $0 [linux|mac|win]"
