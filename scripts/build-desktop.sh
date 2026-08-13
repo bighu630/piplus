@@ -134,8 +134,14 @@ case "$TARGET" in
     if [ -f "dist/piplus-${VERSION}-mac-x64.dmg" ]; then
       mv "dist/piplus-${VERSION}-mac-x64.dmg" "dist/piplus-${VERSION}-mac-amd64.dmg"
     fi
+    # artifactName 模板用 ${arch} 输出 x64，实际文件已 mv 为 amd64
+    if [ "$ARCH" = "x64" ]; then
+      ARCH_NAME="amd64"
+    else
+      ARCH_NAME="$ARCH"
+    fi
     echo ""
-    echo "  ✅ dmg: dist/piplus-${VERSION}-mac-${ARCH:-amd64}.dmg"
+    echo "  ✅ dmg: dist/piplus-${VERSION}-mac-${ARCH_NAME}.dmg"
     ;;
   win)
     bunx electron-builder --win
