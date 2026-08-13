@@ -11,7 +11,8 @@
     "./seed": "./src/seed.ts"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2"

@@ -10,18 +10,14 @@ files:
 extraResources:
   - from: assets
     to: assets
-  - from: ../api/dist
-    to: api-dist
   - from: ../web/dist
     to: web-dist
   - from: ../migrations
     to: migrations
-  - from: pty-libs
-    to: api-dist/rust-pty/target/release
-  - from: bun-bin
-    to: bun-bin
+  - from: ../api/dist
+    to: bin
     filter:
-      - "**"
+      - "piplus-api*"
 linux:
   artifactName: piplus-${version}-linux-amd64.${ext}
   category: Development

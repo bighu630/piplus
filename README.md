@@ -25,7 +25,7 @@
 <th>平台</th><th>格式</th><th>系统依赖</th>
 </tr>
 <tr>
-<td>🐧 Linux</td><td>AppImage / deb</td><td><a href="https://bun.sh">Bun</a>（运行时需安装）</td>
+<td>🐧 Linux</td><td>AppImage / deb</td><td>无（自包含二进制）</td>
 </tr>
 <tr>
 <td>🍎 macOS</td><td>dmg</td><td>安装后需执行 <code>xattr -c /Applications/piplus.app</code></td>
@@ -37,7 +37,7 @@
 
 ### 前置要求
 
-1. 安装 **Bun**（Linux 必需 / Windows 免装）：<https://bun.sh>
+1. 安装 **Bun**（仅构建需要，运行时不再依赖）：<https://bun.sh>
 
 ---
 
@@ -173,10 +173,19 @@ bun run test         # API 测试
 ### 打包构建
 
 ```bash
-bash scripts/build-desktop.sh linux   # AppImage + deb
-bash scripts/build-desktop.sh win     # Windows exe（自动打包 bun）
+bash scripts/build-desktop.sh linux   # AppImage + deb（API 编译为单文件二进制）
+bash scripts/build-desktop.sh win     # Windows exe（交叉编译，无需本机 bun.exe）
 bash scripts/build-desktop.sh mac     # macOS dmg
 ```
+
+> **交叉编译范围：** 只有 API 二进制可跨平台编译（`bun build --compile` 的 `--target` 参数）；
+> dmg 必须在 macOS 上打包（electron-builder 不支持跨平台打 dmg），Windows exe 在 Linux 上需
+> wine（NSIS），因此完整产物以 CI（`.github/workflows/build-release.yml`）为准，
+> 本地脚本主要用于快速验证。
+
+> **开发注意：** API 打包为编译二进制后，`import.meta.dir` 是虚拟路径（`/$bunfs/root/...`）。
+> 新增「运行时读磁盘文件」逻辑一律用 `process.execPath`（二进制路径）或 `__dirname` 推导，
+> 不要用 `import.meta.dir`（参考 `packages/db/src/init.ts` 的 findMigrationFile）。
 
 ---
 
