@@ -11,6 +11,10 @@ function findMigrationFile(): string {
     // path, so fall back to the real executable location.
     join(dirname(process.execPath), 'migrations/0001_initial.sql'),
     join(dirname(process.execPath), '../migrations/0001_initial.sql'),
+    // When the compiled binary is run directly from apps/api/dist (manual
+    // smoke tests / CI), migrations live two levels up in apps/migrations.
+    // Harmless when packaged: resources/bin/../../migrations does not exist.
+    join(dirname(process.execPath), '../../migrations/0001_initial.sql'),
   ];
   for (const p of candidates) {
     if (existsSync(p)) return p;
