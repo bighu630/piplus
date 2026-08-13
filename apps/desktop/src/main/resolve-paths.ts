@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,9 +8,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** Path to the compiled desktop output (apps/desktop/dist) */
 export const desktopDistRoot = resolve(__dirname, '../..');
 
-/** Where the bundled API lives in production (extraResources) */
-function prodApiDist() {
-  return resolve(process.resourcesPath, 'api-dist');
+/** Compiled API binary name inside resources/bin/ (extraResources) */
+function apiBinaryName(): string {
+  return process.platform === 'win32' ? 'piplus-api.exe' : 'piplus-api';
+}
+
+/** Where the compiled API binary lives in production (extraResources → bin/) */
+function prodApiBinaryPath(): string {
+  return resolve(process.resourcesPath, 'bin', apiBinaryName());
 }
 
 /** Where the web build lives in production (extraResources) */
@@ -29,14 +33,25 @@ export const repoRoot = resolve(__dirname, '../../../../');
 // public helpers
 // ---------------------------------------------------------------------------
 
+/** TypeScript entrypoint used in development mode (spawned with bun). */
 export function getApiEntryPath(): string {
-  return app.isPackaged
-    ? resolve(prodApiDist(), 'index.js')
-    : resolve(repoRoot, 'apps/api/src/index.ts');
+  return resolve(repoRoot, 'apps/api/src/index.ts');
+}
+
+/**
+ * Command used to launch the API.
+ * - Packaged: the compiled single-file binary (bun build --compile), runs directly.
+ * - Development: bun + TypeScript entrypoint.
+ */
+export function getApiCommand(): { command: string; args: string[] } {
+  if (app.isPackaged) {
+    return { command: prodApiBinaryPath(), args: [] };
+  }
+  return { command: resolveBunExecutable(), args: [getApiEntryPath()] };
 }
 
 export function getApiCwd(): string {
-  return app.isPackaged ? prodApiDist() : repoRoot;
+  return app.isPackaged ? resolve(process.resourcesPath, 'bin') : repoRoot;
 }
 
 export function getWebDistIndexPath(): string {
@@ -54,30 +69,12 @@ export function getPreloadPath(): string {
 }
 
 /**
- * Resolve the Bun executable path.
+ * Resolve the Bun executable for development mode.
  *
  * Resolution order:
  * 1. `PIPLUS_BUN_PATH` environment variable (explicit override)
- * 2. Packaged app: `process.resourcesPath/bun-bin/bun.exe` (Windows)
- *    or `process.resourcesPath/bun-bin/bun` (Linux/macOS)
- * 3. Fallback to `'bun'` (expect system PATH)
+ * 2. `'bun'` (expect system PATH)
  */
 export function resolveBunExecutable(): string {
-  const envPath = process.env.PIPLUS_BUN_PATH;
-  if (envPath) return envPath;
-
-  if (app.isPackaged) {
-    const binName = process.platform === 'win32' ? 'bun.exe' : 'bun';
-    const bundledPath = resolve(process.resourcesPath, 'bun-bin', binName);
-    if (existsSync(bundledPath)) {
-      return bundledPath;
-    }
-    console.warn(
-      `[desktop] Bundled bun not found at ${bundledPath}; ` +
-      `falling back to system 'bun'. ` +
-      `Set PIPLUS_BUN_PATH or rebuild with bun-bin/${binName}.`
-    );
-  }
-
-  return 'bun';
+  return process.env.PIPLUS_BUN_PATH ?? 'bun';
 }
