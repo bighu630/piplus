@@ -8,22 +8,50 @@ echo "  ║     piplus desktop build             ║"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
 
-# ── 1. API bundle ──────────────────────────────────────────
-echo "[1/6] Building API bundle ..."
+VERSION=$(jq -r '.version' apps/desktop/package.json)
+TARGET="${1:-linux}"
+ARCH="${2:-}"
+
+# ── 1. Compile API binary (bun build --compile) ───────────
+echo "[1/4] Compiling API binary (target: $TARGET) ..."
 cd apps/api
-bun run build:bundle
+rm -rf dist
+case "$TARGET" in
+  win)
+    bun build --compile src/index.ts --target=bun-windows-x64 --outfile dist/piplus-api.exe
+    ;;
+  mac)
+    if [ "$ARCH" = "arm64" ]; then
+      BUN_TARGET="bun-darwin-arm64"
+    else
+      BUN_TARGET="bun-darwin-x64"
+    fi
+    bun build --compile src/index.ts --target="$BUN_TARGET" --outfile dist/piplus-api
+    ;;
+  linux)
+    # musl 构建提升跨发行版兼容性（避免 glibc 版本门槛）；
+    # 若遇到 pty 原生库兼容问题，可退回 host 构建：bun build --compile src/index.ts --outfile dist/piplus-api
+    bun build --compile src/index.ts --target=bun-linux-x64-musl --outfile dist/piplus-api
+    ;;
+  *)
+    echo "Usage: $0 [linux|mac|win]"
+    exit 1
+    ;;
+esac
 cd "$OLDPWD"
-if [ ! -f "apps/api/dist/index.js" ]; then
-  echo "  ❌ ERROR: API dist not found at apps/api/dist/index.js"
-  echo "     Step 1 (API build) may have silently failed."
+API_BINARY="apps/api/dist/piplus-api"
+[ "$TARGET" = "win" ] && API_BINARY="apps/api/dist/piplus-api.exe"
+if [ ! -f "$API_BINARY" ]; then
+  echo "  ❌ ERROR: API binary not found at $API_BINARY"
+  echo "     Step 1 (API compile) may have silently failed."
   exit 1
 fi
-echo "  ✅ API dist verified."
+echo "  ✅ API binary verified: $API_BINARY"
 
 # ── 2. Web build (desktop) ──────────────────────────────────
 # Export version for Vite define injection
-export APP_VERSION=$(jq -r '.version' apps/desktop/package.json)
-echo "[2/6] Building web for desktop ..."
+export APP_VERSION="$VERSION"
+echo "[2/4] Building web for desktop ..."
 cd apps/web
 bun run build:desktop
 cd "$OLDPWD"
@@ -35,7 +63,7 @@ fi
 echo "  ✅ Web dist verified."
 
 # ── 3. Desktop compile ──────────────────────────────────────
-echo "[3/6] Building desktop main/preload ..."
+echo "[3/4] Building desktop main/preload ..."
 cd apps/desktop
 bun run build
 cd "$OLDPWD"
@@ -45,132 +73,27 @@ if [ ! -f "apps/desktop/dist/main/index.js" ] || [ ! -f "apps/desktop/dist/prelo
   exit 1
 fi
 echo "  ✅ Desktop dist verified."
-
-VERSION="${APP_VERSION}"
 echo "  → Version: $VERSION"
 
-TARGET="${1:-linux}"
-ARCH="${2:-}"
-
-# ── 4. Prepare bundled bun ──────────────────────────────────
-echo "[4/6] Preparing bundled bun ..."
-
-# Clean up any previous bun-bin
-rm -rf apps/desktop/bun-bin
-
-if [ "$TARGET" = "win" ]; then
-  if [ -n "${PIPLUS_BUN_WIN_PATH:-}" ] && [ -f "$PIPLUS_BUN_WIN_PATH" ]; then
-    mkdir -p apps/desktop/bun-bin
-    cp "$PIPLUS_BUN_WIN_PATH" apps/desktop/bun-bin/bun.exe
-    echo "  → bun.exe bundled from PIPLUS_BUN_WIN_PATH ($PIPLUS_BUN_WIN_PATH)"
-  else
-    echo "  ⚠️  PIPLUS_BUN_WIN_PATH is not set or file not found."
-    echo "  → Attempting to download bun for Windows ..."
-    mkdir -p apps/desktop/bun-bin
-    if command -v curl &>/dev/null; then
-      BUN_ZIP="/tmp/bun-windows-x64.zip"
-      BUN_EXTRACT="/tmp/bun-windows-extract"
-      rm -rf "$BUN_EXTRACT" "$BUN_ZIP"
-      curl -fsSL "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64.zip" \
-        -o "$BUN_ZIP" 2>/dev/null || {
-        echo "  ❌ Download failed. To bundle bun.exe:"
-        echo "     $$ PIPLUS_BUN_WIN_PATH=/path/to/bun.exe $0 win"
-        echo "  → Continuing without bundled bun (Windows may need system Bun)."
-        rm -rf apps/desktop/bun-bin
-      }
-      if [ -f "$BUN_ZIP" ]; then
-        if command -v unzip &>/dev/null; then
-          mkdir -p "$BUN_EXTRACT"
-          unzip -o "$BUN_ZIP" -d "$BUN_EXTRACT" 2>/dev/null
-          # Find bun.exe inside the extracted tree (may be nested, e.g. bun-windows-x64/bun.exe)
-          FOUND_BUN=$(find "$BUN_EXTRACT" -name 'bun.exe' -type f 2>/dev/null | head -1)
-          if [ -n "$FOUND_BUN" ] && [ -f "$FOUND_BUN" ]; then
-            cp "$FOUND_BUN" apps/desktop/bun-bin/bun.exe
-            echo "  → bun.exe downloaded and extracted to apps/desktop/bun-bin/bun.exe"
-          else
-            echo "  ❌ Extracted archive does not contain bun.exe"
-            rm -rf apps/desktop/bun-bin
-          fi
-          rm -rf "$BUN_EXTRACT"
-        else
-          echo "  ❌ 'unzip' not found. Please install unzip or set PIPLUS_BUN_WIN_PATH."
-          rm -rf apps/desktop/bun-bin
-        fi
-        rm -f "$BUN_ZIP"
-      fi
-    else
-      echo "  ❌ 'curl' not found. Please set PIPLUS_BUN_WIN_PATH:"
-      echo "     $$ PIPLUS_BUN_WIN_PATH=/path/to/bun.exe $0 win"
-      rm -rf apps/desktop/bun-bin
-    fi
-  fi
-elif [ "$TARGET" = "mac" ] || [ "$TARGET" = "linux" ]; then
-  # For mac/linux we bundle the bun binary from the current build machine.
-  # (Cross-arch builds should set PIPLUS_BUN_SOURCE to an explicit path.)
-  BUN_SOURCE="${PIPLUS_BUN_SOURCE:-$(command -v bun || true)}"
-  if [ -z "$BUN_SOURCE" ] || [ ! -f "$BUN_SOURCE" ]; then
-    echo "  ❌ Could not locate a bun executable to bundle."
-    echo "     Ensure 'bun' is on PATH, or set PIPLUS_BUN_SOURCE=/path/to/bun"
-    exit 1
-  fi
-  mkdir -p apps/desktop/bun-bin
-  cp "$BUN_SOURCE" apps/desktop/bun-bin/bun
-  chmod +x apps/desktop/bun-bin/bun
-  echo "  → bun bundled from $BUN_SOURCE"
-fi
-
-# ── 5. Copy pty native libs (electron-builder can't read bun's .bun cache) ──
-# bun-pty native libs are pre-compiled and shipped with the npm package.
-# electron-builder's extraResources fails on bun's virtual filesystem,
-# so we copy them to apps/desktop/pty-libs/ first.
-echo "[5/6] Copying bun-pty native libs ..."
-rm -rf apps/desktop/pty-libs
-PTY_SRC=$(cd apps/api && node -e "console.log(require('path').dirname(require.resolve('bun-pty/package.json'))+'/rust-pty/target/release')" 2>/dev/null || true)
-if [ -n "$PTY_SRC" ] && [ -d "$PTY_SRC" ]; then
-  mkdir -p apps/desktop/pty-libs
-  cp -r "$PTY_SRC"/* apps/desktop/pty-libs/
-  echo "  ✅ Copied bun-pty native libs to apps/desktop/pty-libs/"
-  ls apps/desktop/pty-libs/ 2>/dev/null | head -10 || true
-else
-  echo "  ⚠️  bun-pty native libs not found"
-  find apps/api/node_modules -name "librust_pty.so" 2>/dev/null | head -3 || true
-fi
 echo "  Verifying all extraResources sources before packaging..."
 MISSING=""
-WARNINGS=""
-[ -f "apps/api/dist/index.js" ] || MISSING="$MISSING  - apps/api/dist/index.js\n"
+[ -f "$API_BINARY" ] || MISSING="$MISSING  - $API_BINARY\n"
 [ -f "apps/web/dist/index.html" ] || MISSING="$MISSING  - apps/web/dist/index.html\n"
 [ -f "apps/desktop/dist/main/index.js" ] || MISSING="$MISSING  - apps/desktop/dist/main/index.js\n"
 [ -f "apps/desktop/dist/preload/index.js" ] || MISSING="$MISSING  - apps/desktop/dist/preload/index.js\n"
 [ -d "apps/migrations" ] || MISSING="$MISSING  - apps/migrations/\n"
 [ -d "apps/desktop/assets" ] || MISSING="$MISSING  - apps/desktop/assets/\n"
-# bun-bin check: require bun.exe on windows, bun otherwise
-if [ "$TARGET" = "win" ]; then
-  [ -f "apps/desktop/bun-bin/bun.exe" ] || MISSING="$MISSING  - apps/desktop/bun-bin/bun.exe\n"
-else
-  [ -f "apps/desktop/bun-bin/bun" ] || MISSING="$MISSING  - apps/desktop/bun-bin/bun\n"
-fi
-# pty-libs is optional (Step 5 warns but continues)
-[ -d "apps/desktop/pty-libs" ] || WARNINGS="$WARNINGS  ⚠️  pty-libs not found (terminal features may be unavailable)\n"
 
-if [ -n "$WARNINGS" ]; then
-  echo "  ⚠️  Warnings (non-fatal):"
-  printf "%b" "$WARNINGS"
-fi
 if [ -n "$MISSING" ]; then
   echo "  ❌ ERROR: The following extraResources sources are missing:"
   printf "%b" "$MISSING"
   echo "     electron-builder will silently skip missing sources, producing an incomplete package."
   exit 1
 fi
-if [ -n "$WARNINGS" ]; then
-  echo "  ✅ Critical extraResources sources verified (see warnings above)."
-else
-  echo "  ✅ All extraResources sources verified."
-fi
+echo "  ✅ All extraResources sources verified."
 
-# ── 6. Package ──────────────────────────────────────────────
-echo "[6/6] Packaging${TARGET:+ for $TARGET} ..."
+# ── 4. Package ──────────────────────────────────────────────
+echo "[4/4] Packaging${TARGET:+ for $TARGET} ..."
 cd apps/desktop
 
 # 清理上次产物
@@ -179,8 +102,6 @@ case "$TARGET" in
   mac)   rm -rf dist/mac dist/*.dmg ;;
   win)   rm -rf dist/win-unpacked dist/*.exe ;;
 esac
-
-# pty-libs 已在步骤 5 中复制，此处无需重复清理
 
 case "$TARGET" in
   linux)
