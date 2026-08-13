@@ -2,24 +2,30 @@ import { Database } from 'bun:sqlite';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-function findMigrationFile(): string {
-  const candidates = [
-    join(import.meta.dir, '../migrations/0001_initial.sql'),
-    join(import.meta.dir, '../../migrations/0001_initial.sql'),
-    // Compiled single-file binary support (bun build --compile):
-    // inside a compiled binary import.meta.dir is the virtual /$bunfs/root
-    // path, so fall back to the real executable location.
-    join(dirname(process.execPath), 'migrations/0001_initial.sql'),
-    join(dirname(process.execPath), '../migrations/0001_initial.sql'),
-    // When the compiled binary is run directly from apps/api/dist (manual
-    // smoke tests / CI), migrations live two levels up in apps/migrations.
-    // Harmless when packaged: resources/bin/../../migrations does not exist.
-    join(dirname(process.execPath), '../../migrations/0001_initial.sql'),
+/**
+ * 编译二进制运行布局下 0001_initial.sql 的候选位置（按优先级）：
+ * - dev：bun 直接跑 src，import.meta.dir 为真实路径（packages/db/src）
+ * - 打包：import.meta.dir 是虚拟 /$bunfs/root 路径，需回退 process.execPath
+ *   （resources/bin/piplus-api → ../migrations = resources/migrations）
+ * - 直跑：编译产物在 apps/api/dist 直接运行 → ../../migrations = apps/migrations
+ * 新增「运行时读磁盘文件」逻辑一律用 process.execPath/__dirname 推导，
+ * 不要用 import.meta.dir（编译二进制中它是虚拟路径）。
+ */
+export function getMigrationFileCandidates(importMetaDir: string, execPath: string): string[] {
+  return [
+    join(importMetaDir, '../migrations/0001_initial.sql'),
+    join(importMetaDir, '../../migrations/0001_initial.sql'),
+    join(dirname(execPath), 'migrations/0001_initial.sql'),
+    join(dirname(execPath), '../migrations/0001_initial.sql'),
+    join(dirname(execPath), '../../migrations/0001_initial.sql'),
   ];
-  for (const p of candidates) {
+}
+
+export function findMigrationFile(importMetaDir: string, execPath: string): string {
+  for (const p of getMigrationFileCandidates(importMetaDir, execPath)) {
     if (existsSync(p)) return p;
   }
-  throw new Error('migration file not found');
+  throw new Error(`migration file not found (searched: ${getMigrationFileCandidates(importMetaDir, execPath).join(', ')})`);
 }
 
 function ensureSessionLocatorColumn(sqlite: Database) {
@@ -352,7 +358,7 @@ export function createSeedDb(path: string) {
 
   const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").all();
   if (tables.length === 0) {
-    const migrationFile = findMigrationFile();
+    const migrationFile = findMigrationFile(import.meta.dir, process.execPath);
     const sql = readFileSync(migrationFile, 'utf-8');
     sqlite.exec(sql);
   }
