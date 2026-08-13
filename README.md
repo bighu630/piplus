@@ -178,6 +178,11 @@ bash scripts/build-desktop.sh win     # Windows exe（交叉编译，无需本�
 bash scripts/build-desktop.sh mac     # macOS dmg
 ```
 
+> **交叉编译范围：** 只有 API 二进制可跨平台编译（`bun build --compile` 的 `--target` 参数）；
+> dmg 必须在 macOS 上打包（electron-builder 不支持跨平台打 dmg），Windows exe 在 Linux 上需
+> wine（NSIS），因此完整产物以 CI（`.github/workflows/build-release.yml`）为准，
+> 本地脚本主要用于快速验证。
+
 > **开发注意：** API 打包为编译二进制后，`import.meta.dir` 是虚拟路径（`/$bunfs/root/...`）。
 > 新增「运行时读磁盘文件」逻辑一律用 `process.execPath`（二进制路径）或 `__dirname` 推导，
 > 不要用 `import.meta.dir`（参考 `packages/db/src/init.ts` 的 findMigrationFile）。
