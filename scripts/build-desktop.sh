@@ -21,6 +21,15 @@ case "$TARGET" in
     bun build --compile src/index.ts --target=bun-windows-x64 --outfile dist/piplus-api.exe
     ;;
   mac)
+    # ARCH 为空时用宿主架构推导（uname -m），使 BUN_TARGET 与第 4 步
+    # electron-builder 的 --$ARCH（未传时默认取宿主架构）保持一致：
+    # 否则 Apple Silicon 上会固定打出 x64 API 二进制 + arm64 .app（需 Rosetta）。
+    if [ -z "$ARCH" ]; then
+      case "$(uname -m)" in
+        arm64|aarch64) ARCH="arm64" ;;
+        *) ARCH="x64" ;;
+      esac
+    fi
     if [ "$ARCH" = "arm64" ]; then
       BUN_TARGET="bun-darwin-arm64"
     else
@@ -133,10 +142,6 @@ case "$TARGET" in
     # artifactName 已处理命名，输出为 piplus-${VERSION}-win-amd64.exe
     echo ""
     echo "  ✅ exe: dist/piplus-${VERSION}-win-amd64.exe"
-    ;;
-  *)
-    echo "Usage: $0 [linux|mac|win]"
-    exit 1
     ;;
 esac
 
