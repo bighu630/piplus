@@ -1,11 +1,16 @@
 import { Database } from 'bun:sqlite';
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 function findMigrationFile(): string {
   const candidates = [
     join(import.meta.dir, '../migrations/0001_initial.sql'),
     join(import.meta.dir, '../../migrations/0001_initial.sql'),
+    // Compiled single-file binary support (bun build --compile):
+    // inside a compiled binary import.meta.dir is the virtual /$bunfs/root
+    // path, so fall back to the real executable location.
+    join(dirname(process.execPath), 'migrations/0001_initial.sql'),
+    join(dirname(process.execPath), '../migrations/0001_initial.sql'),
   ];
   for (const p of candidates) {
     if (existsSync(p)) return p;
