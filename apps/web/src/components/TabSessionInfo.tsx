@@ -7,6 +7,7 @@ import {
   CheckCircle,
   Tag,
   Trash2,
+  Pencil,
 } from 'lucide-react';
 import { useSessionInfo, useProjectTodos, useCreateProjectTodoMutation, useUpdateProjectTodoMutation, useDeleteProjectTodoMutation } from '../lib/hooks';
 
@@ -85,6 +86,34 @@ function TabSessionInfo({ selectedSessionId, selectedProjectId }: TabSessionInfo
   const deleteTodoMut = useDeleteProjectTodoMutation(selectedSessionId ? selectedProjectId : null);
 
   const [todoInput, setTodoInput] = useState('');
+  const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
+  // 防止 Enter 与随后 input 卸载触发的 blur 导致双重提交
+  const editingTodoIdRef = useRef<string | null>(null);
+
+  const startEditTodo = (todo: ProjectTodoDTO) => {
+    if (editingTodoIdRef.current === todo.id) return; // 已在编辑该行，忽略重复进入
+    editingTodoIdRef.current = todo.id;
+    setEditingTodoId(todo.id);
+    setEditingText(todo.text);
+  };
+
+  const cancelEditTodo = () => {
+    editingTodoIdRef.current = null;
+    setEditingTodoId(null);
+    setEditingText('');
+  };
+
+  const saveEditTodo = () => {
+    if (editingTodoIdRef.current === null) return; // 已提交/已取消，忽略（如 Enter 后的 blur）
+    const todoId = editingTodoIdRef.current;
+    editingTodoIdRef.current = null; // 先置空再退出，防止重复提交
+    const text = editingText.trim();
+    setEditingTodoId(null);
+    setEditingText('');
+    if (!text) return; // trim 后为空则不提交（后端校验 1-500）
+    updateTodoMut.mutate({ todoId, patch: { text } });
+  };
 
   const isLoading = sessionInfoQuery.isLoading;
 
@@ -254,15 +283,46 @@ function TabSessionInfo({ selectedSessionId, selectedProjectId }: TabSessionInfo
                     onChange={() => updateTodoMut.mutate({ todoId: todo.id, patch: { done: !todo.done } })}
                     className="w-4 h-4 rounded border-slate-300 text-amber-500 focus:ring-amber-400/50 shrink-0"
                   />
-                  <span
-                    className={`flex-1 text-sm ${
-                      todo.done
-                        ? 'line-through text-slate-400 dark:text-slate-500'
-                        : 'text-slate-700 dark:text-slate-300'
-                    }`}
+                  {editingTodoId === todo.id ? (
+                    <input
+                      type="text"
+                      autoFocus
+                      value={editingText}
+                      onChange={(e) => setEditingText(e.target.value)}
+                      maxLength={500}
+                      onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing) return; // IME 组合中忽略 Enter/Escape
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          saveEditTodo();
+                        } else if (e.key === 'Escape') {
+                          cancelEditTodo();
+                        }
+                      }}
+                      onBlur={saveEditTodo}
+                      className="flex-1 px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400/50 disabled:opacity-50"
+                    />
+                  ) : (
+                    <span
+                      onDoubleClick={() => startEditTodo(todo)}
+                      title="双击编辑"
+                      className={`flex-1 text-sm ${
+                        todo.done
+                          ? 'line-through text-slate-400 dark:text-slate-500'
+                          : 'text-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      {todo.text}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => startEditTodo(todo)}
+                    disabled={editingTodoId === todo.id}
+                    className="text-slate-400 hover:text-amber-500 transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-slate-400"
+                    title="编辑"
                   >
-                    {todo.text}
-                  </span>
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
                   <button
                     onClick={() => deleteTodoMut.mutate(todo.id)}
                     className="text-slate-400 hover:text-red-500 transition-colors shrink-0"
