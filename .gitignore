@@ -14,10 +14,12 @@ pi.db
 /piplus.sqlite-wal
 .worktrees
 tsconfig.tsbuildinfo
-/apps/desktop/bun-bin/bun.exe
 /.agents/
 /.superpowers/
-/apps/desktop/bun-bin/bun
 /apps/web/tsconfig.tsbuildinfo
-pty-libs/
+bun-bin/
 
+
+# native pty libraries (build artifacts)
+apps/desktop/pty-libs/
+apps/desktop/bun-bin/

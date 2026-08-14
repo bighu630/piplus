@@ -74,10 +74,13 @@ describe('role manager tools', () => {
     expect(props.scope).toBeDefined();
     expect(props.task).toBeDefined();
     expect(props.constraints).toBeDefined();
+    expect(props.wait).toBeDefined();
+    expect((props.wait as { type: string }).type).toBe('boolean');
     const required = (spawn!.parameters as Record<string, unknown>).required as string[];
     expect(required).toContain('title');
     expect(required).toContain('objective');
     expect(required).toContain('role');
+    expect(required).toContain('wait');
   });
 
 
@@ -184,7 +187,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       compiledPrompt: 'compiled',
     } as any);
 
-    // wait defaults to false — still auto-starts, no kickoff message
+    // wait=false — still auto-starts, no kickoff message
     const onSessionCreatedCalls: Array<{ sessionId: string; projectId: string }> = [];
     const result = await invokeRoleManagerTool('spawn_session', {
       role: 'worker',
@@ -193,6 +196,7 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       scope: 'apps/api',
       task: 'reuse the normal state transition',
       constraints: ['be precise'],
+      wait: false,
     }, {
       db,
       piClient,
