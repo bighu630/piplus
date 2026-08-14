@@ -19,3 +19,7 @@ tsconfig.tsbuildinfo
 /apps/web/tsconfig.tsbuildinfo
 bun-bin/
 
+
+# native pty libraries (build artifacts)
+apps/desktop/pty-libs/
+apps/desktop/bun-bin/
