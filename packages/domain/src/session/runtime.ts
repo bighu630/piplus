@@ -5,10 +5,16 @@ import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from '@piplus/pi-client/constants';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
-import { setRequestContext, clearRequestContext, isCrossProjectWaiting, clearCrossProjectWait } from './request-context';
+import { setRequestContext, clearRequestContext, isCrossProjectWaiting, clearCrossProjectWait, isWaitingOnChild, getWaitingOnChild, clearWaitingOnChild } from './request-context';
 
 // TTL 单一来源：与 client 层定时器共用 @piplus/pi-client/constants（值导入走 /constants 子路径，
 // 避免拉起整个 client.ts 模块及其 ModelRuntime 初始化副作用）。
+
+// 豁免 4（子会话豁免）的连续豁免次数上限：约 3×10 分钟 = 30 分钟。
+// running 卡死（无事件、无自身标记）的子会话只有豁免 4 一条管理路径——默认配置下父 wait 循环
+// deadline=null 无限轮询，若豁免无上限则永不超时；达到上限后强制超时回收。合法静默（嵌套 wait /
+// 跨项目等待）由豁免 1/3 覆盖不会走到这里，只有连续静默窗口才累积计数。
+const MAX_MANAGED_CHILD_EXEMPTIONS = 3;
 
 const idleRuntimeCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -255,6 +261,9 @@ export async function startSessionRun(input: StartSessionRunInput) {
   let cleanupDone = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let timeoutStartedAt: number | null = null;
+  // 豁免 4 的 per-run 连续豁免计数：只在流事件重置计时器时归零（resetTimeout），
+  // 因此只有连续静默窗口才累积，达到 MAX_MANAGED_CHILD_EXEMPTIONS 后强制超时。
+  let managedExemptionCount = 0;
 
   const doCleanup = async (error: unknown = null) => {
     if (cleanupDone) return;
@@ -296,6 +305,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
     }
     clearRequestContext(input.sessionId);
     clearCrossProjectWait(input.sessionId);
+    clearWaitingOnChild(input.sessionId);
     // markSessionIdle / onRuntimeStatusChange 抛错时也必须取消订阅，
     // 否则 listener 泄漏（子会话现已持有真实订阅）。
     try {
@@ -323,9 +333,20 @@ export async function startSessionRun(input: StartSessionRunInput) {
   };
 
   // Safety timeout: fires when the session produces no stream events for
-  // safetyTimeoutMs. Exempted while a direct child session is still running —
-  // a parent waiting on spawn_session produces no events of its own, but the
-  // child's activity means the agent is not stuck.
+  // safetyTimeoutMs. 豁免顺序（自上而下）：
+  // 1. 内存标记（主豁免）：父会话正处于 waitForChildWriteback 轮询——内存标记在 wait
+  //    循环期间始终置位，不依赖子会话瞬时 DB 状态，对子 idle 窗口免疫（旧实现只有 DB
+  //    查询，落在窗口内豁免失败会连坐杀父）。
+  // 2. DB 子会话查询（次要兜底）：子会话 running/stopping 时豁免——覆盖 wait 循环置标记
+  //    前 child 刚启动的微小窗口。
+  // 3. 跨项目等待标记：目标项目会话是顶层会话（无 parentSessionId），DB 查不到，用内存标记豁免。
+  // 4. 子会话豁免（精确匹配 + 连续次数上限）：自身有 parentSessionId 且父正在等**自己**——
+  //    读父标记中的 childSessionId 精确匹配，只豁免父正在等的那一个子会话（兄弟子会话不受
+  //    牵连）；父的 reminder（15-45s）比硬杀更及时更有针对性，但连续豁免满 3 次（≈30 分钟）
+  //    后强制超时——running 卡死（无事件、无自身标记）的子只有这条路径管理，默认配置下父 wait
+  //    无限轮询（deadline=null），无上限会永不超时。合法静默（嵌套 wait / 跨项目等待）由豁免
+  //    1/3 覆盖，不会走到这里累积计数。
+  // 5. 超时执行：无豁免（无标记、无子会话、无跨项目等待、父不在等自己）→ doCleanup。
   const scheduleTimeoutCheck = () => {
     if (cleanupDone) return;
     if (timeoutHandle) {
@@ -336,8 +357,17 @@ export async function startSessionRun(input: StartSessionRunInput) {
       void (async () => {
         if (cleanupDone) return;
         const startedAt = timeoutStartedAt;
+        // 豁免 1（主豁免）：父会话正在 waitForChildWriteback 轮询等待子会话 writeback。
+        // 父在 wait 期间自身不产生 stream 事件，但子会话活动意味着 agent 未卡死。
+        if (isWaitingOnChild(input.sessionId)) {
+          console.log('[session-runtime] safety timeout exempted — parent waiting on child (in-memory marker)', { sessionId: input.sessionId });
+          // Still waiting for the child writeback: restart the countdown and skip cleanup
+          scheduleTimeoutCheck();
+          return;
+        }
         try {
-          // Exempt while any direct child session is active (running/stopping)
+          // 豁免 2（次要兜底）：任何直接子会话 active（running/stopping）时豁免——
+          // 覆盖 wait 循环置标记前 child 刚启动的微小窗口。
           const [activeChild] = await input.db
             .select({ id: sessions.id })
             .from(sessions)
@@ -362,6 +392,33 @@ export async function startSessionRun(input: StartSessionRunInput) {
           scheduleTimeoutCheck();
           return;
         }
+        // 豁免 4（子会话豁免）：自身是子会话（有 parentSessionId）且父正在等**自己**——
+        // 读父标记中的 childSessionId 精确匹配，兄弟子会话（父没在等的）不受牵连。
+        // 命中后累计连续豁免次数：未达上限则 reschedule；达到上限则 warn 并 fall through
+        // （不 return），继续走超时执行 doCleanup——running 卡死的子只有这条路径管理。
+        try {
+          const [selfRow] = await input.db
+            .select({ parentSessionId: sessions.parentSessionId })
+            .from(sessions)
+            .where(eq(sessions.id, input.sessionId))
+            .limit(1);
+          const waitEntry = selfRow?.parentSessionId ? getWaitingOnChild(selfRow.parentSessionId) : undefined;
+          // 流事件可能已在此次查询期间重置计时器：过期 pass 不计入连续静默窗口
+          if (timeoutStartedAt !== startedAt) return;
+          if (selfRow?.parentSessionId && waitEntry?.childSessionId === input.sessionId) {
+            managedExemptionCount++;
+            if (managedExemptionCount < MAX_MANAGED_CHILD_EXEMPTIONS) {
+              console.log('[session-runtime] safety timeout exempted — managed by waiting parent', { sessionId: input.sessionId, parentSessionId: selfRow.parentSessionId, managedExemptionCount });
+              scheduleTimeoutCheck();
+              return;
+            }
+            console.warn('[session-runtime] managed-child exemption limit reached — enforcing safety timeout', { sessionId: input.sessionId, parentSessionId: selfRow.parentSessionId, managedExemptionCount });
+            // fall through：连续豁免达上限，按超时执行 doCleanup
+          }
+        } catch (selfQueryErr) {
+          // 查询失败则 log 并继续（fall through 到超时执行，与现有行为一致）
+          console.error('[session-runtime] self parentSessionId query failed', { sessionId: input.sessionId, selfQueryErr });
+        }
         // A stream event may have reset the timer while we were querying —
         // the fresh timer handles the check, don't clean up from a stale pass.
         if (timeoutStartedAt !== startedAt) return;
@@ -372,6 +429,8 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
   const resetTimeout = () => {
     if (!timeoutHandle || cleanupDone) return;
+    // 流事件 = 子会话恢复活动：连续静默窗口打断，豁免计数归零（只有连续静默才累积到上限）
+    managedExemptionCount = 0;
     scheduleTimeoutCheck();
   };
 

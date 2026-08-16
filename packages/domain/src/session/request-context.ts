@@ -47,3 +47,30 @@ export function clearCrossProjectWait(sessionId: string) {
 export function isCrossProjectWaiting(sessionId: string): boolean {
   return crossProjectWait.has(sessionId);
 }
+
+type WaitingOnChildEntry = { requestId: string; childSessionId: string; startedAt: number };
+// waitingOnChild 内存标记：父会话 waitForChildWriteback 轮询期间置位，供 runtime 的
+// safety timeout 作豁免依据——不依赖子会话瞬时 DB 状态（子 run 结束未 writeback / 子被
+// 自身超时杀 / writeback 落库前都存在 idle 窗口，DB 查询恰好落在窗口会误杀父会话）。
+// API 重启丢失标记可接受：卡死会话由重启后的 recoverStuckSessions 兜底回收。
+const waitingOnChild = new Map<string, WaitingOnChildEntry>();
+
+/** 标记某会话（父）正处于 waitForChildWriteback 轮询中，等待其子会话 writeback。key 为父 sessionId。 */
+export function setWaitingOnChild(sessionId: string, requestId: string, childSessionId: string) {
+  waitingOnChild.set(sessionId, { requestId, childSessionId, startedAt: Date.now() });
+}
+
+/** 清除等待子会话标记（wait 循环退出或会话清理时调用）。 */
+export function clearWaitingOnChild(sessionId: string) {
+  waitingOnChild.delete(sessionId);
+}
+
+/** 查询某会话是否正在等待子会话 writeback（safety timeout 豁免依据）。 */
+export function isWaitingOnChild(sessionId: string): boolean {
+  return waitingOnChild.has(sessionId);
+}
+
+/** 查询某会话的等待子会话标记条目（豁免精确匹配需读取 entry.childSessionId）。 */
+export function getWaitingOnChild(sessionId: string): WaitingOnChildEntry | undefined {
+  return waitingOnChild.get(sessionId);
+}
