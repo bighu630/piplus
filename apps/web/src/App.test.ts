@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import ts from "typescript";
+import ts from "typescript5";
 
 const APP_SOURCE_PATH = new URL("./App.tsx", import.meta.url);
 
