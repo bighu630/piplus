@@ -1,7 +1,5 @@
-import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 
-export const MAX_FILE_TREE_DEPTH = 6;
 export const MAX_FILE_CONTENT_BYTES = 1024 * 1024;
 export const MAX_FILE_WRITE_BYTES = 1024 * 1024;
 
@@ -34,38 +32,4 @@ export function looksLikeBinary(buffer: Buffer) {
   }
 
   return sample.length > 0 && suspiciousBytes / sample.length > 0.1;
-}
-
-// 注意：此模块级 buildFileTree 在原文件中已被 registerSessionRoutes 内的同名函数遮蔽（未被调用），
-// 按纯重构要求逐字保留。
-export async function buildFileTree(rootPath: string, relativePath = '', depth = 0): Promise<Array<{ name: string; path: string; kind: 'file' | 'directory'; children?: any[] }>> {
-  if (depth > MAX_FILE_TREE_DEPTH) return [];
-  const absoluteDir = relativePath ? path.join(rootPath, relativePath) : rootPath;
-  const entries = await readdir(absoluteDir, { withFileTypes: true });
-  const visible = entries
-    .filter((entry) => !IGNORED_ENTRY_NAMES.has(entry.name) && !entry.name.startsWith('.DS_Store'))
-    .sort((a, b) => {
-      if (a.isDirectory() && !b.isDirectory()) return -1;
-      if (!a.isDirectory() && b.isDirectory()) return 1;
-      return a.name.localeCompare(b.name);
-    });
-
-  const nodes = await Promise.all(visible.map(async (entry) => {
-    const entryRelativePath = relativePath ? path.posix.join(relativePath, entry.name) : entry.name;
-    if (entry.isDirectory()) {
-      return {
-        name: entry.name,
-        path: entryRelativePath,
-        kind: 'directory' as const,
-        children: await buildFileTree(rootPath, entryRelativePath, depth + 1),
-      };
-    }
-    return {
-      name: entry.name,
-      path: entryRelativePath,
-      kind: 'file' as const,
-    };
-  }));
-
-  return nodes;
 }
