@@ -4,7 +4,7 @@
 
 以下问题在拆分过程中发现，按"纯重构不顺手修"原则**均未改动**，建议后续单独处理：
 
-1. **原 sessions.ts 模块级 `buildFileTree` 为死代码**
+1. ✅（已处理）原 sessions.ts 模块级 `buildFileTree` 为死代码——已在独立 commit 中删除
    - 位置：现 `apps/api/src/routes/sessions/file-tree.ts`
    - 被 `registerSessionRoutes` 内部同名函数遮蔽，全仓无调用点（约 40 行无效代码）。已按要求逐字保留并有注释说明；建议单独 commit 删除。
 
