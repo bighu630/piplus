@@ -11,6 +11,7 @@ import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOp
 import MermaidBlock from './MermaidBlock';
 import { useSessionFileTree, useSessionFileContent, useSaveSessionFileContentMutation, useDeleteSessionFileMutation } from '../lib/hooks';
 import { getApiBaseUrl } from '../lib/runtime-config';
+import { getToken } from '../lib/auth-session';
 import { loadExpandedPaths, loadSelectedPath, saveExpandedPaths, saveSelectedPath } from '../lib/files-persistence';
 import type { FilesViewKey } from '../lib/files-persistence';
 
@@ -742,7 +743,7 @@ function TabFiles({
                   </div>
                 ) : (
                   <img
-                    src={`${getApiBaseUrl()}/api/v1/sessions/${selectedSessionId}/files/image?path=${encodeURIComponent(selectedPath!)}&token=${typeof window !== 'undefined' ? (localStorage.getItem('piplus_token') ?? '') : ''}`}
+                    src={`${getApiBaseUrl()}/api/v1/sessions/${selectedSessionId}/files/image?path=${encodeURIComponent(selectedPath!)}&token=${getToken() ?? ''}`}
                     alt={selectedPath!}
                     className="max-w-full max-h-full object-contain"
                     style={{ background: 'repeating-conic-gradient(rgba(0,0,0,0.03) 0% 25%, transparent 0% 50%) 0px 0px / 20px 20px' }}

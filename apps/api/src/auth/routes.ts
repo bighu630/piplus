@@ -1,5 +1,23 @@
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import { createToken, isAuthEnabled, verifyPassword, verifyToken } from './token';
+import { getClientIp, loginRateLimiter } from './rate-limit';
+
+function getLoginKey(c: Context): string {
+  const env = c.env as Record<string, unknown> | undefined;
+  let remoteAddress: string | undefined;
+  if (typeof env?.remoteAddress === 'string') {
+    remoteAddress = env.remoteAddress;
+  } else if (
+    typeof (env as { req?: { remoteAddress?: unknown } } | undefined)?.req?.remoteAddress === 'string'
+  ) {
+    remoteAddress = (env as { req: { remoteAddress: string } }).req.remoteAddress;
+  }
+  // TRUST MODEL: x-forwarded-for can be spoofed by the client, so this rate
+  // limiting key is only reliable behind a trusted reverse proxy (which
+  // overwrites the header) or for local/loopback deployments. When exposed
+  // directly to the public internet, rely on network-level protections.
+  return getClientIp(c.req.header('x-forwarded-for'), remoteAddress);
+}
 
 export function registerAuthRoutes(app: Hono) {
   /**
@@ -36,15 +54,51 @@ export function registerAuthRoutes(app: Hono) {
    *         description: 登录成功，返回 token 与用户信息。
    *       401:
    *         description: 密码错误。
+   *       429:
+   *         description: 失败次数过多，已被限流（15 分钟窗口内最多 5 次失败）。
    */
   app.post('/api/v1/auth/login', async (c) => {
+    const key = getLoginKey(c);
+    if (loginRateLimiter.isLimited(key)) {
+      return c.json(
+        { error: { code: 'RATE_LIMITED', message: 'Too many attempts, try again later' } },
+        429,
+      );
+    }
     const body = await c.req.json().catch(() => ({}));
     const password = String((body as { password?: string }).password ?? '');
     if (!verifyPassword(password)) {
+      loginRateLimiter.recordFailure(key);
       return c.json({ error: { code: 'INVALID_PASSWORD', message: 'Invalid password' } }, 401);
     }
+    loginRateLimiter.reset(key);
     const token = createToken();
     return c.json({ token, user: { id: 'local-user', name: 'Piplus' } });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/auth/refresh:
+   *   post:
+   *     summary: 刷新访问 Token
+   *     tags: [Auth]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 使用仍有效的旧 Token 换取新签发的 Token，用于在过期前续期。
+   *     responses:
+   *       200:
+   *         description: 刷新成功，返回新 token 与用户信息。
+   *       401:
+   *         description: Token 无效或已过期。
+   */
+  app.post('/api/v1/auth/refresh', async (c) => {
+    const header = c.req.header('Authorization') ?? '';
+    const token = header.replace(/^Bearer\s+/i, '');
+    if (!token || !verifyToken(token)) {
+      return c.json({ error: { code: 'UNAUTHENTICATED', message: 'Invalid or expired token' } }, 401);
+    }
+    const newToken = createToken();
+    return c.json({ token: newToken, user: { id: 'local-user', name: 'Piplus' } });
   });
 
   /**
