@@ -50,7 +50,11 @@ export type ClientUnsubscribeSession = {
 ```
 kind === 'event':
   - 无 scope.session_id                          → 广播（全局事件）
-  - type === 'session.runtime_status_changed'    → 广播（设计决定：侧边栏需要全量）
+  - type ∈ GLOBAL_EVENT_TYPES（控制面白名单：
+    session.runtime_status_changed / tree.changed / project.created /
+    session.created / session.archived / session.updated，即使带
+    scope.session_id 也保持广播——前端依赖它们全局刷新侧边栏树）
+                                                   → 广播
   - 其余                                          → subscribed.has(scope.session_id)
 kind === 'chat_stream':   subscribed.has(scope.session_id)
 kind === 'terminal':      subscribed.has(payload.sessionId)

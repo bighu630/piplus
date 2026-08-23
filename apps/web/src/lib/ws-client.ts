@@ -75,6 +75,20 @@ export function createWorkspaceSocket({
         payload: { timestamp: new Date().toISOString() },
       } satisfies ClientMessage);
     },
+    subscribeSession(sessionId: string) {
+      safeSend({
+        kind: 'client',
+        type: 'subscribe_session',
+        payload: { session_id: sessionId },
+      } satisfies ClientMessage);
+    },
+    unsubscribeSession(sessionId: string) {
+      safeSend({
+        kind: 'client',
+        type: 'unsubscribe_session',
+        payload: { session_id: sessionId },
+      } satisfies ClientMessage);
+    },
     sendRaw(message: Record<string, unknown>) {
       safeSend(message as any);
     },

@@ -49,6 +49,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const selectedSessionIdRef = useRef<string | null>(null);
   const selectedProjectIdRef = useRef<string | null>(null);
   const activeTabRef = useRef<string>('chat');
+  const prevSubscribedSessionRef = useRef<string | null>(null);
   const notifiedRef = useRef<Set<string>>(new Set());
 
   // Expose setters for App to call when session/tab changes
@@ -56,12 +57,23 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     selectedSessionIdRef.current = sessionId;
     selectedProjectIdRef.current = projectId;
     activeTabRef.current = activeTab;
+    // 服务端定向投递：切会话时退订旧会话、订阅新会话，并补拉消息
+    // 弥补定向期间错过的流式中间内容
+    const prev = prevSubscribedSessionRef.current;
+    if (prev && prev !== sessionId) {
+      socketRef.current?.unsubscribeSession(prev);
+    }
+    if (sessionId && sessionId !== prev) {
+      socketRef.current?.subscribeSession(sessionId);
+      queryClient.invalidateQueries({ queryKey: ['session', 'messages', sessionId] });
+    }
+    prevSubscribedSessionRef.current = sessionId;
     socketRef.current?.setContext({
       project_id: projectId ?? undefined,
       session_id: sessionId ?? undefined,
       current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : activeTab === 'files' || activeTab === 'doce' ? 'files' : activeTab === 'terminal' ? 'terminal' : 'chat',
     });
-  }, []);
+  }, [queryClient]);
 
   // Main WS connection effect — only on mount/unmount
   useEffect(() => {
@@ -275,6 +287,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' || activeTabRef.current === 'doce' ? 'files' : activeTabRef.current === 'terminal' ? 'terminal' : 'chat',
         });
         socket.ping();
+        if (selectedSessionIdRef.current) {
+          socket.subscribeSession(selectedSessionIdRef.current);
+          prevSubscribedSessionRef.current = selectedSessionIdRef.current;
+        }
         queryClient.refetchQueries({ queryKey: ['tree'] });
         if (selectedSessionIdRef.current) {
           queryClient.invalidateQueries({ queryKey: ['session', 'info', selectedSessionIdRef.current] });

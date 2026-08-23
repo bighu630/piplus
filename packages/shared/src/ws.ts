@@ -57,7 +57,19 @@ export type ClientPing = {
   payload: { timestamp: string };
 };
 
-export type ClientMessage = ClientHello | ClientSetContext | ClientPing | ClientTerminalStart | ClientTerminalInput | ClientTerminalResize | ClientTerminalStop;
+export type ClientSubscribeSession = {
+  kind: 'client';
+  type: 'subscribe_session';
+  payload: { session_id: string };
+};
+
+export type ClientUnsubscribeSession = {
+  kind: 'client';
+  type: 'unsubscribe_session';
+  payload: { session_id: string };
+};
+
+export type ClientMessage = ClientHello | ClientSetContext | ClientPing | ClientSubscribeSession | ClientUnsubscribeSession | ClientTerminalStart | ClientTerminalInput | ClientTerminalResize | ClientTerminalStop;
 
 export type EventMessage = {
   kind: 'event';
@@ -107,5 +119,6 @@ export function isClientMessage(message: unknown): message is ClientMessage {
   if (value.kind !== 'client') return false;
   const t = value.type;
   return t === 'hello' || t === 'set_context' || t === 'ping' ||
+    t === 'subscribe_session' || t === 'unsubscribe_session' ||
     t === 'terminal_start' || t === 'terminal_input' || t === 'terminal_resize' || t === 'terminal_stop';
 }

@@ -68,7 +68,6 @@ export function registerWebSocketRoutes(app: Hono) {
       }
 
       if (parsed.type === 'set_context') {
-        socketHub.setContext(ws, parsed.payload);
         ws.send(JSON.stringify(createEvent('context.updated', parsed.payload)));
       }
 
