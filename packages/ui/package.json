@@ -12,7 +12,6 @@
   },
   "devDependencies": {
     "@types/react": "*",
-    "@types/react-dom": "*",
-    "typescript": "~5.8.2"
+    "@types/react-dom": "*"
   }
 }
