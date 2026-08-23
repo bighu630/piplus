@@ -1,4 +1,6 @@
 import type { ClientMessage, ServerMessage } from '@piplus/shared/ws';
+import { WS_EVENT_SUBSCRIPTION_DENIED } from '@piplus/shared/ws';
+import { createEvent } from './protocol';
 
 export type AttachedSocket = {
   send(data: string): void;
@@ -11,13 +13,10 @@ export type AttachedSocket = {
  */
 export type AuthorizeSubscribe = (ws: AttachedSocket, sessionId: string) => boolean;
 
+// 用共享常量 + createEvent 构造（而非手拼 JSON），保证与 ServerMessage 类型及
+// shared/ws.ts 导出的事件名一致，避免常量漂移成死导出。
 function subscriptionDenied(sessionId: string) {
-  return JSON.stringify({
-    kind: 'event',
-    type: 'subscription.denied',
-    timestamp: new Date().toISOString(),
-    payload: { session_id: sessionId },
-  });
+  return JSON.stringify(createEvent(WS_EVENT_SUBSCRIPTION_DENIED, { session_id: sessionId }));
 }
 
 const sockets = new Set<AttachedSocket>();

@@ -13,6 +13,22 @@ import { projects, sessions } from '@piplus/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getDbPath } from '../db-context';
 
+// 模块级按路径缓存的共享 db 实例：getDbPath() 由启动配置决定、运行期不变，
+// 而 authorizeSubscribe 在前端每次切会话（subscribe_session）都会触发，
+// terminal_start 也可能频繁到达。此前每次都 createDb() 新开 bun:sqlite 句柄且从不关闭，
+// 会累积句柄泄漏；且 createDb 不暴露底层 Database，无法事后 close，因此选择复用实例
+// 而非 finally-close。按路径缓存是为了在测试同进程切换 DB 路径时互不串库。
+const dbByPath = new Map<string, ReturnType<typeof createDb>>();
+function getDb() {
+  const path = getDbPath();
+  let db = dbByPath.get(path);
+  if (!db) {
+    db = createDb(`file:${path}`);
+    dbByPath.set(path, db);
+  }
+  return db;
+}
+
 const socketHub = registerSocket({
   // 订阅归属校验：auth 关闭时放行（保持现状）；auth 开启时要求连接已认证，
   // 且 sessions.createdBy 与该连接身份一致。bun:sqlite 为同步驱动，回调可保持同步。
@@ -21,8 +37,7 @@ const socketHub = registerSocket({
     const userId = (ws as any).__userId;
     if (!userId) return false; // 未认证/无身份的连接一律拒绝
     try {
-      const db = createDb(`file:${getDbPath()}`);
-      const row = db
+      const row = getDb()
         .select({ id: sessions.id })
         .from(sessions)
         .where(and(eq(sessions.id, sessionId), eq(sessions.createdBy, userId)))
@@ -182,93 +197,92 @@ export function createWebSocketHooks(c: Context): WSEvents {
 
     socketHub.handleClientMessage(rawWs, parsed);
 
-      if (parsed.type === 'hello') {
-        ws.send(JSON.stringify(createEvent('connection.hello', { user_agent: parsed.payload.user_agent ?? null })));
-      }
+    if (parsed.type === 'hello') {
+      ws.send(JSON.stringify(createEvent('connection.hello', { user_agent: parsed.payload.user_agent ?? null })));
+    }
 
-      if (parsed.type === 'set_context') {
-        ws.send(JSON.stringify(createEvent('context.updated', parsed.payload)));
-      }
+    if (parsed.type === 'set_context') {
+      ws.send(JSON.stringify(createEvent('context.updated', parsed.payload)));
+    }
 
-      if (parsed.type === 'ping') {
-        ws.send(JSON.stringify(createEvent('connection.pong', { timestamp: parsed.payload.timestamp })));
-      }
+    if (parsed.type === 'ping') {
+      ws.send(JSON.stringify(createEvent('connection.pong', { timestamp: parsed.payload.timestamp })));
+    }
 
-      // Terminal message handling
-      if (parsed.type === 'terminal_start') {
-        const userId = (rawWs as { __userId?: string }).__userId;
-        // 去掉 'local-user' 兑底：auth 开启且连接未认证/无身份时拒绝 terminal_start。
-        // 选择静默忽略，避免向未认证连接回送可被用于探测的错误信息。
-        if (isAuthEnabled() && !userId) {
-          // rejected: ignore silently
-        } else {
-          try {
-            const { sessionId, cols, rows } = (parsed as any).payload as { sessionId: string; cols: number; rows: number };
-            const db = createDb(`file:${getDbPath()}`);
-            // 归属校验改查 sessions.createdBy（此前误查 projects.createdBy）；
-            // auth 关闭时放行（本地场景 createdBy 可能为空），不做归属过滤。
-            const ownershipFilter = isAuthEnabled() && userId ? eq(sessions.createdBy, userId) : undefined;
-            const [row] = await db
-              .select({ projectPath: projects.projectPath })
-              .from(sessions)
-              .innerJoin(projects, eq(sessions.projectId, projects.id))
-              .where(
-                ownershipFilter
-                  ? and(eq(sessions.id, sessionId), ownershipFilter)
-                  : eq(sessions.id, sessionId),
-              )
-              .limit(1);
-            if (row) {
-              terminalManager.start(sessionId, row.projectPath, cols, rows);
-              // Track this terminal session for this connection
-              const tracked = connectionTerminals.get(rawWs) ?? new Set<string>();
-              connectionTerminals.set(rawWs, tracked);
-              tracked.add(sessionId);
-            }
-          } catch (err) {
-            console.error('[Terminal] Failed to start terminal:', err);
+    // Terminal message handling
+    if (parsed.type === 'terminal_start') {
+      const userId = (rawWs as { __userId?: string }).__userId;
+      // 去掉 'local-user' 兑底：auth 开启且连接未认证/无身份时拒绝 terminal_start。
+      // 选择静默忽略，避免向未认证连接回送可被用于探测的错误信息。
+      if (isAuthEnabled() && !userId) {
+        // rejected: ignore silently
+      } else {
+        try {
+          const { sessionId, cols, rows } = (parsed as any).payload as { sessionId: string; cols: number; rows: number };
+          // 归属校验改查 sessions.createdBy（此前误查 projects.createdBy）；
+          // auth 关闭时放行（本地场景 createdBy 可能为空），不做归属过滤。
+          const ownershipFilter = isAuthEnabled() && userId ? eq(sessions.createdBy, userId) : undefined;
+          const [row] = await getDb()
+            .select({ projectPath: projects.projectPath })
+            .from(sessions)
+            .innerJoin(projects, eq(sessions.projectId, projects.id))
+            .where(
+              ownershipFilter
+                ? and(eq(sessions.id, sessionId), ownershipFilter)
+                : eq(sessions.id, sessionId),
+            )
+            .limit(1);
+          if (row) {
+            terminalManager.start(sessionId, row.projectPath, cols, rows);
+            // Track this terminal session for this connection
+            const tracked = connectionTerminals.get(rawWs) ?? new Set<string>();
+            connectionTerminals.set(rawWs, tracked);
+            tracked.add(sessionId);
           }
+        } catch (err) {
+          console.error('[Terminal] Failed to start terminal:', err);
         }
       }
+    }
 
-      if (parsed.type === 'terminal_input') {
-        const { sessionId, data } = (parsed as any).payload as { sessionId: string; data: string };
-        terminalManager.write(sessionId, data);
-      }
+    if (parsed.type === 'terminal_input') {
+      const { sessionId, data } = (parsed as any).payload as { sessionId: string; data: string };
+      terminalManager.write(sessionId, data);
+    }
 
-      if (parsed.type === 'terminal_resize') {
-        const { sessionId, cols, rows } = (parsed as any).payload as { sessionId: string; cols: number; rows: number };
-        terminalManager.resize(sessionId, cols, rows);
-      }
+    if (parsed.type === 'terminal_resize') {
+      const { sessionId, cols, rows } = (parsed as any).payload as { sessionId: string; cols: number; rows: number };
+      terminalManager.resize(sessionId, cols, rows);
+    }
 
-      if (parsed.type === 'terminal_stop') {
-        const { sessionId } = (parsed as any).payload as { sessionId: string };
-        terminalManager.stop(sessionId);
-        // Remove from per-connection tracking
-        const trackedSessions = connectionTerminals.get(rawWs);
-        if (trackedSessions) {
-          trackedSessions.delete(sessionId);
-        }
+    if (parsed.type === 'terminal_stop') {
+      const { sessionId } = (parsed as any).payload as { sessionId: string };
+      terminalManager.stop(sessionId);
+      // Remove from per-connection tracking
+      const trackedSessions = connectionTerminals.get(rawWs);
+      if (trackedSessions) {
+        trackedSessions.delete(sessionId);
       }
+    }
   }
 
   function handleClose(_evt: unknown, ws: SocketLike) {
-      const rawWs = rawSocketOf(ws);
-      const auth = connectionAuth.get(rawWs);
-      if (auth?.timer !== null && auth?.timer !== undefined) {
-        clearTimeout(auth.timer);
-      }
-      connectionAuth.delete(rawWs);
-      socketHub.detach(rawWs);
-      // Clean up only this connection's terminal sessions
-      const terminalSessionIds = connectionTerminals.get(rawWs);
-      if (terminalSessionIds) {
-        for (const sessionId of terminalSessionIds) {
-          terminalManager.stop(sessionId);
-        }
-        connectionTerminals.delete(rawWs);
-      }
+    const rawWs = rawSocketOf(ws);
+    const auth = connectionAuth.get(rawWs);
+    if (auth?.timer !== null && auth?.timer !== undefined) {
+      clearTimeout(auth.timer);
     }
+    connectionAuth.delete(rawWs);
+    socketHub.detach(rawWs);
+    // Clean up only this connection's terminal sessions
+    const terminalSessionIds = connectionTerminals.get(rawWs);
+    if (terminalSessionIds) {
+      for (const sessionId of terminalSessionIds) {
+        terminalManager.stop(sessionId);
+      }
+      connectionTerminals.delete(rawWs);
+    }
+  }
 
   return {
     onOpen: (evt, ws) => handleOpen(evt, ws as unknown as SocketLike),
