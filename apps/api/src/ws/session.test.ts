@@ -120,3 +120,68 @@ describe('ws session hub', () => {
     expect(socket.sent).toHaveLength(0);
   });
 });
+
+describe('ws session hub with authorizeSubscribe (H2)', () => {
+  function createHub(authorize: (ws: unknown, sessionId: string) => boolean) {
+    return registerSocket({ authorizeSubscribe: authorize });
+  }
+
+  test('denied subscribe does not join the subscription set and replies subscription.denied', () => {
+    const hub = createHub((_ws, sessionId) => sessionId !== 's-private');
+    const socket = createMockSocket();
+    hub.attach(socket);
+
+    hub.handleClientMessage(socket, { kind: 'client', type: 'subscribe_session', payload: { session_id: 's-private' } });
+
+    // 回发拒绝事件
+    expect(socket.sent).toHaveLength(1);
+    const denied = JSON.parse(socket.sent[0]!) as { kind: string; type: string; payload: { session_id: string } };
+    expect(denied.type).toBe('subscription.denied');
+    expect(denied.payload.session_id).toBe('s-private');
+
+    // 未加入订阅集合：会话私有事件不投递
+    hub.sendToSession('s-private', createChatStreamFrame('s-private', 'delta', 'stream_1', 'msg_1', 'x'));
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  test('allowed subscribe behaves normally', () => {
+    const hub = createHub(() => true);
+    const socket = createMockSocket();
+    hub.attach(socket);
+
+    hub.handleClientMessage(socket, { kind: 'client', type: 'subscribe_session', payload: { session_id: 's1' } });
+    // 无拒绝事件
+    expect(socket.sent).toHaveLength(0);
+
+    hub.sendToSession('s1', createChatStreamFrame('s1', 'delta', 'stream_1', 'msg_1', 'x'));
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  test('unsubscribe is always allowed even when subscribe would be denied', () => {
+    let denyAll = true;
+    const hub = registerSocket({ authorizeSubscribe: () => !denyAll });
+    const socket = createMockSocket();
+    hub.attach(socket);
+
+    hub.handleClientMessage(socket, { kind: 'client', type: 'subscribe_session', payload: { session_id: 's1' } });
+    expect(socket.sent).toHaveLength(1); // 被拒
+
+    // 先放行订阅，再收紧策略后取消订阅
+    denyAll = false;
+    hub.handleClientMessage(socket, { kind: 'client', type: 'subscribe_session', payload: { session_id: 's1' } });
+    denyAll = true;
+    hub.handleClientMessage(socket, { kind: 'client', type: 'unsubscribe_session', payload: { session_id: 's1' } });
+
+    hub.sendToSession('s1', createChatStreamFrame('s1', 'delta', 'stream_2', 'msg_2', 'x'));
+    expect(socket.sent).toHaveLength(1); // 只有拒绝事件，无 chat_stream
+  });
+
+  test('no callback injected: subscribe behavior unchanged', () => {
+    const hub = registerSocket();
+    const socket = createMockSocket();
+    hub.attach(socket);
+    hub.handleClientMessage(socket, { kind: 'client', type: 'subscribe_session', payload: { session_id: 's1' } });
+    hub.sendToSession('s1', createChatStreamFrame('s1', 'delta', 'stream_1', 'msg_1', 'x'));
+    expect(socket.sent).toHaveLength(1);
+  });
+});

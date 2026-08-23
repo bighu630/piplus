@@ -1,8 +1,13 @@
 export type ClientHello = {
   kind: 'client';
   type: 'hello';
-  payload: { user_agent?: string };
+  payload: { user_agent?: string; token?: string };
 };
+
+/** 服务端下发：认证失败/超时未认证（客户端收到后不应重连，应引导重新登录）。 */
+export const WS_EVENT_UNAUTHENTICATED = 'connection.unauthenticated';
+/** 服务端下发：subscribe_session 归属校验未通过。 */
+export const WS_EVENT_SUBSCRIPTION_DENIED = 'subscription.denied';
 
 export type ClientSetContext = {
   kind: 'client';
