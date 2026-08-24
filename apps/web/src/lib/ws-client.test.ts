@@ -141,4 +141,59 @@ describe('createWorkspaceSocket', () => {
       type: 'hello',
     });
   });
+
+  test('close code 4401 stops reconnection and dispatches the logout event', async () => {
+    const dispatched: string[] = [];
+    globalThis.window = {
+      location: { protocol: 'https:', host: 'demo.example.com' },
+      piplusConfig: {},
+      dispatchEvent: (event: Event) => {
+        dispatched.push(event.type);
+        return true;
+      },
+    } as unknown as Window & typeof globalThis;
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+
+    let closeCount = 0;
+    const socket = createWorkspaceSocket({
+      onMessage() {},
+      onClose() {
+        closeCount += 1;
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    FakeWebSocket.instances[0]?.open();
+    FakeWebSocket.instances[0]?.dispatch('close', { code: 4401 });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // 不重连：没有新的 WebSocket 实例；onClose 只触发一次
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(closeCount).toBe(1);
+    expect(dispatched).toContain('piplus:logout');
+
+    socket.close();
+  });
+
+  test('normal close still schedules a reconnect', async () => {
+    globalThis.window = {
+      location: { protocol: 'https:', host: 'demo.example.com' },
+      piplusConfig: {},
+    } as Window & typeof globalThis;
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+
+    const socket = createWorkspaceSocket({ onMessage() {} });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    FakeWebSocket.instances[0]?.open();
+    FakeWebSocket.instances[0]?.dispatch('close', { code: 1000 });
+
+    // 正常关闭（非 4401）会安排重连，产生第二个实例
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+
+    socket.close();
+  });
 });

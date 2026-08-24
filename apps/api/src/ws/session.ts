@@ -1,8 +1,23 @@
 import type { ClientMessage, ServerMessage } from '@piplus/shared/ws';
+import { WS_EVENT_SUBSCRIPTION_DENIED } from '@piplus/shared/ws';
+import { createEvent } from './protocol';
 
-type AttachedSocket = {
+export type AttachedSocket = {
   send(data: string): void;
 };
+
+/**
+ * 订阅归属校验回调：返回 false 时拒绝该连接订阅指定会话，
+ * 并向该 socket 回发 `subscription.denied` 事件。
+ * unsubscribe 不经过此校验（移除自己的订阅总是允许）。
+ */
+export type AuthorizeSubscribe = (ws: AttachedSocket, sessionId: string) => boolean;
+
+// 用共享常量 + createEvent 构造（而非手拼 JSON），保证与 ServerMessage 类型及
+// shared/ws.ts 导出的事件名一致，避免常量漂移成死导出。
+function subscriptionDenied(sessionId: string) {
+  return JSON.stringify(createEvent(WS_EVENT_SUBSCRIPTION_DENIED, { session_id: sessionId }));
+}
 
 const sockets = new Set<AttachedSocket>();
 const subscriptions = new WeakMap<AttachedSocket, Set<string>>();
@@ -60,7 +75,7 @@ function deliver(message: ServerMessage) {
   }
 }
 
-export function registerSocket() {
+export function registerSocket(options?: { authorizeSubscribe?: AuthorizeSubscribe }) {
   const hub = {
     attach(ws: AttachedSocket) {
       sockets.add(ws);
@@ -72,6 +87,15 @@ export function registerSocket() {
     },
     handleClientMessage(ws: AttachedSocket, message: ClientMessage) {
       if (message.type === 'subscribe_session') {
+        const authorize = options?.authorizeSubscribe;
+        if (authorize && !authorize(ws, message.payload.session_id)) {
+          try {
+            ws.send(subscriptionDenied(message.payload.session_id));
+          } catch {
+            // send 失败由 deliver 阶段统一清理，这里忽略即可
+          }
+          return;
+        }
         subscriptions.get(ws)?.add(message.payload.session_id);
       } else if (message.type === 'unsubscribe_session') {
         subscriptions.get(ws)?.delete(message.payload.session_id);

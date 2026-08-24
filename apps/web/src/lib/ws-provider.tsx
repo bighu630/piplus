@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useRef, useState, useCallb
 import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
 import { createWorkspaceSocket } from './ws-client';
 import { useQueryClient } from '@tanstack/react-query';
+import { useAuthSession, useAuthStatus } from './hooks';
 import { sendSystemNotification } from './notification';
 import { findSessionNode, updateNodeRuntimeStatus } from './tree-utils';
 import {
@@ -45,6 +46,13 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const messageListenersRef = useRef<Set<(msg: any) => void>>(new Set());
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
 
+  // 登录态：与 App.tsx 同源（auth status/session 查询）。WS 建连 effect 依赖它：
+  // 4401 登出后 isLoggedIn 变 false → 关闭死连接；重新登录后变 true → 用新 token 重建连接。
+  // 依赖是稳定的布尔值，auth 查询解析期间（undefined→false）不会翻转，避免重连风暴。
+  const authStatusQuery = useAuthStatus();
+  const authSessionQuery = useAuthSession();
+  const isLoggedIn = authStatusQuery.data?.requiresPassword === false || Boolean(authSessionQuery.data?.ok);
+
   // Refs for latest values used in closures
   const selectedSessionIdRef = useRef<string | null>(null);
   const selectedProjectIdRef = useRef<string | null>(null);
@@ -75,8 +83,16 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     });
   }, [queryClient]);
 
-  // Main WS connection effect — only on mount/unmount
+  // Main WS connection effect — 随登录态重建（登出关闭旧连接，重新登录以新 token 新建）
   useEffect(() => {
+    if (!isLoggedIn) {
+      // 未登录 / 已登出：确保旧 socket（含 4401 停摆后的死连接）被关闭，不发起建连。
+      socketRef.current?.close();
+      socketRef.current = null;
+      prevSubscribedSessionRef.current = null;
+      setConnected(false);
+      return;
+    }
     const socket = createWorkspaceSocket({
       onMessage(event) {
         try {
@@ -307,7 +323,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       socketRef.current = null;
       socket.close();
     };
-  }, []); // Only on mount
+  }, [isLoggedIn]); // 登录态变化时重建连接
 
   const subscribeToStream = useCallback((cb: (stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => void): (() => void) => {
     streamListenersRef.current.add(cb);
