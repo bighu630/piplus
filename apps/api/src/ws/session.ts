@@ -1,63 +1,116 @@
 import type { ClientMessage, ServerMessage } from '@piplus/shared/ws';
+import { WS_EVENT_SUBSCRIPTION_DENIED } from '@piplus/shared/ws';
+import { createEvent } from './protocol';
 
-type ConnectionContext = {
-  project_id?: string;
-  session_id?: string;
-  current_tab?: 'chat' | 'session_info' | 'git_diff' | 'files' | 'terminal';
-};
-
-type AttachedSocket = {
+export type AttachedSocket = {
   send(data: string): void;
 };
 
-const sockets = new Set<AttachedSocket>();
-const contexts = new WeakMap<AttachedSocket, ConnectionContext>();
+/**
+ * 订阅归属校验回调：返回 false 时拒绝该连接订阅指定会话，
+ * 并向该 socket 回发 `subscription.denied` 事件。
+ * unsubscribe 不经过此校验（移除自己的订阅总是允许）。
+ */
+export type AuthorizeSubscribe = (ws: AttachedSocket, sessionId: string) => boolean;
 
-function shouldDeliver(_message: ServerMessage, _context?: ConnectionContext) {
-  // 所有消息广播到所有已连接 socket，由前端自行按 session_id / tab 过滤
+// 用共享常量 + createEvent 构造（而非手拼 JSON），保证与 ServerMessage 类型及
+// shared/ws.ts 导出的事件名一致，避免常量漂移成死导出。
+function subscriptionDenied(sessionId: string) {
+  return JSON.stringify(createEvent(WS_EVENT_SUBSCRIPTION_DENIED, { session_id: sessionId }));
+}
+
+const sockets = new Set<AttachedSocket>();
+const subscriptions = new WeakMap<AttachedSocket, Set<string>>();
+
+function isSubscribed(ws: AttachedSocket, sessionId: string | undefined): boolean {
+  if (!sessionId) return false;
+  return subscriptions.get(ws)?.has(sessionId) ?? false;
+}
+
+/**
+ * 控制面事件白名单：虽然带 scope.session_id，但前端依赖它们全局刷新侧边栏树，
+ * 必须保持广播，不参与订阅过滤。
+ */
+const GLOBAL_EVENT_TYPES = new Set([
+  'session.runtime_status_changed',
+  'tree.changed',
+  'project.created',
+  'session.created',
+  'session.archived',
+  'session.updated',
+]);
+
+/**
+ * 服务端按会话定向过滤，区分两类事件：
+ * - 控制面事件：无 scope.session_id 的全局事件，以及 GLOBAL_EVENT_TYPES 白名单中的
+ *   控制面事件（即使带 scope.session_id），一律广播给所有连接（侧边栏树/状态灯需要）
+ * - 会话私有事件：chat_stream、terminal 及其余会话私有事件仅投递给已订阅该会话的连接
+ */
+function shouldDeliver(message: ServerMessage, ws: AttachedSocket): boolean {
+  if (message.kind === 'event') {
+    if (!message.scope?.session_id) return true;
+    if (GLOBAL_EVENT_TYPES.has(message.type)) return true;
+    return isSubscribed(ws, message.scope.session_id);
+  }
+  if (message.kind === 'chat_stream') {
+    return isSubscribed(ws, message.scope.session_id);
+  }
+  if (message.kind === 'terminal') {
+    return isSubscribed(ws, message.payload.sessionId);
+  }
   return true;
 }
 
-export function registerSocket() {
-  return {
+function deliver(message: ServerMessage) {
+  const payload = JSON.stringify(message);
+  for (const ws of sockets) {
+    if (!shouldDeliver(message, ws)) continue;
+    try {
+      ws.send(payload);
+    } catch (err) {
+      console.warn('[ws-session] send failed, removing socket', err);
+      sockets.delete(ws);
+      subscriptions.delete(ws);
+    }
+  }
+}
+
+export function registerSocket(options?: { authorizeSubscribe?: AuthorizeSubscribe }) {
+  const hub = {
     attach(ws: AttachedSocket) {
       sockets.add(ws);
-      contexts.set(ws, {});
+      subscriptions.set(ws, new Set());
     },
     detach(ws: AttachedSocket) {
       sockets.delete(ws);
-      contexts.delete(ws);
-    },
-    setContext(ws: AttachedSocket, context: ConnectionContext) {
-      contexts.set(ws, context);
+      subscriptions.delete(ws);
     },
     handleClientMessage(ws: AttachedSocket, message: ClientMessage) {
-      if (message.type === 'set_context') {
-        contexts.set(ws, message.payload);
+      if (message.type === 'subscribe_session') {
+        const authorize = options?.authorizeSubscribe;
+        if (authorize && !authorize(ws, message.payload.session_id)) {
+          try {
+            ws.send(subscriptionDenied(message.payload.session_id));
+          } catch {
+            // send 失败由 deliver 阶段统一清理，这里忽略即可
+          }
+          return;
+        }
+        subscriptions.get(ws)?.add(message.payload.session_id);
+      } else if (message.type === 'unsubscribe_session') {
+        subscriptions.get(ws)?.delete(message.payload.session_id);
       }
     },
     broadcast(message: ServerMessage) {
-      const payload = JSON.stringify(message);
-      for (const ws of sockets) {
-        const context = contexts.get(ws);
-        if (!shouldDeliver(message, context)) continue;
-        try {
-          ws.send(payload);
-        } catch (err) {
-          console.warn('[ws-session] broadcast send failed, removing socket', err);
-          sockets.delete(ws);
-          contexts.delete(ws);
-        }
-      }
+      deliver(message);
     },
-    sendToSession(sessionId: string, message: ServerMessage) {
-      if (message.kind === 'event') {
-        this.broadcast(message);
-        return;
-      }
-
-      // chat_stream 改为广播，由前端按 session_id 自行过滤，避免 server 端 context 串线
-      this.broadcast(message);
+    /**
+     * 兼容保留：投递完全由消息内容（scope/payload.session_id）+ 各连接订阅集合决定，
+     * sessionId 参数仅为兼容既有调用点而保留，不参与过滤。
+     */
+    sendToSession(_sessionId: string, message: ServerMessage) {
+      deliver(message);
     },
   };
+  return hub;
 }

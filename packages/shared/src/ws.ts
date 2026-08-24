@@ -1,8 +1,13 @@
 export type ClientHello = {
   kind: 'client';
   type: 'hello';
-  payload: { user_agent?: string };
+  payload: { user_agent?: string; token?: string };
 };
+
+/** 服务端下发：认证失败/超时未认证（客户端收到后不应重连，应引导重新登录）。 */
+export const WS_EVENT_UNAUTHENTICATED = 'connection.unauthenticated';
+/** 服务端下发：subscribe_session 归属校验未通过。 */
+export const WS_EVENT_SUBSCRIPTION_DENIED = 'subscription.denied';
 
 export type ClientSetContext = {
   kind: 'client';
@@ -57,7 +62,19 @@ export type ClientPing = {
   payload: { timestamp: string };
 };
 
-export type ClientMessage = ClientHello | ClientSetContext | ClientPing | ClientTerminalStart | ClientTerminalInput | ClientTerminalResize | ClientTerminalStop;
+export type ClientSubscribeSession = {
+  kind: 'client';
+  type: 'subscribe_session';
+  payload: { session_id: string };
+};
+
+export type ClientUnsubscribeSession = {
+  kind: 'client';
+  type: 'unsubscribe_session';
+  payload: { session_id: string };
+};
+
+export type ClientMessage = ClientHello | ClientSetContext | ClientPing | ClientSubscribeSession | ClientUnsubscribeSession | ClientTerminalStart | ClientTerminalInput | ClientTerminalResize | ClientTerminalStop;
 
 export type EventMessage = {
   kind: 'event';
@@ -107,5 +124,6 @@ export function isClientMessage(message: unknown): message is ClientMessage {
   if (value.kind !== 'client') return false;
   const t = value.type;
   return t === 'hello' || t === 'set_context' || t === 'ping' ||
+    t === 'subscribe_session' || t === 'unsubscribe_session' ||
     t === 'terminal_start' || t === 'terminal_input' || t === 'terminal_resize' || t === 'terminal_stop';
 }

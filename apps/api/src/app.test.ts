@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,15 @@ describe('createApp docker serving', () => {
   const originalCorsOrigins = process.env.CORS_ORIGINS;
   const originalServeWeb = process.env.PIPLUS_SERVE_WEB;
   const originalWebDist = process.env.PIPLUS_WEB_DIST;
+
+  // 环境隔离：宿主环境可能设置 CORS_ORIGINS=* 等变量，
+  // 每个用例必须从已知干净基线开始，而非依赖部署环境的偶然状态
+  beforeEach(() => {
+    delete process.env.CORS_ORIGINS;
+    delete process.env.PUBLIC_WEB_ORIGIN;
+    delete process.env.PIPLUS_SERVE_WEB;
+    delete process.env.PIPLUS_WEB_DIST;
+  });
 
   afterEach(() => {
     process.env.PUBLIC_WEB_ORIGIN = originalOrigin;
@@ -149,6 +158,11 @@ describe('createApp docker serving', () => {
 describe('CORS_ORIGINS env var', () => {
   const originalCorsOrigins = process.env.CORS_ORIGINS;
   const originalOrigin = process.env.PUBLIC_WEB_ORIGIN;
+
+  beforeEach(() => {
+    delete process.env.CORS_ORIGINS;
+    delete process.env.PUBLIC_WEB_ORIGIN;
+  });
 
   afterEach(() => {
     process.env.CORS_ORIGINS = originalCorsOrigins;
