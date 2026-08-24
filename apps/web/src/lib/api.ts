@@ -1,4 +1,5 @@
 import { getApiBaseUrl } from './runtime-config';
+import { getToken, notifyLoggedOut } from './auth-session';
 import type {
   SessionInfoDTO,
   SessionContextUsageDTO,
@@ -66,7 +67,7 @@ export type SessionMessagesPage = {
 };
 
 function authHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('piplus_token') : null;
+  const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -82,11 +83,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
+    // A 401 on a protected endpoint means the token is expired/invalid:
+    // clear it and broadcast logout. Skip /api/v1/auth/* itself to avoid
+    // re-entrant logout loops (e.g. failed refresh/check calls).
+    if (response.status === 401 && !path.startsWith('/api/v1/auth/')) {
+      notifyLoggedOut();
+    }
     throw new Error((body as { error?: { message?: string } }).error?.message ?? `request_failed:${response.status}`);
   }
   return response.json() as Promise<T>;
 }
 
+/**
+ * Login with the dashboard password.
+ * Resolves `{ token, user: { id, name } }` where `token` is a v2 token carrying an exp.
+ * Rejects with the server-provided error message, e.g. wrong password (401)
+ * or rate-limited attempts (429 RATE_LIMITED) — surface `error.message` to the UI.
+ */
 export function login(password: string) {
   return request<{ token: string; user: { id: string; name: string } }>('/api/v1/auth/login', {
     method: 'POST',
