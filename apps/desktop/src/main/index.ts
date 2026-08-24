@@ -82,48 +82,72 @@ async function bootstrap() {
   }
 }
 
-app.whenReady().then(async () => {
-  // Remove the application menu so the menu bar never appears
-  // (Alt must not reveal a hidden menu bar). No-op on macOS.
-  Menu.setApplicationMenu(null);
+// ── 单实例锁 ──────────────────────────────────────────────
+// 必须在 app ready 之前调用。若已有实例在运行（拿不到锁），
+// 直接退出，且后续启动流程（whenReady 注册等）完全不执行。
+const gotTheLock = app.requestSingleInstanceLock();
 
-  try {
-    await bootstrap();
-  } catch (error) {
-    console.error('[desktop] bootstrap failed', error);
-    stopApiProcess(apiProcess);
-    app.quit();
-  }
-});
+if (!gotTheLock) {
+  console.log('[desktop] another instance is already running, quitting');
+  app.quit();
+} else {
+  // 重复启动时聚焦已有窗口，而不是新起实例。
+  // mainWindow 为 null 时（首个实例仍在 bootstrap）直接跳过，
+  // 窗口就绪后自然会出现。
+  app.on('second-instance', () => {
+    console.log('[desktop] second instance detected, focusing existing window');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
 
-app.on('window-all-closed', () => {
-  // If the tray is active, only quit when the user explicitly
-  // chose "退出" from the tray menu.  Close-to-tray intercepts
-  // normal window closure, so reaching here means a real quit.
-  if (hasTray) {
-    if (quitting) {
+  app.whenReady().then(async () => {
+    // Remove the application menu so the menu bar never appears
+    // (Alt must not reveal a hidden menu bar). No-op on macOS.
+    Menu.setApplicationMenu(null);
+
+    try {
+      await bootstrap();
+    } catch (error) {
+      console.error('[desktop] bootstrap failed', error);
+      stopApiProcess(apiProcess);
       app.quit();
     }
-    return;
-  }
-  // No tray available: restore original behavior — quit
-  // immediately on non-macOS when all windows close.
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
+  });
 
-app.on('activate', () => {
-  // Restore the window when the app is activated (e.g. macOS dock
-  // click, tray click).  On Linux/Windows this also covers cases
-  // where the user re-launches while the instance is already running.
-  if (mainWindow) {
-    mainWindow.show();
-    mainWindow.focus();
-  }
-});
+  app.on('window-all-closed', () => {
+    // If the tray is active, only quit when the user explicitly
+    // chose "退出" from the tray menu.  Close-to-tray intercepts
+    // normal window closure, so reaching here means a real quit.
+    if (hasTray) {
+      if (quitting) {
+        app.quit();
+      }
+      return;
+    }
+    // No tray available: restore original behavior — quit
+    // immediately on non-macOS when all windows close.
+    if (process.platform !== 'darwin') {
+      app.quit();
+    }
+  });
 
-app.on('before-quit', () => {
-  quitting = true;
-  stopApiProcess(apiProcess);
-});
+  app.on('activate', () => {
+    // Restore the window when the app is activated (e.g. macOS dock
+    // click, tray click).  On Linux/Windows this also covers cases
+    // where the user re-launches while the instance is already running.
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  app.on('before-quit', () => {
+    quitting = true;
+    stopApiProcess(apiProcess);
+  });
+}
