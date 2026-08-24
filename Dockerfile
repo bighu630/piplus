@@ -11,6 +11,8 @@ ENV API_HOST=0.0.0.0
 ENV API_PORT=3000
 ENV PIPLUS_SERVE_WEB=1
 ENV PIPLUS_WEB_DIST=/app/apps/web/dist
+# Production mode: disables the x-user-id dev auth fallback (see middleware/auth.ts).
+ENV NODE_ENV=production
 # Build with: docker build --build-arg APP_VERSION=$(jq -r '.version' apps/desktop/package.json) -t piplus:latest .
 ARG APP_VERSION=dev
 ENV APP_VERSION=$APP_VERSION

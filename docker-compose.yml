@@ -11,6 +11,7 @@ services:
       # CORS_ORIGINS: http://localhost:3002,https://piplus.whosworld.fun
       PIPLUS_SERVE_WEB: "1"
       PIPLUS_WEB_DIST: /app/apps/web/dist
+      NODE_ENV: production
     ports:
       - "3008:3000"
     volumes:

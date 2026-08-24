@@ -3,6 +3,7 @@ import { createApp } from '../app';
 import { loginRateLimiter } from './rate-limit';
 
 const originalPassword = Bun.env.APP_PASSWORD;
+const originalTrustProxyCidrs = Bun.env.TRUST_PROXY_CIDRS;
 
 beforeEach(() => {
   loginRateLimiter.clear();
@@ -11,6 +12,8 @@ beforeEach(() => {
 afterEach(() => {
   if (originalPassword === undefined) delete Bun.env.APP_PASSWORD;
   else Bun.env.APP_PASSWORD = originalPassword;
+  if (originalTrustProxyCidrs === undefined) delete Bun.env.TRUST_PROXY_CIDRS;
+  else Bun.env.TRUST_PROXY_CIDRS = originalTrustProxyCidrs;
 });
 
 function makeApp() {
@@ -98,6 +101,9 @@ describe('auth routes', () => {
       }
       const blocked = await login(app, 'test-secret');
       expect(blocked.status).toBe(429);
+      expect(blocked.headers.get('retry-after')).toBeTruthy();
+      // Retry-After must be a positive number of seconds.
+      expect(Number(blocked.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
       const body = await blocked.json();
       expect(body.error.code).toBe('RATE_LIMITED');
       expect(body.error.message).toBe('Too many attempts, try again later');
@@ -129,16 +135,22 @@ describe('auth routes', () => {
       expect(blocked.status).toBe(429);
     });
 
-    test('tracks clients independently by IP', async () => {
+    test('spoofed x-forwarded-for values share one bucket without trusted proxies', async () => {
+      // TRUST MODEL under test: app.request() has no socket peer address, and
+      // TRUST_PROXY_CIDRS is unset here, so resolveClientIp ignores XFF
+      // entirely and every request resolves to 'unknown' → a single shared
+      // limiter bucket. Rotating spoofed XFF values must NOT evade the limit.
+      // (Trusted-proxy XFF parsing itself is covered by ip.test.ts pure
+      // function tests; it cannot be exercised through app.request() because
+      // Bun's Request carries no controllable peer address.)
       const app = makeApp();
+      delete Bun.env.TRUST_PROXY_CIDRS;
       for (let i = 0; i < 5; i++) {
-        await login(app, 'wrong-password', '10.0.0.3');
+        await login(app, 'wrong-password', `10.0.0.${i}`);
       }
-      // Other IP is unaffected.
-      const other = await login(app, 'test-secret', '10.0.0.4');
-      expect(other.status).toBe(200);
-      const same = await login(app, 'test-secret', '10.0.0.3');
-      expect(same.status).toBe(429);
+      // A "different" IP via forged XFF hits the same exhausted bucket.
+      const spoofed = await login(app, 'test-secret', '10.9.9.9');
+      expect(spoofed.status).toBe(429);
     });
   });
 });
