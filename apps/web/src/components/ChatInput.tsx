@@ -42,6 +42,7 @@ interface ChatInputProps {
   onStop: () => void;
   sending: boolean;
   isRunning: boolean;
+  isStopping: boolean;
   sendShortcutMode?: 'enter' | 'mod_enter';
   currentModelSupportsImages?: boolean | null;
   visionRelayEnabled?: boolean;
@@ -56,6 +57,7 @@ export default function ChatInput({
   onStop,
   sending,
   isRunning,
+  isStopping,
   sendShortcutMode,
   currentModelSupportsImages,
   visionRelayEnabled,
@@ -304,7 +306,7 @@ export default function ChatInput({
           {/* Textarea */}
           <textarea
             className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition"
-            disabled={isRunning || sending}
+            disabled={isRunning || isStopping || sending}
             ref={textareaRef}
             onChange={(e) => {
               const value = e.target.value;
@@ -424,9 +426,10 @@ export default function ChatInput({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={isRunning || !canSendImages || attachments.length >= 4}
+                disabled={isRunning || isStopping || !canSendImages || attachments.length >= 4}
                 className="flex items-center space-x-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-500 dark:text-slate-400 transition cursor-pointer disabled:opacity-50"
-                title={isRunning ? '对话进行中，暂时不能添加图片'
+                title={isStopping ? '正在停止…'
+                  : isRunning ? '对话进行中，暂时不能添加图片'
                   : currentModelSupportsImages === false && visionRelayEnabled
                     ? '当前模型不支持图片输入，将通过多模态模型识别图片'
                     : canSendImages ? '添加图片' : '当前模型不支持图片输入'}
@@ -441,7 +444,7 @@ export default function ChatInput({
             </div>
 
             {/* Shortcut hint */}
-            {!isRunning && (
+            {!isRunning && !isStopping && (
               <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-auto">
                 {isMobile
                   ? '支持粘贴图片，最多 4 张'
@@ -452,23 +455,24 @@ export default function ChatInput({
             )}
 
             {/* Stop button */}
-            {isRunning && (
+            {(isRunning || isStopping) && (
               <button
-                className="flex items-center space-x-1.5 px-3 py-1.5 ml-auto bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-xl text-red-600 dark:text-red-400 font-semibold hover:bg-red-100 dark:hover:bg-red-900/50 text-xs transition cursor-pointer"
+                className="flex items-center space-x-1.5 px-3 py-1.5 ml-auto bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-xl text-red-600 dark:text-red-400 font-semibold hover:bg-red-100 dark:hover:bg-red-900/50 text-xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={isStopping}
                 onClick={onStop}
               >
                 <OctagonX className="w-3.5 h-3.5" />
-                <span>停止</span>
+                <span>{isStopping ? '正在停止…' : '停止'}</span>
               </button>
             )}
 
             {/* Send button */}
             <button
               className="flex items-center space-x-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
-              disabled={isRunning || sending || (draft.trim().length === 0 && attachments.length === 0)}
+              disabled={isRunning || isStopping || sending || (draft.trim().length === 0 && attachments.length === 0)}
               onClick={() => { void handleSubmit(); }}
             >
-              <span>{sending ? '发送中…' : '发送'}</span>
+              <span>{isStopping ? '正在停止…' : sending ? '发送中…' : '发送'}</span>
               <ArrowUp className="w-3.5 h-3.5" />
             </button>
           </div>

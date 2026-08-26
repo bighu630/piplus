@@ -66,6 +66,9 @@ function makeRecordingPiClient() {
     async stopSession() {
       return { status: 'stopped' as const };
     },
+    async waitForSessionIdle() {
+      return true;
+    },
     async closeRuntime() {
       return;
     },

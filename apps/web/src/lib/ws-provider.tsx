@@ -13,7 +13,7 @@ import {
   type ChatStreamSnapshot,
 } from './chat-stream-state';
 
-type RuntimeStatus = 'running' | 'idle';
+type RuntimeStatus = 'running' | 'idle' | 'stopping';
 
 interface WebSocketContextValue {
   connected: boolean;
@@ -32,6 +32,9 @@ const WebSocketContext = createContext<WebSocketContextValue | null>(null);
 
 const NOTIFIABLE_ROLE_KEYS = new Set(['planner', 'feature_lead', 'bugfix_lead']);
 
+// 停止状态兜底超时：后端保证 ~15s 内复位 idle，前端 30s 双保险，超时未收敛则清除本地 stopping 并刷新真实状态
+const STOPPING_FALLBACK_TIMEOUT_MS = 30_000;
+
 function systemNotificationsEnabled(): boolean {
   try { return localStorage.getItem('pi-system-notifications') === 'true'; } catch { return false; }
 }
@@ -45,6 +48,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const streamSnapshotsRef = useRef<Record<string, ChatStreamSnapshot>>({});
   const messageListenersRef = useRef<Set<(msg: any) => void>>(new Set());
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
+  const stoppingFallbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // 登录态：与 App.tsx 同源（auth status/session 查询）。WS 建连 effect 依赖它：
   // 4401 登出后 isLoggedIn 变 false → 关闭死连接；重新登录后变 true → 用新 token 重建连接。
@@ -82,6 +86,15 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       current_tab: activeTab === 'info' ? 'session_info' : activeTab === 'diff' ? 'git_diff' : activeTab === 'files' || activeTab === 'doce' ? 'files' : activeTab === 'terminal' ? 'terminal' : 'chat',
     });
   }, [queryClient]);
+
+  // 清除指定 session 的 stopping 兜底定时器（running/idle/stopping 事件到达时调用）
+  const clearStoppingFallback = useCallback((sessionId: string) => {
+    const t = stoppingFallbackTimersRef.current.get(sessionId);
+    if (t) {
+      clearTimeout(t);
+      stoppingFallbackTimersRef.current.delete(sessionId);
+    }
+  }, []);
 
   // Main WS connection effect — 随登录态重建（登出关闭旧连接，重新登录以新 token 新建）
   useEffect(() => {
@@ -168,6 +181,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             queryClient.invalidateQueries({ queryKey: ['tree'] });
 
             if (status === 'running') {
+              if (eventSessionId) {
+                clearStoppingFallback(eventSessionId);
+              }
               if (eventSessionId === currentSessionId) {
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', currentSessionId] });
               }
@@ -176,7 +192,40 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               }
             }
 
+            if (status === 'stopping') {
+              // 乐观更新侧栏为 stopping，并 arm 30s 兜底：后端保证 ~15s 内复位 idle，
+              // 这里双保险，超时未收敛则清除本地 stopping 并刷新真实状态。
+              if (eventSessionId) {
+                clearStoppingFallback(eventSessionId);
+                queryClient.setQueryData(['tree'], (old: { projects: ProjectDTO[] } | undefined) => {
+                  if (!old) return old;
+                  return {
+                    ...old,
+                    projects: old.projects.map(project => ({
+                      ...project,
+                      sessions: updateNodeRuntimeStatus(project.sessions, eventSessionId, 'stopping'),
+                    })),
+                  };
+                });
+                const timer = setTimeout(() => {
+                  stoppingFallbackTimersRef.current.delete(eventSessionId);
+                  setLocalRuntimeStatusBySession(prev => {
+                    if (prev[eventSessionId] !== 'stopping') return prev;
+                    const { [eventSessionId]: _, ...rest } = prev;
+                    return rest;
+                  });
+                  queryClient.invalidateQueries({ queryKey: ['tree'] });
+                  queryClient.invalidateQueries({ queryKey: ['session', 'info', eventSessionId] });
+                  queryClient.invalidateQueries({ queryKey: ['session', 'messages', eventSessionId] });
+                }, STOPPING_FALLBACK_TIMEOUT_MS);
+                stoppingFallbackTimersRef.current.set(eventSessionId, timer);
+              }
+            }
+
             if (status === 'idle') {
+              if (eventSessionId) {
+                clearStoppingFallback(eventSessionId);
+              }
               // 流式快照：idle 带错误则记入快照，否则全清（现有逻辑保持不动）
               if (eventSessionId) {
                 const idleError = (message.payload as any)?.error;
@@ -322,6 +371,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     return () => {
       socketRef.current = null;
       socket.close();
+      // 组件卸载：遍历清除所有 stopping 兜底定时器（不调用 clearStoppingFallback，
+      // 避免 cleanup 早于其定义执行时的 TDZ 问题）
+      stoppingFallbackTimersRef.current.forEach(t => clearTimeout(t));
+      stoppingFallbackTimersRef.current.clear();
     };
   }, [isLoggedIn]); // 登录态变化时重建连接
 

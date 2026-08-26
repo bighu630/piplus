@@ -176,6 +176,11 @@ export type PiClient = {
   /** Direct single-turn model call via the shared model runtime. */
   completeModel(input: PiCompleteModelInput): Promise<PiCompleteModelResult>;
   stopSession(sessionId: string): Promise<PiStopSessionResult>;
+  /**
+   * 等待 session 的 agent 进入 idle（无活跃 run/retry/compaction/排队 continuation）。
+   * 在 timeoutMs 内变为 idle 返回 true；超时返回 false；无 live agentSession 时立即返回 true。
+   */
+  waitForSessionIdle(sessionId: string, timeoutMs: number): Promise<boolean>;
   closeRuntime(sessionId: string): Promise<void>;
   /** 删除/归档会话时释放 runtime 并删除 registry 条目（含 createSession 的 piSessionId 别名条目）。 */
   disposeSession(sessionId: string, locator?: PiSessionLocator): Promise<void>;

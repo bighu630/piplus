@@ -37,6 +37,17 @@ export function scheduleIdleRuntimeCleanup(piClient: PiClient, sessionId: string
   idleRuntimeCleanupTimers.set(sessionId, timer);
 }
 
+// 用户主动停止后等待 agent 真正 idle 的兜底超时（可被 PIPLUS_STOP_TIMEOUT_MS 覆盖，默认 15s）。
+function resolveStopCompletionTimeout(): number {
+  const raw = typeof process !== 'undefined' ? process.env.PIPLUS_STOP_TIMEOUT_MS?.trim() : undefined;
+  if (raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 15 * 1000;
+}
+const STOP_COMPLETION_TIMEOUT_MS = resolveStopCompletionTimeout();
+
 export type StartSessionRunInput = {
   db: RoleManagerDb;
   piClient: PiClient;
@@ -104,6 +115,49 @@ export async function markSessionIdle(db: RoleManagerDb, sessionId: string, time
     lastRuntimeError: error,
     updatedAt: timestamp,
   }).where(eq(sessions.id, sessionId));
+}
+
+export type FinalizeSessionStopInput = {
+  db: RoleManagerDb;
+  piClient: PiClient;
+  sessionId: string;
+  projectId: string;
+  timeoutMs?: number;
+  onRuntimeStatusChange?: (payload: {
+    sessionId: string;
+    projectId: string;
+    runtimeStatus: 'idle';
+  }) => void | Promise<void>;
+};
+
+export async function finalizeSessionStop(input: FinalizeSessionStopInput): Promise<void> {
+  const timeoutMs = input.timeoutMs ?? STOP_COMPLETION_TIMEOUT_MS;
+  let converged = false;
+  try {
+    converged = await input.piClient.waitForSessionIdle(input.sessionId, timeoutMs);
+  } catch (err) {
+    console.warn('[session-runtime] waitForSessionIdle failed during stop — forcing idle', { sessionId: input.sessionId, err });
+  }
+  if (!converged) {
+    console.warn('[session-runtime] stop completion timed out — forcing idle', { sessionId: input.sessionId, timeoutMs });
+  }
+
+  // 条件复位：仅当会话仍为 stopping 时才复位 idle。
+  // 若期间 doCleanup 已复位 idle 且新 run 又认领为 running，则跳过，绝不覆盖进行中的 run。
+  const claimed = await input.db.update(sessions)
+    .set({ runtimeStatus: 'idle', lastRuntimeError: null, updatedAt: new Date() })
+    .where(and(eq(sessions.id, input.sessionId), eq(sessions.runtimeStatus, 'stopping')))
+    .returning({ id: sessions.id });
+  if (claimed.length === 0) {
+    console.log('[session-runtime] stop finalization skipped — session no longer stopping', { sessionId: input.sessionId });
+    return;
+  }
+
+  await input.onRuntimeStatusChange?.({
+    sessionId: input.sessionId,
+    projectId: input.projectId,
+    runtimeStatus: 'idle',
+  });
 }
 
 /** planner 首条消息时注入角色提示词与用户内容之间的分隔串（api 层剥离前缀时引用，勿单独改动） */

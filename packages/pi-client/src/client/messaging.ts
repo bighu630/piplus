@@ -174,3 +174,21 @@ export async function stopSession(deps: ClientDeps, sessionId: string) {
   session.agentSession?.abort().catch(() => {});
   return { status: 'stopped' as const };
 }
+
+export async function waitForSessionIdle(deps: ClientDeps, sessionId: string, timeoutMs: number): Promise<boolean> {
+  const session = deps.runtimeRegistry.get(sessionId);
+  const agentSession = session?.agentSession;
+  if (!agentSession) return true;
+  if (agentSession.isIdle) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      agentSession.waitForIdle().then(() => true, () => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}

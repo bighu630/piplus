@@ -5,7 +5,7 @@ import { createSeedDb } from '@piplus/db/init';
 import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
-import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup } from './runtime';
+import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup, finalizeSessionStop } from './runtime';
 import { setCrossProjectWait, clearCrossProjectWait, setWaitingOnChild, clearWaitingOnChild, isWaitingOnChild } from './request-context';
 
 function makeDbPath() {
@@ -71,6 +71,9 @@ function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error;
     },
     async stopSession() {
       return { status: 'stopped' as const };
+    },
+    async waitForSessionIdle() {
+      return true;
     },
     async closeRuntime(sessionId: string) {
       state.closeRuntimeCalls.push(sessionId);
@@ -1063,5 +1066,66 @@ describe('startSessionRun', () => {
 
     // 守卫重新武装了 domain 回收定时器（默认 30min），取消避免污染模块级 Map
     clearIdleRuntimeCleanup('session_streaming_guard');
+  });
+});
+
+describe('finalizeSessionStop', () => {
+  // ─── 回归：abort 永不响应 → 超时后也得把 stopping 收敛回 idle ──────
+  test('forces stopping back to idle when waitForSessionIdle never converges', async () => {
+    const { db } = await setupSession({ sessionId: 'session_stop_stuck' });
+
+    // 模拟 stop 端点已把会话置为 stopping，且 agent abort 永不响应（waitForSessionIdle 返回 false）
+    await db.update(sessions)
+      .set({ runtimeStatus: 'stopping', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_stop_stuck'));
+    const { client } = makePiClient();
+    const patchedClient: PiClient = { ...client, waitForSessionIdle: async () => false };
+
+    const statusCalls: Array<{ sessionId: string; projectId: string; runtimeStatus: 'idle' }> = [];
+    await finalizeSessionStop({
+      db,
+      piClient: patchedClient,
+      sessionId: 'session_stop_stuck',
+      projectId: 'project_test_runtime',
+      timeoutMs: 50,
+      onRuntimeStatusChange: async (payload) => {
+        statusCalls.push(payload);
+      },
+    });
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_stop_stuck')).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+    expect(session?.lastRuntimeError).toBeNull();
+    expect(statusCalls).toEqual([
+      { sessionId: 'session_stop_stuck', projectId: 'project_test_runtime', runtimeStatus: 'idle' },
+    ]);
+  });
+
+  // ─── 已非 stopping 不覆盖：期间新 run 认领为 running 时绝不能复位 ────
+  test('skips finalization when session is no longer stopping (running not overwritten)', async () => {
+    const { db } = await setupSession({ sessionId: 'session_stop_preserve_run' });
+
+    // 模拟 stop 之后新 run 又认领为 running
+    await db.update(sessions)
+      .set({ runtimeStatus: 'running', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_stop_preserve_run'));
+    const { client } = makePiClient();
+
+    let statusCalls = 0;
+    await finalizeSessionStop({
+      db,
+      piClient: client,
+      sessionId: 'session_stop_preserve_run',
+      projectId: 'project_test_runtime',
+      timeoutMs: 50,
+      onRuntimeStatusChange: async () => {
+        statusCalls++;
+      },
+    });
+
+    // 条件更新（仅 stopping→idle）未命中，running 必须保持不变
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_stop_preserve_run')).limit(1);
+    expect(session?.runtimeStatus).toBe('running');
+    expect(statusCalls).toBe(0);
   });
 });
