@@ -160,6 +160,11 @@ export type PiClient = {
       cwd: string;
       tools: PiToolDef[];
       toolHandler: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>;
+      /**
+       * 附加系统提示文本（如 ask_question 使用指引）。
+       * 经扩展工厂的 before_agent_start 事件在每 turn 注入（SDK 链式语义，每 turn 只追加一次）。
+       */
+      systemPrompt?: string;
     },
   ): Promise<void>;
   /**

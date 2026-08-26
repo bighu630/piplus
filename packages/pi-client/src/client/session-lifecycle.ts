@@ -3,6 +3,7 @@ import {
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
+  type ExtensionAPI,
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -16,6 +17,17 @@ import { collectCommands } from './commands';
 export function sessionFileHasModelChange(sessionManager: SessionManager, provider: string, modelId: string) {
   const entries = sessionManager.getEntries() as SessionEntry[];
   return entries.some((entry) => entry.type === 'model_change' && entry.provider === provider && entry.modelId === modelId);
+}
+
+/**
+ * 在扩展工厂中注册 before_agent_start 处理器：向 systemPrompt 追加附加提示文本
+ * （如 domain 传入的 ask_question 使用指引）。
+ * SDK 链式语义：每个 turn 以 base systemPrompt 为输入，再叠加本段文本，因此每 turn 只追加一次、不会累积。
+ */
+export function registerAgentStartSystemPrompt(pi: ExtensionAPI, systemPrompt: string): void {
+  pi.on('before_agent_start', (event) => ({
+    systemPrompt: event.systemPrompt ? `${event.systemPrompt}\n\n${systemPrompt}` : systemPrompt,
+  }));
 }
 
 export async function createSession(
@@ -177,9 +189,11 @@ export async function ensureRuntime(
     cwd: string;
     tools: PiToolDef[];
     toolHandler: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>;
+    /** 附加系统提示文本（如 ask_question 使用指引），经 before_agent_start 注入。 */
+    systemPrompt?: string;
   },
 ): Promise<void> {
-  const { locator, cwd, tools, toolHandler } = options;
+  const { locator, cwd, tools, toolHandler, systemPrompt } = options;
   const existing = deps.runtimeRegistry.get(sessionId);
 
   if (existing?.agentSession) {
@@ -228,6 +242,10 @@ export async function ensureRuntime(
       agentDir: getAgentDir(),
       extensionFactories: [
         (pi) => {
+          // ask_question 等附加系统提示：before_agent_start 每 turn 注入一次（链式、不累积）
+          if (systemPrompt) {
+            registerAgentStartSystemPrompt(pi, systemPrompt);
+          }
           for (const toolDef of tools) {
             pi.registerTool({
               name: toolDef.name,

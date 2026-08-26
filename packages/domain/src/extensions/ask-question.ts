@@ -9,6 +9,8 @@ export interface AskQuestionDetails {
   multiSelect: boolean;
   wasCustom?: boolean;
   customAnswers?: string[];
+  /** 超时/取消时置 true（与问卷 details.cancelled 对齐）。 */
+  cancelled?: boolean;
 }
 
 export interface QuestionnaireDetails {
@@ -146,6 +148,7 @@ function isQuestionnaireParams(params: Record<string, unknown>): boolean {
 
 /**
  * 等待用户回答的超时时长，默认 5 分钟，可用 PIPLUS_ASK_QUESTION_TIMEOUT_MS 覆盖（便于测试与运维调整）。
+ * 每次提问时解析：测试可在 beforeEach 动态调整，无需重启进程。
  */
 function resolveTimeoutMs(): number {
   const raw =
@@ -156,7 +159,6 @@ function resolveTimeoutMs(): number {
   }
   return 5 * 60 * 1000;
 }
-const ASK_QUESTION_TIMEOUT_MS = resolveTimeoutMs();
 
 function cleanLabel(label: unknown): string | undefined {
   if (typeof label !== 'string') return undefined;
@@ -185,7 +187,7 @@ export function createPending(
       pendingQuestions.delete(questionId);
       resolve({ answer: null, cancelled: true, timeout: true });
     }
-  }, ASK_QUESTION_TIMEOUT_MS);
+  }, resolveTimeoutMs());
 
   const entry: PendingEntry = {
     sessionId,
@@ -491,7 +493,7 @@ export async function executeAskQuestion(
   if (result?.timeout) {
     return {
       content: [{ type: 'text', text: '用户未回答' }],
-      details: { question, options, answer: null, multiSelect } as AskQuestionDetails,
+      details: { question, options, answer: null, multiSelect, cancelled: true } as AskQuestionDetails,
     };
   }
 
@@ -499,7 +501,7 @@ export async function executeAskQuestion(
   if (isCancelledResult(result)) {
     return {
       content: [{ type: 'text', text: '用户取消了选择。' }],
-      details: { question, options, answer: null, multiSelect } as AskQuestionDetails,
+      details: { question, options, answer: null, multiSelect, cancelled: true } as AskQuestionDetails,
     };
   }
 
@@ -509,7 +511,7 @@ export async function executeAskQuestion(
     if (finalAnswers.length === 0) {
       return {
         content: [{ type: 'text', text: '用户取消了选择。' }],
-        details: { question, options, answer: null, multiSelect } as AskQuestionDetails,
+        details: { question, options, answer: null, multiSelect, cancelled: true } as AskQuestionDetails,
       };
     }
     return {
@@ -530,7 +532,7 @@ export async function executeAskQuestion(
   if (!finalAnswer) {
     return {
       content: [{ type: 'text', text: '用户取消了选择。' }],
-      details: { question, options, answer: null, multiSelect } as AskQuestionDetails,
+      details: { question, options, answer: null, multiSelect, cancelled: true } as AskQuestionDetails,
     };
   }
   const wasCustom = result.wasCustom ?? !options.includes(finalAnswer);
@@ -563,7 +565,11 @@ export async function executeAskQuestion(
 
 // ===== before_agent_start systemPrompt 注入 =====
 
-/** ask_question 工具的使用指引，注入到 systemPrompt，帮助模型恰当地使用该工具。 */
+/** ask_question 工具的使用指引，注入到 systemPrompt，帮助模型恰当地使用该工具。
+ *  接线：domain 的 startSessionRun/reloadProjectSessionRuntimes 在工具列表含
+ *  ask_question 时，把本文本作为 systemPrompt 传入 pi-client ensureRuntime 的
+ *  extensionFactories（registerAgentStartSystemPrompt 注册 before_agent_start 处理器），
+ *  每 turn 注入一次（SDK 链式语义，不累积）。 */
 export const ASK_QUESTION_SYSTEM_PROMPT = [
   '有一个 ask_question 工具可用于向用户提问：',
   '- 需要用户决策、确认或补充信息时使用；调用会阻塞等待用户回答（默认 5 分钟超时，超时返回“用户未回答”）。',
@@ -571,23 +577,3 @@ export const ASK_QUESTION_SYSTEM_PROMPT = [
   '- 问卷：传入 questions 数组（每项 question + options + 可选 multiSelect/label），用户逐题作答后统一提交。',
   '- 用户可能取消（details.cancelled 或 answer 为 null），此时不要重试提问，转述结果即可。',
 ].join('\n');
-
-/** pi 扩展 API 的最小子集（避免 domain 直接依赖 pi-coding-agent）。 */
-type AskQuestionExtensionApi = {
-  on?: (event: string, handler: (event: any, ctx?: any) => unknown) => unknown;
-};
-
-/**
- * 供 before_agent_start 注入 ask_question 使用指引的扩展工厂。
- * 用法：加入 DefaultResourceLoader 的 extensionFactories 即可，例如
- *   extensionFactories: [(pi) => { loadRole...; askQuestionExtensionFactory(pi); }]
- * 注入会遵循 SDK 的链式语义，每个 turn 只追加一次。
- */
-export function askQuestionExtensionFactory(pi: AskQuestionExtensionApi): void {
-  pi.on?.('before_agent_start', (event: any) => {
-    const current = typeof event?.systemPrompt === 'string' ? event.systemPrompt : '';
-    return {
-      systemPrompt: current ? `${current}\n\n${ASK_QUESTION_SYSTEM_PROMPT}` : ASK_QUESTION_SYSTEM_PROMPT,
-    };
-  });
-}

@@ -213,6 +213,41 @@ describe('POST /api/v1/sessions/:sessionId/ask-answer', () => {
     expect(res.status).toBe(400);
   });
 
+  test('缺 answer 且缺 answers → 400，pending 不被消费（不得误取消）', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+    const sessionId = await prepareSession(path, 'local-user');
+
+    const { questionId } = createPending(sessionId, { question: 'Q?', options: ['A', 'B'] });
+    const res = await app.request(`/api/v1/sessions/${sessionId}/ask-answer`, {
+      method: 'POST',
+      headers: makeHeaders(),
+      body: JSON.stringify({ questionId }),
+    });
+    expect(res.status).toBe(400);
+    // 修复点：缺 answer 必须 400；旧行为会把 undefined 当取消消费掉 pending
+    expect(pendingQuestions.has(questionId)).toBe(true);
+
+    // 仅 cancelled:true 但没有 answer/answers 字段同样 400（cancelled 不是答案载体）
+    const res2 = await app.request(`/api/v1/sessions/${sessionId}/ask-answer`, {
+      method: 'POST',
+      headers: makeHeaders(),
+      body: JSON.stringify({ questionId, cancelled: true }),
+    });
+    expect(res2.status).toBe(400);
+    expect(pendingQuestions.has(questionId)).toBe(true);
+
+    // 后续仍可用合法 answer 回填
+    const ok = await app.request(`/api/v1/sessions/${sessionId}/ask-answer`, {
+      method: 'POST',
+      headers: makeHeaders(),
+      body: JSON.stringify({ questionId, answer: 'A' }),
+    });
+    expect(ok.status).toBe(200);
+  });
+
   test('answer 形状非法（数字/对象）→ 400', async () => {
     const path = makeDbPath();
     createSeedDb(path);
