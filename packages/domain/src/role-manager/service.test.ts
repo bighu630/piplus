@@ -66,6 +66,9 @@ function makeRecordingPiClient() {
     async stopSession() {
       return { status: 'stopped' as const };
     },
+    async waitForSessionIdle() {
+      return true;
+    },
     async closeRuntime() {
       return;
     },
@@ -131,6 +134,24 @@ async function setupDomain() {
   const piClient = makeRecordingPiClient();
   const roleManager = createRoleManagerService(db, piClient);
   return { db, dbPath, piClient, roleManager };
+}
+
+// planner 父会话 + worker 子会话的最小拓扑，供 writeback 自动拉起相关用例复用
+async function setupParentWithChild(roleManager: ReturnType<typeof createRoleManagerService>, projectName: string) {
+  const { projectId, sessionId: parentSessionId } = await roleManager.createProjectWithPlanner({
+    name: projectName,
+    createdBy: 'user_seed',
+  });
+  const { sessionId: childSessionId } = await roleManager.spawnSession({
+    projectId,
+    parentSessionId,
+    createdBy: 'user_seed',
+    role: 'worker',
+    objective: 'finish the task',
+    title: 'Finish Task',
+    constraints: [],
+  });
+  return { projectId, parentSessionId, childSessionId };
 }
 
 describe('role manager service', () => {
@@ -331,6 +352,152 @@ describe('role manager service', () => {
     expect(message?.role).toBe('assistant');
     expect(message?.messageKind).toBe('writeback');
     expect(message?.contentText).toBe('Task completed');
+  });
+
+  test('writeback does not wake running parent', async () => {
+    const { db, roleManager } = await setupDomain();
+    const { parentSessionId, childSessionId } = await setupParentWithChild(roleManager, 'No Wake Running');
+
+    // 手动将父会话置为 running（模拟已有 run 在途），writeback 不应重复拉起
+    await db.update(sessions).set({ runtimeStatus: 'running' as any }).where(eq(sessions.id, parentSessionId));
+
+    const result = await roleManager.writebackToParent({
+      childSessionId,
+      summary: 'Should not wake a running parent',
+    });
+
+    // writeback 本身落库成功
+    const [message] = await db.select().from(messages).where(eq(messages.id, result.messageId)).limit(1);
+    expect(message?.sessionId).toBe(parentSessionId);
+    expect(message?.messageKind).toBe('writeback');
+
+    // 父会话保持 running，未被扰动
+    const [parent] = await db.select().from(sessions).where(eq(sessions.id, parentSessionId)).limit(1);
+    expect(result.parentSessionId).toBe(parentSessionId);
+    expect(parent?.runtimeStatus).toBe('running');
+  });
+
+  test('writeback does not wake stopping parent', async () => {
+    const { db, roleManager } = await setupDomain();
+    const { parentSessionId, childSessionId } = await setupParentWithChild(roleManager, 'No Wake Stopping');
+
+    await db.update(sessions).set({ runtimeStatus: 'stopping' as any }).where(eq(sessions.id, parentSessionId));
+
+    const result = await roleManager.writebackToParent({
+      childSessionId,
+      summary: 'Should not wake a stopping parent',
+    });
+
+    const [message] = await db.select().from(messages).where(eq(messages.id, result.messageId)).limit(1);
+    expect(message?.sessionId).toBe(parentSessionId);
+
+    const [parent] = await db.select().from(sessions).where(eq(sessions.id, parentSessionId)).limit(1);
+    expect(result.parentSessionId).toBe(parentSessionId);
+    expect(parent?.runtimeStatus).toBe('stopping');
+  });
+
+  test('writeback skips wake when parent archived', async () => {
+    const { db, roleManager } = await setupDomain();
+    const { parentSessionId, childSessionId } = await setupParentWithChild(roleManager, 'No Wake Archived');
+
+    await db.update(sessions).set({ status: 'archived' as any }).where(eq(sessions.id, parentSessionId));
+
+    const result = await roleManager.writebackToParent({
+      childSessionId,
+      summary: 'Should skip wake for archived parent',
+    });
+
+    // writeback 落库成功，父保持 archived/idle，不抛错
+    const [message] = await db.select().from(messages).where(eq(messages.id, result.messageId)).limit(1);
+    expect(message?.sessionId).toBe(parentSessionId);
+
+    const [parent] = await db.select().from(sessions).where(eq(sessions.id, parentSessionId)).limit(1);
+    expect(result.parentSessionId).toBe(parentSessionId);
+    expect(parent?.status).toBe('archived');
+    expect(parent?.runtimeStatus).toBe('idle');
+  });
+
+  test('concurrent writebacks deduplicate via atomic claim', async () => {
+    const { db, roleManager, piClient } = await setupDomain();
+    const { projectId, parentSessionId, childSessionId } = await setupParentWithChild(roleManager, 'Concurrent Dedup');
+    expect(projectId).toBeTruthy();
+
+    // 挂起 sendMessage：让第一次拉起的 run 保持 in-flight，父会话稳定停留在 running。
+    // 断言完成后放行，让后台 cleanup 正常收尾（复位 idle、清理定时器）。
+    let releaseRun: () => void = () => {};
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    (piClient as unknown as { sendMessage: () => Promise<unknown> }).sendMessage = () =>
+      runGate.then(() => ({ sessionId: 'pi_stub', runId: 'run_stub' }));
+
+    try {
+      // 第一次 writeback：父由 idle 被原子认领为 running（run 在途）
+      const first = await roleManager.writebackToParent({ childSessionId, summary: 'first result' });
+      const [afterFirst] = await db.select().from(sessions).where(eq(sessions.id, parentSessionId)).limit(1);
+      expect(afterFirst?.runtimeStatus).toBe('running');
+
+      // 第二次 writeback：父已为 running，应跳过拉起且不抛错
+      const second = await roleManager.writebackToParent({ childSessionId, summary: 'second result' });
+
+      expect(first.parentSessionId).toBe(parentSessionId);
+      expect(second.parentSessionId).toBe(parentSessionId);
+
+      // 父最终仍为 running（第二次调用未复位、未重复拉起）
+      const [finalParent] = await db.select().from(sessions).where(eq(sessions.id, parentSessionId)).limit(1);
+      expect(finalParent?.runtimeStatus).toBe('running');
+
+      // 两次 writeback 各落一条消息
+      const rows = await db.select().from(messages).where(eq(messages.sessionId, parentSessionId));
+      expect(rows.length).toBe(2);
+      expect(new Set(rows.map((r) => r.contentText))).toEqual(new Set(['first result', 'second result']));
+    } finally {
+      // 收尾：放行挂起的 run，后台 cleanup 复位 idle；再显式清掉残留的 idle 清理定时器，
+      // 避免挂起定时器泄漏到后续用例（如 runtime.test）。
+      releaseRun();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const { clearIdleRuntimeCleanup } = await import('../session/runtime');
+      clearIdleRuntimeCleanup(parentSessionId);
+    }
+  });
+
+  test('writeback swallows auto-wake errors when two runs race (session_busy)', async () => {
+    const { db, roleManager, piClient } = await setupDomain();
+    const { parentSessionId, childSessionId } = await setupParentWithChild(roleManager, 'Race Swallow');
+
+    // 挂起所有 sendMessage：赢得原子认领的 run 保持 in-flight，父稳定停在 running。
+    let releaseRun: () => void = () => {};
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    (piClient as unknown as { sendMessage: () => Promise<unknown> }).sendMessage = () =>
+      runGate.then(() => ({ sessionId: 'pi_stub', runId: 'run_stub' }));
+
+    try {
+      // 父为 idle 时并发发起两个 writeback：两个调用都可能通过 idle 检查进入 startSessionRun，
+      // 原子认领（idle→running 条件更新）保证只有一个赢家，输家抛 session_busy 被 writeback 吞掉，
+      // 整体 Promise.all 不 reject（若调度交错使输家走 idle-skip 分支，断言同样成立）。
+      const [first, second] = await Promise.all([
+        roleManager.writebackToParent({ childSessionId, summary: 'race-1' }),
+        roleManager.writebackToParent({ childSessionId, summary: 'race-2' }),
+      ]);
+
+      expect(first.parentSessionId).toBe(parentSessionId);
+      expect(second.parentSessionId).toBe(parentSessionId);
+
+      // 落库与拉起解耦：两次 writeback 各落一条消息，拉起竞争不影响消息写入
+      const rows = await db.select().from(messages).where(eq(messages.sessionId, parentSessionId));
+      expect(rows.length).toBe(2);
+
+      // 赢家的 run 仍在途，父保持 running
+      const [parent] = await db.select().from(sessions).where(eq(sessions.id, parentSessionId)).limit(1);
+      expect(parent?.runtimeStatus).toBe('running');
+    } finally {
+      releaseRun();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const { clearIdleRuntimeCleanup } = await import('../session/runtime');
+      clearIdleRuntimeCleanup(parentSessionId);
+    }
   });
 
   test('创建项目时初始化 roleConfigJson：内置启用内置版本 + 自定义禁用', async () => {

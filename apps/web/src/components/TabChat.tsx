@@ -580,6 +580,7 @@ function TabChat({
   const showCompactButton = contextPercent !== null && contextPercent > 60;
 
   const isRunning = runtimeStatus === 'running';
+  const isStopping = runtimeStatus === 'stopping';
 
   // 兜底：如果最后一条消息是工具调用且 session 运行中，末尾连续的 tool_call 一定需要转圈
   const trailingToolCallIds = useMemo(() => {
@@ -974,6 +975,16 @@ function TabChat({
           </div>
         )}
 
+        {/* Stopping indicator */}
+        {isStopping && (
+          <div className="flex items-start w-full">
+            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-amber-700 dark:text-amber-300 font-sans">
+              <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+              <span>正在停止…</span>
+            </div>
+          </div>
+        )}
+
         {/* Runtime error (agent loop) */}
         {!isRunning && !streamingContent && runtimeErrors && runtimeErrors.length > 0 && (() => {
           const err = runtimeErrors[runtimeErrors.length - 1];
@@ -1117,6 +1128,7 @@ function TabChat({
         onStop={onStop}
         sending={sending}
         isRunning={isRunning}
+        isStopping={isStopping}
         sendShortcutMode={sendShortcutMode}
         currentModelSupportsImages={currentModelSupportsImages}
         visionRelayEnabled={visionRelayEnabled}

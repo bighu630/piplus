@@ -12,7 +12,6 @@
   },
   "devDependencies": {
     "@types/react": "*",
-    "@types/react-dom": "*",
-    "typescript": "*"
+    "@types/react-dom": "*"
   }
 }

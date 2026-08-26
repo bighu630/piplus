@@ -1,4 +1,5 @@
 import type { ClientMessage } from '@piplus/shared';
+import { getToken, LOGOUT_EVENT_NAME } from './auth-session';
 import { getWsBaseUrl } from './runtime-config';
 
 export function nextReconnectDelay(attempt: number): number {
@@ -33,8 +34,25 @@ export function createWorkspaceSocket({
       onOpen?.();
     });
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
       onClose?.();
+      // 4401 = 服务端认证失败/超时未认证：不再重连，并广播登出事件引导重新登录。
+      const code = (event as CloseEvent | undefined)?.code;
+      if (code === 4401) {
+        closed = true;
+        if (connectTimer) {
+          clearTimeout(connectTimer);
+          connectTimer = null;
+        }
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent(LOGOUT_EVENT_NAME));
+        }
+        return;
+      }
       if (!closed) {
         reconnectTimer = setTimeout(connect, nextReconnectDelay(reconnectAttempt++));
       }
@@ -58,7 +76,7 @@ export function createWorkspaceSocket({
       safeSend({
         kind: 'client',
         type: 'hello',
-        payload: { user_agent: navigator.userAgent },
+        payload: { user_agent: navigator.userAgent, token: getToken() ?? undefined },
       } satisfies ClientMessage);
     },
     setContext(payload: {
@@ -73,6 +91,20 @@ export function createWorkspaceSocket({
         kind: 'client',
         type: 'ping',
         payload: { timestamp: new Date().toISOString() },
+      } satisfies ClientMessage);
+    },
+    subscribeSession(sessionId: string) {
+      safeSend({
+        kind: 'client',
+        type: 'subscribe_session',
+        payload: { session_id: sessionId },
+      } satisfies ClientMessage);
+    },
+    unsubscribeSession(sessionId: string) {
+      safeSend({
+        kind: 'client',
+        type: 'unsubscribe_session',
+        payload: { session_id: sessionId },
       } satisfies ClientMessage);
     },
     sendRaw(message: Record<string, unknown>) {

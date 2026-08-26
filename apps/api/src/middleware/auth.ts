@@ -12,18 +12,24 @@ export async function requireAuth(c: Context, next: Next) {
     return await next();
   }
 
-  // Fallback: allow x-user-id for dev / test
-  const headerUserId = c.req.header('x-user-id');
-  if (headerUserId && getServerConfig().nodeEnv !== 'production') {
-    c.set('userId', headerUserId);
-    c.set('userName', headerUserId);
-    return await next();
-  }
-
-  // No-auth mode: when APP_PASSWORD is not explicitly set, allow anonymous access
+  // No-auth mode: when APP_PASSWORD is not explicitly set, allow anonymous
+  // access immediately so local users pay no extra cost or behavior change.
   if (!isAuthEnabled()) {
     c.set('userId', 'local-user');
     c.set('userName', 'Piplus');
+    return await next();
+  }
+
+  // Dev-only fallback: allow x-user-id, but ONLY when explicitly opted in via
+  // PIPLUS_DEV_AUTH=1 AND not running in production. Without the explicit
+  // opt-in flag this was an auth bypass on Docker deployments where NODE_ENV
+  // is unset (treated as non-production).
+  const config = getServerConfig();
+  const headerUserId = c.req.header('x-user-id');
+  // Case-insensitive so e.g. NODE_ENV=Production still counts as production.
+  if (config.devAuth && (config.nodeEnv ?? '').toLowerCase() !== 'production' && headerUserId) {
+    c.set('userId', headerUserId);
+    c.set('userName', headerUserId);
     return await next();
   }
 

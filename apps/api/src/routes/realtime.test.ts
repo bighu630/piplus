@@ -76,10 +76,10 @@ describe('realtime route emissions', () => {
     const socket = createMockSocket();
     attached.push(socket);
     socketHub.attach(socket as never);
-    socketHub.setContext(socket as never, {
-      project_id: projectBody.projectId,
-      session_id: projectBody.sessionId,
-      current_tab: 'chat',
+    socketHub.handleClientMessage(socket as never, {
+      kind: 'client',
+      type: 'subscribe_session',
+      payload: { session_id: projectBody.sessionId },
     });
 
     const sendRes = await app.request(`/api/v1/sessions/${projectBody.sessionId}/chat/messages`, {

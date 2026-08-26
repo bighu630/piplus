@@ -442,6 +442,12 @@ describe('pi client gateway', () => {
     await client.closeRuntime(created.sessionId);
     expect(client.getRuntimeState(created.sessionId)?.ready).toBe(false);
   });
+
+  test('waitForSessionIdle returns true immediately for unknown session without runtime', async () => {
+    const client = createPiClient();
+    const idle = await client.waitForSessionIdle('never_created_session', 1000);
+    expect(idle).toBe(true);
+  });
 });
 
 describe('mapAgentSessionEvent', () => {

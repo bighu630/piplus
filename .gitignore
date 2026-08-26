@@ -23,3 +23,4 @@ bun-bin/
 # native pty libraries (build artifacts)
 apps/desktop/pty-libs/
 apps/desktop/bun-bin/
+scripts/dev_s.sh

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getTree,
@@ -76,6 +77,7 @@ import {
   type RoleTemplateDTO,
   type RoleConfigEntry,
 } from './api';
+import { clearToken, getToken, maybeRefreshToken, setToken, LOGOUT_EVENT_NAME } from './auth-session';
 
 export function useAuthStatus() {
   return useQuery({
@@ -87,12 +89,17 @@ export function useAuthStatus() {
 }
 
 export function useAuthSession() {
+  const queryClient = useQueryClient();
   const statusQuery = useAuthStatus();
   const requiresPassword = statusQuery.data?.requiresPassword ?? true;
-  return useQuery({
+
+  const query = useQuery({
     queryKey: ['auth', 'session'],
     queryFn: async () => {
-      const token = localStorage.getItem('piplus_token');
+      if (!getToken()) return null;
+      // Proactively refresh when the token is close to expiry (deduped).
+      await maybeRefreshToken();
+      const token = getToken();
       if (!token) return null;
       return checkAuth(token);
     },
@@ -100,6 +107,18 @@ export function useAuthSession() {
     retry: false,
     staleTime: 5 * 60_000,
   });
+
+  // When any protected request gets a 401, auth-session broadcasts a logout:
+  // drop the cached session so App renders the login screen again.
+  useEffect(() => {
+    const onLoggedOut = () => {
+      queryClient.setQueryData(['auth', 'session'], null);
+    };
+    window.addEventListener(LOGOUT_EVENT_NAME, onLoggedOut);
+    return () => window.removeEventListener(LOGOUT_EVENT_NAME, onLoggedOut);
+  }, [queryClient]);
+
+  return query;
 }
 
 export function useLoginMutation() {
@@ -107,9 +126,11 @@ export function useLoginMutation() {
   return useMutation({
     mutationFn: (password: string) => login(password),
     onSuccess: (data) => {
-      localStorage.setItem('piplus_token', data.token);
+      setToken(data.token);
       queryClient.setQueryData(['auth', 'session'], data);
     },
+    // Errors (including 429 RATE_LIMITED messages) propagate as Error with the
+    // server-provided message; consumers render mutation.error.message.
   });
 }
 
@@ -117,7 +138,7 @@ export function useLogoutMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      localStorage.removeItem('piplus_token');
+      clearToken();
     },
     onSettled: () => {
       queryClient.clear();

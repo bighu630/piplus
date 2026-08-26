@@ -1712,6 +1712,16 @@ describe('decideReminderAction', () => {
     }
   });
 
+  test('returns remind immediately on first detection when lastReminderAt is 0 (wait loop init)', () => {
+    // waitForChildWriteback 将 lastReminderAt 初始化为 0：首次检测到子会话 idle 立即提醒，
+    // 消除子 run 结束到首次提醒之间的 15s idle 空隙（旧实现初始化为 Date.now()，首次提醒
+    // 最多被推迟一个间隔）。0 是 wait 循环的初始化值，本用例钉住该语义。
+    expect(decideReminderAction({ reminderCount: 0, lastReminderAt: 0, now: 1_000_000, hasNoOutput: false })).toEqual({
+      action: 'remind',
+      message: 'Reminder: if you have finished, you must call `writeback_to_parent` before stopping. Keep using the current requestId so the parent can match your writeback.',
+    });
+  });
+
   test('returns failed when no-output reminders exhausted (max 1)', () => {
     const result = decideReminderAction({ reminderCount: 1, lastReminderAt: 0, now: 15_000, hasNoOutput: true });
     expect(result).toEqual({

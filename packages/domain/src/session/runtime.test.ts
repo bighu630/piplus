@@ -5,8 +5,8 @@ import { createSeedDb } from '@piplus/db/init';
 import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
-import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup } from './runtime';
-import { setCrossProjectWait, clearCrossProjectWait } from './request-context';
+import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup, finalizeSessionStop } from './runtime';
+import { setCrossProjectWait, clearCrossProjectWait, setWaitingOnChild, clearWaitingOnChild, isWaitingOnChild } from './request-context';
 
 function makeDbPath() {
   return `/tmp/piplus-session-runtime-${crypto.randomUUID()}.sqlite`;
@@ -71,6 +71,9 @@ function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error;
     },
     async stopSession() {
       return { status: 'stopped' as const };
+    },
+    async waitForSessionIdle() {
+      return true;
     },
     async closeRuntime(sessionId: string) {
       state.closeRuntimeCalls.push(sessionId);
@@ -609,6 +612,228 @@ describe('startSessionRun', () => {
     }
   });
 
+  // ─── waitingOnChild 内存标记：父 wait 期间豁免（对子会话瞬时 idle 免疫）────────
+  test('safety timeout is exempted while parent is waiting on child (in-memory marker)', async () => {
+    // 精确复现竞态：子会话已处于瞬时 idle 窗口（子 run 结束未 writeback / 子被自身超时杀 /
+    // writeback 落库前）——旧 DB 查询（查非 idle 子会话）在此窗口豁免失败 → 父被连坐杀。
+    // 内存标记在 wait 循环期间始终置位，与子会话瞬时 DB 状态无关，修复此竞态。
+    const { db } = await setupSession({ sessionId: 'session_wait_marker', roleTemplateId: 'role_worker' });
+    const now = new Date();
+
+    // 子会话已 idle（瞬时窗口）：旧 DB 查询豁免不到，只有内存标记能豁免
+    await db.insert(sessions).values({
+      id: 'session_wait_marker_child',
+      projectId: 'project_test_runtime',
+      parentSessionId: 'session_wait_marker',
+      rootSessionId: 'session_wait_marker',
+      depth: 1,
+      roleTemplateId: 'role_worker',
+      piSessionId: 'pi_session_wait_marker_child',
+      piSessionLocatorJson: stringifyLocator({ piSessionId: 'pi_session_wait_marker_child', sessionFile: '/tmp/pi-wait-marker-child.jsonl' }),
+      requestedByMessageId: null,
+      title: 'Wait Marker Child',
+      titleSource: 'default',
+      status: 'active',
+      runtimeStatus: 'idle',
+      currentModelProvider: null,
+      currentModelId: null,
+      lastActivityAt: now,
+      lastRunAt: now,
+      lastStopAt: null,
+      lastRuntimeError: null,
+      createdBy: 'user_seed',
+      archivedAt: null,
+      archivedBy: null,
+      createdAt: now,
+      updatedAt: now,
+      roleBasePromptSnapshot: 'base',
+      userSuppliedPrompt: '',
+      parentSuppliedPrompt: '',
+      compiledPrompt: 'compiled',
+    } as any);
+
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — session stays running with no stream events
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+
+    try {
+      // 标记父会话正处于 waitForChildWriteback 轮询（wait 循环开始时置位，退出时清除）
+      setWaitingOnChild('session_wait_marker', 'req_test', 'session_wait_marker_child');
+
+      await startSessionRun({
+        db,
+        piClient: pendingClient,
+        sessionId: 'session_wait_marker',
+        userId: 'user_seed',
+        content: 'x',
+        safetyTimeoutMs: 150,
+        onStreamEvent: async () => {},
+        onRuntimeStatusChange: async () => {},
+      });
+
+      // Wait past the safety timeout — 内存标记豁免（子会话 idle 也不受影响）
+      await Bun.sleep(400);
+
+      const [parent] = await db.select().from(sessions).where(eq(sessions.id, 'session_wait_marker')).limit(1);
+      expect(parent?.runtimeStatus).toBe('running');
+      expect(parent?.lastRuntimeError).toBeNull();
+      // No cleanup ran — stream subscription still active
+      expect(state.unsubscribed).not.toContain('session_wait_marker');
+
+      // Marker cleared — countdown resumes and the timeout finally fires
+      clearWaitingOnChild('session_wait_marker');
+
+      await Bun.sleep(400);
+
+      const [parentAfter] = await db.select().from(sessions).where(eq(sessions.id, 'session_wait_marker')).limit(1);
+      expect(parentAfter?.runtimeStatus).toBe('idle');
+      // session_run_timeout is an internal safety timeout — not surfaced to the user
+      expect(parentAfter?.lastRuntimeError).toBeNull();
+      expect(state.unsubscribed).toContain('session_wait_marker');
+    } finally {
+      // 即使断言失败也要清理标记，避免模块级单例 Map 残留污染其他测试
+      clearWaitingOnChild('session_wait_marker');
+    }
+  });
+
+  test('child session is exempted from its own safety timeout while parent waits', async () => {
+    // 子会话被父 wait 循环管理时豁免自身 10 分钟硬超时：父的 reminder（15-45s）比硬杀
+    // 更及时更有针对性，且子被硬杀正是父被连坐杀的直接诱因。父 wait 循环退出（含 deadline
+    // 超时）会清除标记，豁免随之消失，真正卡死的会话最终仍会被自身超时回收。
+    const { db } = await setupSession({ sessionId: 'session_child_managed', roleTemplateId: 'role_worker' });
+    // 无需真实插入父行——豁免逻辑只读子行 + 内存标记
+    await db.update(sessions)
+      .set({ parentSessionId: 'session_waiting_parent', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_child_managed'));
+
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — session stays running with no stream events
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+
+    try {
+      setWaitingOnChild('session_waiting_parent', 'req_test', 'session_child_managed');
+
+      await startSessionRun({
+        db,
+        piClient: pendingClient,
+        sessionId: 'session_child_managed',
+        userId: 'user_seed',
+        content: 'x',
+        safetyTimeoutMs: 150,
+        onStreamEvent: async () => {},
+        onRuntimeStatusChange: async () => {},
+      });
+
+      // Wait past the safety timeout — 父在等 → 豁免生效，子仍 running、未 unsubscribed
+      await Bun.sleep(400);
+
+      const [child] = await db.select().from(sessions).where(eq(sessions.id, 'session_child_managed')).limit(1);
+      expect(child?.runtimeStatus).toBe('running');
+      expect(child?.lastRuntimeError).toBeNull();
+      expect(state.unsubscribed).not.toContain('session_child_managed');
+
+      // Marker cleared — 豁免随之消失，超时恢复执行
+      clearWaitingOnChild('session_waiting_parent');
+
+      await Bun.sleep(400);
+
+      const [childAfter] = await db.select().from(sessions).where(eq(sessions.id, 'session_child_managed')).limit(1);
+      expect(childAfter?.runtimeStatus).toBe('idle');
+      // session_run_timeout is an internal safety timeout — not surfaced to the user
+      expect(childAfter?.lastRuntimeError).toBeNull();
+      expect(state.unsubscribed).toContain('session_child_managed');
+    } finally {
+      clearWaitingOnChild('session_waiting_parent');
+    }
+  });
+
+  test('sibling child is NOT exempted — only the awaited child matches', async () => {
+    // 豁免 4 必须精确匹配父标记中记录的 childSessionId：父先 spawn wait=false 后台子 B（本测试跑 B），
+    // 再 spawn wait=true 等子 A（标记记录的是 A）。旧实现只做 has 判断，B 卡死时也会命中父标记
+    // 被无限豁免；修复后 B 必须被自身超时回收（父的 reminder 只管得到 A，管不到 B）。
+    const { db } = await setupSession({ sessionId: 'session_sibling_child', roleTemplateId: 'role_worker' });
+    // 无需真实插入父行——豁免逻辑只读子行 + 内存标记
+    await db.update(sessions)
+      .set({ parentSessionId: 'session_sibling_parent', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_sibling_child'));
+
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — session stays running with no stream events
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+
+    try {
+      // 父在等的子会话是 A（session_awaited_child），本测试跑的是 B（session_sibling_child）——不匹配
+      setWaitingOnChild('session_sibling_parent', 'req_test', 'session_awaited_child');
+
+      await startSessionRun({
+        db,
+        piClient: pendingClient,
+        sessionId: 'session_sibling_child',
+        userId: 'user_seed',
+        content: 'x',
+        safetyTimeoutMs: 150,
+        onStreamEvent: async () => {},
+        onRuntimeStatusChange: async () => {},
+      });
+
+      // Wait past the safety timeout — B 不是父正在等的那一个 → 无豁免，直接被超时杀
+      await Bun.sleep(400);
+
+      const [child] = await db.select().from(sessions).where(eq(sessions.id, 'session_sibling_child')).limit(1);
+      expect(child?.runtimeStatus).toBe('idle');
+      // session_run_timeout is an internal safety timeout — not surfaced to the user
+      expect(child?.lastRuntimeError).toBeNull();
+      expect(state.unsubscribed).toContain('session_sibling_child');
+    } finally {
+      clearWaitingOnChild('session_sibling_parent');
+    }
+  });
+
+  test('managed child exemption is capped — stuck child still times out', async () => {
+    // 默认配置下父 wait 循环 deadline=null 无限轮询：running 卡死（无事件、无自身标记）的子由豁免 4
+    // 管理，但 reminder 只在子 idle 时触发，running 卡死无任何管理路径 → 永不超时。给豁免 4 加
+    // 连续豁免上限（约 3×10 分钟）：只有连续静默窗口才累积，合法静默（嵌套 wait/跨项目等待）由
+    // 豁免 1/3 覆盖不会走到这里，因此上限精确界定卡死场景。
+    const { db } = await setupSession({ sessionId: 'session_capped_child', roleTemplateId: 'role_worker' });
+    // 无需真实插入父行——豁免逻辑只读子行 + 内存标记
+    await db.update(sessions)
+      .set({ parentSessionId: 'session_capped_parent', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_capped_child'));
+
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — session stays running with no stream events
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+
+    try {
+      // 精确匹配（父确实在等本子会话）→ 豁免 4 生效，但连续豁免 3 次后达到上限强制超时
+      setWaitingOnChild('session_capped_parent', 'req_test', 'session_capped_child');
+
+      await startSessionRun({
+        db,
+        piClient: pendingClient,
+        sessionId: 'session_capped_child',
+        userId: 'user_seed',
+        content: 'x',
+        safetyTimeoutMs: 100, // 3 个豁免窗口 = 300ms 后达到上限
+        onStreamEvent: async () => {},
+        onRuntimeStatusChange: async () => {},
+      });
+
+      // Wait past 3 exemption windows — 标记仍在但已达上限，子被强制超时杀
+      await Bun.sleep(700);
+
+      const [child] = await db.select().from(sessions).where(eq(sessions.id, 'session_capped_child')).limit(1);
+      expect(child?.runtimeStatus).toBe('idle');
+      // session_run_timeout is an internal safety timeout — not surfaced to the user
+      expect(child?.lastRuntimeError).toBeNull();
+      expect(state.unsubscribed).toContain('session_capped_child');
+      // 父标记仍在 → 证明杀因是豁免上限而非标记丢失
+      expect(isWaitingOnChild('session_capped_parent')).toBe(true);
+    } finally {
+      clearWaitingOnChild('session_capped_parent');
+    }
+  });
+
   test('safety timeout fires normally when no child session is running', async () => {
     const { db } = await setupSession();
 
@@ -841,5 +1066,66 @@ describe('startSessionRun', () => {
 
     // 守卫重新武装了 domain 回收定时器（默认 30min），取消避免污染模块级 Map
     clearIdleRuntimeCleanup('session_streaming_guard');
+  });
+});
+
+describe('finalizeSessionStop', () => {
+  // ─── 回归：abort 永不响应 → 超时后也得把 stopping 收敛回 idle ──────
+  test('forces stopping back to idle when waitForSessionIdle never converges', async () => {
+    const { db } = await setupSession({ sessionId: 'session_stop_stuck' });
+
+    // 模拟 stop 端点已把会话置为 stopping，且 agent abort 永不响应（waitForSessionIdle 返回 false）
+    await db.update(sessions)
+      .set({ runtimeStatus: 'stopping', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_stop_stuck'));
+    const { client } = makePiClient();
+    const patchedClient: PiClient = { ...client, waitForSessionIdle: async () => false };
+
+    const statusCalls: Array<{ sessionId: string; projectId: string; runtimeStatus: 'idle' }> = [];
+    await finalizeSessionStop({
+      db,
+      piClient: patchedClient,
+      sessionId: 'session_stop_stuck',
+      projectId: 'project_test_runtime',
+      timeoutMs: 50,
+      onRuntimeStatusChange: async (payload) => {
+        statusCalls.push(payload);
+      },
+    });
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_stop_stuck')).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+    expect(session?.lastRuntimeError).toBeNull();
+    expect(statusCalls).toEqual([
+      { sessionId: 'session_stop_stuck', projectId: 'project_test_runtime', runtimeStatus: 'idle' },
+    ]);
+  });
+
+  // ─── 已非 stopping 不覆盖：期间新 run 认领为 running 时绝不能复位 ────
+  test('skips finalization when session is no longer stopping (running not overwritten)', async () => {
+    const { db } = await setupSession({ sessionId: 'session_stop_preserve_run' });
+
+    // 模拟 stop 之后新 run 又认领为 running
+    await db.update(sessions)
+      .set({ runtimeStatus: 'running', updatedAt: new Date() })
+      .where(eq(sessions.id, 'session_stop_preserve_run'));
+    const { client } = makePiClient();
+
+    let statusCalls = 0;
+    await finalizeSessionStop({
+      db,
+      piClient: client,
+      sessionId: 'session_stop_preserve_run',
+      projectId: 'project_test_runtime',
+      timeoutMs: 50,
+      onRuntimeStatusChange: async () => {
+        statusCalls++;
+      },
+    });
+
+    // 条件更新（仅 stopping→idle）未命中，running 必须保持不变
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_stop_preserve_run')).limit(1);
+    expect(session?.runtimeStatus).toBe('running');
+    expect(statusCalls).toBe(0);
   });
 });

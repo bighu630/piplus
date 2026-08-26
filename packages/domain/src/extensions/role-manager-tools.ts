@@ -7,7 +7,7 @@ import { messages, projects, sessions } from '@piplus/db/schema';
 import { and, eq, like } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
 import { startSessionRun } from '../session/runtime';
-import { setRequestContext, getRequestContext, setCrossProjectWait, clearCrossProjectWait } from '../session/request-context';
+import { setRequestContext, getRequestContext, setCrossProjectWait, clearCrossProjectWait, setWaitingOnChild, clearWaitingOnChild } from '../session/request-context';
 import { getSubagentTimeoutMs } from '../settings/service';
 
 const WRITEBACK_REMINDER_INTERVAL_MS = 15 * 1000;
@@ -509,185 +509,114 @@ async function waitForChildWriteback(
   const timeoutMs = await getSubagentTimeoutMs(ctx.db);
   const pollIntervalMs = 2000;
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : null;
-  let lastReminderAt = Date.now();
+  // 首次检测到子会话 idle 立即提醒（消除 15s idle 空隙），后续提醒按 WRITEBACK_REMINDER_INTERVAL_MS 间隔。
+  let lastReminderAt = 0;
   let reminderCount = 0;
 
-  while (deadline === null || Date.now() < deadline) {
-    const [parent] = await ctx.db
-      .select({ runtimeStatus: sessions.runtimeStatus })
-      .from(sessions)
-      .where(eq(sessions.id, ctx.sessionId))
-      .limit(1);
+  // 标记父会话正处于 waitForChildWriteback 轮询：safety timeout 据此豁免
+  // （内存标记，不依赖子会话瞬时 DB 状态，对子 idle 窗口免疫）。
+  // try/finally 保证所有出口（cancelled/completed/failed/timeout/异常）都清除标记。
+  setWaitingOnChild(ctx.sessionId, requestId, childSessionId);
+  try {
+    while (deadline === null || Date.now() < deadline) {
+      const [parent] = await ctx.db
+        .select({ runtimeStatus: sessions.runtimeStatus })
+        .from(sessions)
+        .where(eq(sessions.id, ctx.sessionId))
+        .limit(1);
 
-    if (!parent) {
-      console.log('[role-manager-tools] waitForChildWriteback parent missing', {
-        parentSessionId: ctx.sessionId,
-        childSessionId,
-        requestId,
-      });
-      return {
-        status: 'cancelled',
-        session_id: childSessionId,
-        message: '父会话不存在，已取消等待子会话结果',
-      };
-    }
-
-    if (parent.runtimeStatus === 'stopping') {
-      console.log('[role-manager-tools] waitForChildWriteback parent stopping', {
-        parentSessionId: ctx.sessionId,
-        childSessionId,
-        requestId,
-      });
-      return {
-        status: 'cancelled',
-        session_id: childSessionId,
-        message: '父会话正在停止，已取消等待子会话结果',
-      };
-    }
-
-    // 父会话被自身 safety timeout 中止后 runtimeStatus 变为 'idle'，
-    // 但本 wait 循环仍在后台轮询（zombie）。检测到 idle 立即取消。
-    if (parent.runtimeStatus === 'idle') {
-      console.log('[role-manager-tools] waitForChildWriteback parent idle', {
-        parentSessionId: ctx.sessionId,
-        childSessionId,
-        requestId,
-      });
-      return {
-        status: 'cancelled',
-        session_id: childSessionId,
-        message: '父会话已停止，已取消等待子会话结果',
-      };
-    }
-
-    const [writeback] = await ctx.db
-      .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
-      .from(messages)
-      .where(
-        and(
-          eq(messages.sourceSessionId, childSessionId),
-          eq(messages.messageKind, 'writeback'),
-          eq(messages.requestId, requestId),
-        ),
-      )
-      .limit(1);
-
-    if (writeback) {
-      let blocks = null;
-      if (writeback.blocksJson) {
-        try {
-          blocks = JSON.parse(writeback.blocksJson);
-        } catch {
-          /* ignore */
-        }
-      }
-      console.log('[role-manager-tools] waitForChildWriteback matched', {
-        childSessionId,
-        requestId,
-      });
-      return {
-        status: 'completed',
-        session_id: childSessionId,
-        summary: writeback.summary,
-        blocks,
-      };
-    }
-
-    const [child] = await ctx.db
-      .select({
-        runtimeStatus: sessions.runtimeStatus,
-        lastRuntimeError: sessions.lastRuntimeError,
-        modelFallbacksJson: sessions.modelFallbacksJson,
-        compiledPrompt: sessions.compiledPrompt,
-        currentModelProvider: sessions.currentModelProvider,
-        currentModelId: sessions.currentModelId,
-        piSessionLocatorJson: sessions.piSessionLocatorJson,
-      })
-      .from(sessions)
-      .where(eq(sessions.id, childSessionId))
-      .limit(1);
-
-    const now = Date.now();
-
-    // If child failed (idle + explicit error), try candidates or return failure.
-    if (child?.runtimeStatus === 'idle' && child?.lastRuntimeError) {
-      let remainingCandidates: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
-      if (child?.modelFallbacksJson) {
-        try {
-          const parsed = JSON.parse(child.modelFallbacksJson);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            remainingCandidates = parsed;
-          }
-        } catch { /* ignore */ }
-      }
-
-      if (remainingCandidates.length > 0) {
-        // Pick next candidate and remove it from the list
-        const [nextCandidate, ...rest] = remainingCandidates;
-        const updatedFallbacks = rest.length > 0 ? JSON.stringify(rest) : null;
-
-        console.log('[role-manager-tools] waitForChildWriteback switching to candidate model', {
+      if (!parent) {
+        console.log('[role-manager-tools] waitForChildWriteback parent missing', {
+          parentSessionId: ctx.sessionId,
           childSessionId,
           requestId,
-          from: `${child.currentModelProvider}/${child.currentModelId}`,
-          to: `${nextCandidate.provider}/${nextCandidate.id}`,
-          remaining: rest.length,
-          reason: 'error',
         });
-
-        // Switch child's model to the candidate
-        await ctx.db.update(sessions)
-          .set({
-            currentModelProvider: nextCandidate.provider,
-            currentModelId: nextCandidate.id,
-            modelFallbacksJson: updatedFallbacks ?? '',
-            lastRuntimeError: '',
-          })
-          .where(eq(sessions.id, childSessionId));
-
-        // Restart child with the new model and the original task
-        const retryContent = child.compiledPrompt || `原始执行因模型故障（${child.lastRuntimeError}）失败，请重新完成任务。`;
-        await startChildSessionRun(ctx, childSessionId, retryContent, requestId, ctx.onSessionCreated);
-
-        // Continue polling — wait for this new attempt to complete
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-        continue;
+        return {
+          status: 'cancelled',
+          session_id: childSessionId,
+          message: '父会话不存在，已取消等待子会话结果',
+        };
       }
 
-      // No more candidates — return error to parent
-      console.log('[role-manager-tools] waitForChildWriteback child failed (no candidates left)', {
-        childSessionId,
-        requestId,
-        error: child.lastRuntimeError,
-      });
-      return {
-        status: 'failed',
-        session_id: childSessionId,
-        message: `子会话执行失败：${child.lastRuntimeError}`,
-        error: child.lastRuntimeError,
-      };
-    }
+      if (parent.runtimeStatus === 'stopping') {
+        console.log('[role-manager-tools] waitForChildWriteback parent stopping', {
+          parentSessionId: ctx.sessionId,
+          childSessionId,
+          requestId,
+        });
+        return {
+          status: 'cancelled',
+          session_id: childSessionId,
+          message: '父会话正在停止，已取消等待子会话结果',
+        };
+      }
 
-    if (child?.runtimeStatus === 'idle') {
-      // 子会话消息只存在于 pi .jsonl 会话文件（不写 DB messages 表），查 DB 恒为空
-      // → hasNoOutput 永远为 true，原本“有输出 → 3 次可重复提醒”路径是死代码。
-      // 改为通过 getHistory 读会话文件判断是否已有 assistant 输出。
-      // 仅在 idle 时读取：子会话运行期间每轮轮询都做全文件读 + JSON 解析，会阻塞事件循环。
-      let hasNoOutput = true;
-      if (child?.piSessionLocatorJson) {
-        try {
-          const locator = parseLocator(child.piSessionLocatorJson);
-          const history = await ctx.piClient.getHistory(childSessionId, locator, null, 20);
-          hasNoOutput = !history.messages.some((m) => m.role === 'assistant');
-        } catch (err) {
-          console.debug('[role-manager-tools] waitForChildWriteback history read failed', { childSessionId, error: err instanceof Error ? err.message : String(err) });
+      // 父会话被自身 safety timeout 中止后 runtimeStatus 变为 'idle'，
+      // 但本 wait 循环仍在后台轮询（zombie）。检测到 idle 立即取消。
+      if (parent.runtimeStatus === 'idle') {
+        console.log('[role-manager-tools] waitForChildWriteback parent idle', {
+          parentSessionId: ctx.sessionId,
+          childSessionId,
+          requestId,
+        });
+        return {
+          status: 'cancelled',
+          session_id: childSessionId,
+          message: '父会话已停止，已取消等待子会话结果',
+        };
+      }
+
+      const [writeback] = await ctx.db
+        .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.sourceSessionId, childSessionId),
+            eq(messages.messageKind, 'writeback'),
+            eq(messages.requestId, requestId),
+          ),
+        )
+        .limit(1);
+
+      if (writeback) {
+        let blocks = null;
+        if (writeback.blocksJson) {
+          try {
+            blocks = JSON.parse(writeback.blocksJson);
+          } catch {
+            /* ignore */
+          }
         }
+        console.log('[role-manager-tools] waitForChildWriteback matched', {
+          childSessionId,
+          requestId,
+        });
+        return {
+          status: 'completed',
+          session_id: childSessionId,
+          summary: writeback.summary,
+          blocks,
+        };
       }
 
-      // Child is idle with no writeback and no output — try remaining
-      // candidates before giving up. The model may have produced no output
-      // without throwing (silent failure).
-      if (hasNoOutput) {
+      const [child] = await ctx.db
+        .select({
+          runtimeStatus: sessions.runtimeStatus,
+          lastRuntimeError: sessions.lastRuntimeError,
+          modelFallbacksJson: sessions.modelFallbacksJson,
+          compiledPrompt: sessions.compiledPrompt,
+          currentModelProvider: sessions.currentModelProvider,
+          currentModelId: sessions.currentModelId,
+          piSessionLocatorJson: sessions.piSessionLocatorJson,
+        })
+        .from(sessions)
+        .where(eq(sessions.id, childSessionId))
+        .limit(1);
+
+      const now = Date.now();
+
+      // If child failed (idle + explicit error), try candidates or return failure.
+      if (child?.runtimeStatus === 'idle' && child?.lastRuntimeError) {
         let remainingCandidates: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
         if (child?.modelFallbacksJson) {
           try {
@@ -699,18 +628,20 @@ async function waitForChildWriteback(
         }
 
         if (remainingCandidates.length > 0) {
+          // Pick next candidate and remove it from the list
           const [nextCandidate, ...rest] = remainingCandidates;
           const updatedFallbacks = rest.length > 0 ? JSON.stringify(rest) : null;
 
-          console.log('[role-manager-tools] waitForChildWriteback switching to candidate model (no output)', {
+          console.log('[role-manager-tools] waitForChildWriteback switching to candidate model', {
             childSessionId,
             requestId,
             from: `${child.currentModelProvider}/${child.currentModelId}`,
             to: `${nextCandidate.provider}/${nextCandidate.id}`,
             remaining: rest.length,
-            reminderCount,
+            reason: 'error',
           });
 
+          // Switch child's model to the candidate
           await ctx.db.update(sessions)
             .set({
               currentModelProvider: nextCandidate.provider,
@@ -720,63 +651,142 @@ async function waitForChildWriteback(
             })
             .where(eq(sessions.id, childSessionId));
 
-          const retryContent = child.compiledPrompt || '原始执行未产生输出，请重新完成任务。';
+          // Restart child with the new model and the original task
+          const retryContent = child.compiledPrompt || `原始执行因模型故障（${child.lastRuntimeError}）失败，请重新完成任务。`;
           await startChildSessionRun(ctx, childSessionId, retryContent, requestId, ctx.onSessionCreated);
 
+          // Continue polling — wait for this new attempt to complete
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           continue;
         }
 
-        // No candidates left — don't fail immediately; fall through to the
-        // reminder flow below so the child gets a chance to keep going.
-        console.log('[role-manager-tools] waitForChildWriteback child idle, no output, no candidates — falling through to reminder', {
+        // No more candidates — return error to parent
+        console.log('[role-manager-tools] waitForChildWriteback child failed (no candidates left)', {
           childSessionId,
           requestId,
-          reminderCount,
+          error: child.lastRuntimeError,
         });
+        return {
+          status: 'failed',
+          session_id: childSessionId,
+          message: `子会话执行失败：${child.lastRuntimeError}`,
+          error: child.lastRuntimeError,
+        };
       }
 
-      const decision = decideReminderAction({ reminderCount, lastReminderAt, now, hasNoOutput });
-      if (decision) {
-        if (decision.action === 'failed') {
-          console.log('[role-manager-tools] waitForChildWriteback reminders exhausted', {
+      if (child?.runtimeStatus === 'idle') {
+        // 子会话消息只存在于 pi .jsonl 会话文件（不写 DB messages 表），查 DB 恒为空
+        // → hasNoOutput 永远为 true，原本“有输出 → 3 次可重复提醒”路径是死代码。
+        // 改为通过 getHistory 读会话文件判断是否已有 assistant 输出。
+        // 仅在 idle 时读取：子会话运行期间每轮轮询都做全文件读 + JSON 解析，会阻塞事件循环。
+        let hasNoOutput = true;
+        if (child?.piSessionLocatorJson) {
+          try {
+            const locator = parseLocator(child.piSessionLocatorJson);
+            const history = await ctx.piClient.getHistory(childSessionId, locator, null, 20);
+            hasNoOutput = !history.messages.some((m) => m.role === 'assistant');
+          } catch (err) {
+            console.debug('[role-manager-tools] waitForChildWriteback history read failed', { childSessionId, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+
+        // Child is idle with no writeback and no output — try remaining
+        // candidates before giving up. The model may have produced no output
+        // without throwing (silent failure).
+        if (hasNoOutput) {
+          let remainingCandidates: Array<{ provider: string; id: string; thinkingLevel?: string | null }> = [];
+          if (child?.modelFallbacksJson) {
+            try {
+              const parsed = JSON.parse(child.modelFallbacksJson);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                remainingCandidates = parsed;
+              }
+            } catch { /* ignore */ }
+          }
+
+          if (remainingCandidates.length > 0) {
+            const [nextCandidate, ...rest] = remainingCandidates;
+            const updatedFallbacks = rest.length > 0 ? JSON.stringify(rest) : null;
+
+            console.log('[role-manager-tools] waitForChildWriteback switching to candidate model (no output)', {
+              childSessionId,
+              requestId,
+              from: `${child.currentModelProvider}/${child.currentModelId}`,
+              to: `${nextCandidate.provider}/${nextCandidate.id}`,
+              remaining: rest.length,
+              reminderCount,
+            });
+
+            await ctx.db.update(sessions)
+              .set({
+                currentModelProvider: nextCandidate.provider,
+                currentModelId: nextCandidate.id,
+                modelFallbacksJson: updatedFallbacks ?? '',
+                lastRuntimeError: '',
+              })
+              .where(eq(sessions.id, childSessionId));
+
+            const retryContent = child.compiledPrompt || '原始执行未产生输出，请重新完成任务。';
+            await startChildSessionRun(ctx, childSessionId, retryContent, requestId, ctx.onSessionCreated);
+
+            await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+            continue;
+          }
+
+          // No candidates left — don't fail immediately; fall through to the
+          // reminder flow below so the child gets a chance to keep going.
+          console.log('[role-manager-tools] waitForChildWriteback child idle, no output, no candidates — falling through to reminder', {
             childSessionId,
             requestId,
             reminderCount,
-            hasNoOutput,
           });
-          return {
-            status: 'failed',
-            session_id: childSessionId,
-            message: decision.message,
-            error: decision.error,
-          };
         }
-        lastReminderAt = now;
-        reminderCount++;
-        console.log('[role-manager-tools] waitForChildWriteback reminder', {
-          childSessionId,
-          requestId,
-          reminderCount,
-          hasNoOutput,
-        });
-        await startChildSessionRun(ctx, childSessionId, decision.message, requestId, ctx.onSessionCreated);
-      }
+
+        const decision = decideReminderAction({ reminderCount, lastReminderAt, now, hasNoOutput });
+        if (decision) {
+          if (decision.action === 'failed') {
+            console.log('[role-manager-tools] waitForChildWriteback reminders exhausted', {
+              childSessionId,
+              requestId,
+              reminderCount,
+              hasNoOutput,
+            });
+            return {
+              status: 'failed',
+              session_id: childSessionId,
+              message: decision.message,
+              error: decision.error,
+            };
+          }
+            lastReminderAt = now;
+            reminderCount++;
+            console.log('[role-manager-tools] waitForChildWriteback reminder', {
+              childSessionId,
+              requestId,
+              reminderCount,
+              hasNoOutput,
+            });
+            await startChildSessionRun(ctx, childSessionId, decision.message, requestId, ctx.onSessionCreated);
+          }
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
 
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    console.log('[role-manager-tools] waitForChildWriteback timeout', {
+      childSessionId,
+      requestId,
+    });
+
+    return {
+      status: 'timeout',
+      session_id: childSessionId,
+      message: '子会话超时未返回结果',
+    };
+  } finally {
+    // wait 循环退出（含 deadline 超时）必须清除标记，否则父会话永久豁免、超时永不触发
+    clearWaitingOnChild(ctx.sessionId);
   }
-
-  console.log('[role-manager-tools] waitForChildWriteback timeout', {
-    childSessionId,
-    requestId,
-  });
-
-  return {
-    status: 'timeout',
-    session_id: childSessionId,
-    message: '子会话超时未返回结果',
-  };
 }
 
 /**
