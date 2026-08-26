@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, test } from 'bun:test';
 import { createPiClient, mapAgentSessionEvent } from './client';
+import { registerAgentStartSystemPrompt } from './client/session-lifecycle';
 
 describe('pi client gateway', () => {
   test('createSession returns a persistent pi session locator path', async () => {
@@ -393,6 +394,48 @@ describe('pi client gateway', () => {
   });
 
   // ─── Runtime 回收机制修复回归测试（各测试独立 sessionId，不共享 registry 状态）───
+
+  test('registerAgentStartSystemPrompt wires before_agent_start to append extra system prompt (chain, once per turn)', () => {
+    // 白盒验证：ensureRuntime 的 extensionFactories 通过该 helper 把附加 systemPrompt
+    // （如 ask_question 使用指引）注册为 before_agent_start 处理器。
+    const extra = '使用 ask_question 工具向前端用户提问，选项 2-6 个。';
+    const handlers: Array<(event: { systemPrompt: string }) => unknown> = [];
+    const fakePi = {
+      on(event: string, handler: (event: { systemPrompt: string }) => unknown) {
+        handlers.push(handler);
+      },
+    } as never;
+
+    registerAgentStartSystemPrompt(fakePi as any, extra);
+
+    expect(handlers).toHaveLength(1);
+    // 已有 base systemPrompt → 追加（SDK 每 turn 以 base 为输入，多次触发不会累积重复）
+    expect(handlers[0]({ systemPrompt: 'base' })).toEqual({ systemPrompt: `base\n\n${extra}` });
+    // 空 base → 直接返回附加文本
+    expect(handlers[0]({ systemPrompt: '' })).toEqual({ systemPrompt: extra });
+  });
+
+  test('ensureRuntime with systemPrompt registers before_agent_start handler on live runtime', async () => {
+    const client = createPiClient();
+    const created = await client.createSession({ prompt: 'hello', title: 'SystemPrompt Injection Test' });
+    const extra = '附加指引：向用户提问前先使用 ask_question 确认。';
+
+    await client.ensureRuntime('domain_session_sysprompt', {
+      locator: created.locator,
+      cwd: process.cwd(),
+      tools: [{
+        name: 'ask_question',
+        description: '向用户提问',
+        parameters: { type: 'object', properties: {} },
+      }],
+      toolHandler: async () => ({}),
+      systemPrompt: extra,
+    });
+
+    // runtime 就绪且 extensionFactories 收到 systemPrompt（对 live agentSession 断言扩展已加载）
+    expect(client.getRuntimeState('domain_session_sysprompt')?.ready).toBe(true);
+    await client.closeRuntime('domain_session_sysprompt');
+  });
 
   test('#5 ensureRuntime deletes piSessionId alias entry after prompt migration', async () => {
     const client = createPiClient();

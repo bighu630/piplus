@@ -6,6 +6,7 @@ import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/sch
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
 import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup, finalizeSessionStop } from './runtime';
+import { ASK_QUESTION_SYSTEM_PROMPT } from '../extensions/ask-question';
 import { setCrossProjectWait, clearCrossProjectWait, setWaitingOnChild, clearWaitingOnChild, isWaitingOnChild } from './request-context';
 
 function makeDbPath() {
@@ -15,7 +16,7 @@ function makeDbPath() {
 function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error; streaming?: boolean }) {
   const opts = options;
   const state: {
-    runtimeEnsured: Array<{ sessionId: string; cwd?: string }>;
+    runtimeEnsured: Array<{ sessionId: string; cwd?: string; systemPrompt?: string }>;
     promptsInjected: string[];
     bound: Array<{ sessionId: string; cwd?: string; tools: PiToolDef[] }>;
     subscribed: string[];
@@ -40,7 +41,7 @@ function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error;
       // restores runtime — called internally by ensureRuntime
     },
     async ensureRuntime(sessionId, options) {
-      state.runtimeEnsured.push({ sessionId, cwd: options.cwd });
+      state.runtimeEnsured.push({ sessionId, cwd: options.cwd, systemPrompt: options.systemPrompt });
       // 模拟 ensureRuntime 抛错（如 runtime 无法恢复）——认领后失败必须复位 idle
       if (opts?.ensureRuntimeError) throw opts.ensureRuntimeError;
     },
@@ -207,7 +208,12 @@ describe('startSessionRun', () => {
     });
 
     expect(run.sessionId).toBe('session_test_runtime');
-    expect(state.runtimeEnsured).toEqual([{ sessionId: 'session_test_runtime', cwd: '/tmp/runtime-project' }]);
+    expect(state.runtimeEnsured).toEqual([{
+      sessionId: 'session_test_runtime',
+      cwd: '/tmp/runtime-project',
+      // buildAllToolDefs 默认加载 ask_question → systemPrompt 使用指引随之传入（before_agent_start 注入）
+      systemPrompt: ASK_QUESTION_SYSTEM_PROMPT,
+    }]);
     // Prompt is now merged with user content at the caller level (not injected separately)
     // Tool binding is now part of ensureRuntime (not called separately)
     expect(state.sent).toEqual([{ sessionId: 'session_test_runtime', content: 'hello runtime' }]);
@@ -222,6 +228,28 @@ describe('startSessionRun', () => {
     expect(session?.lastRuntimeError).toBeNull();
     expect(statusEvents.at(-1)).toEqual({ runtimeStatus: 'idle', error: null });
     expect(state.unsubscribed).toEqual(['session_test_runtime']);
+  });
+
+  test('ask_question 工具存在时 ensureRuntime 收到 ASK_QUESTION_SYSTEM_PROMPT（before_agent_start 注入接线）', async () => {
+    const { db } = await setupSession();
+    const { client, state } = makePiClient();
+
+    await startSessionRun({
+      db,
+      piClient: client,
+      sessionId: 'session_test_runtime',
+      userId: 'user_seed',
+      content: 'hello runtime',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // buildAllToolDefs 默认注册 ask_question → startSessionRun 必须把使用指引传给 ensureRuntime（
+    // 由 pi-client 经 before_agent_start 注入 systemPrompt）。
+    expect(state.runtimeEnsured).toHaveLength(1);
+    expect(state.runtimeEnsured[0].systemPrompt).toBe(ASK_QUESTION_SYSTEM_PROMPT);
+    // 指引内容包含工具用法要点，确保模型能收到可执行的说明
+    expect(ASK_QUESTION_SYSTEM_PROMPT).toContain('ask_question');
+    expect(ASK_QUESTION_SYSTEM_PROMPT).toContain('questions');
   });
 
   test('records runtime error and restores idle after failure', async () => {
@@ -1058,7 +1086,11 @@ describe('startSessionRun', () => {
     ).rejects.toThrow('session_busy');
 
     // 守卫在 ensureRuntime 之后检查，runtime 确实被确保了
-    expect(state.runtimeEnsured).toEqual([{ sessionId: 'session_streaming_guard', cwd: '/tmp/runtime-project' }]);
+    expect(state.runtimeEnsured).toEqual([{
+      sessionId: 'session_streaming_guard',
+      cwd: '/tmp/runtime-project',
+      systemPrompt: ASK_QUESTION_SYSTEM_PROMPT,
+    }]);
     // 守卫抛错后 #6 的 catch 复位 DB idle
     const [session] = await db.select().from(sessions).where(eq(sessions.id, 'session_streaming_guard')).limit(1);
     expect(session?.runtimeStatus).toBe('idle');

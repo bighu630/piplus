@@ -5,6 +5,7 @@ import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from '@piplus/pi-client/constants';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
+import { ASK_QUESTION_SYSTEM_PROMPT } from '../extensions/ask-question';
 import { setRequestContext, clearRequestContext, isCrossProjectWaiting, clearCrossProjectWait, isWaitingOnChild, getWaitingOnChild, clearWaitingOnChild } from './request-context';
 
 // TTL 单一来源：与 client 层定时器共用 @piplus/pi-client/constants（值导入走 /constants 子路径，
@@ -206,6 +207,12 @@ export async function startSessionRun(input: StartSessionRunInput) {
     toolDefs = toolDefs.filter(t => t.name !== 'writeback_to_parent' && t.name !== 'send_message_to_session');
   }
 
+  // ask_question 使用指引注入：工具暴露时随 ensureRuntime 的 extensionFactories 注册
+  // before_agent_start 处理器，每 turn 向 systemPrompt 追加一次（SDK 链式语义，不累积）。
+  const askQuestionSystemPrompt = toolDefs.some((t) => t.name === 'ask_question')
+    ? ASK_QUESTION_SYSTEM_PROMPT
+    : undefined;
+
   // Check first-conversation state from session file BEFORE ensureRuntime,
   // so we can merge the role prompt with user content in a single turn.
   const isFirst = input.piClient.isFirstConversation(input.sessionId);
@@ -241,6 +248,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
       locator,
       cwd: project.projectPath,
       tools: toolDefs,
+      systemPrompt: askQuestionSystemPrompt,
       toolHandler: async (toolName, args) => {
         return invokePlatformTool(toolName, args, {
           db: input.db,
@@ -626,6 +634,11 @@ export async function reloadProjectSessionRuntimes(db: RoleManagerDb, piClient: 
       const toolDefs = await buildAllToolDefs(db, projectId);
       const locator = parseLocator(session.piSessionLocatorJson);
 
+      // 与 startSessionRun 一致：ask_question 工具存在时同时注入使用指引
+      const askQuestionSystemPrompt = toolDefs.some((t) => t.name === 'ask_question')
+        ? ASK_QUESTION_SYSTEM_PROMPT
+        : undefined;
+
       // Query project path for ensureRuntime
       const [proj] = await db
         .select({ projectPath: projects.projectPath })
@@ -637,6 +650,7 @@ export async function reloadProjectSessionRuntimes(db: RoleManagerDb, piClient: 
         locator,
         cwd: proj?.projectPath ?? '',
         tools: toolDefs,
+        systemPrompt: askQuestionSystemPrompt,
         toolHandler: async (toolName, args) => {
           return invokePlatformTool(toolName, args, {
             db,

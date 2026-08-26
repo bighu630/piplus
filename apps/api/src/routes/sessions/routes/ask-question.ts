@@ -63,7 +63,7 @@ export function registerAskQuestionRoutes(app: Hono) {
    *       200:
    *         description: 回填成功。
    *       400:
-   *         description: body 非法（缺 questionId / answer 形状不对）。
+   *         description: body 非法（缺 questionId / 缺 answer 或 answers 字段 / answer 形状不对）。
    *       404:
    *         description: 会话不存在或无访问权限，或 questionId 无对应待回答问题。
    */
@@ -88,6 +88,13 @@ export function registerAskQuestionRoutes(app: Hono) {
 
     if (typeof questionId !== 'string' || questionId.length === 0) {
       return c.json({ error: { code: 'INVALID_BODY', message: 'questionId is required' } }, 400);
+    }
+
+    // 必须显式提供 answer 或 answers 字段。缺失时视为取消会误消费 pending
+    // （pending 会以 cancelled:true 提前 resolve，模型拿到“用户取消”继续执行）——
+    // 因此缺字段一律 400，不触碰 pending。answer: null 是合法取消，不受影响。
+    if (answer === undefined && answers === undefined) {
+      return c.json({ error: { code: 'INVALID_BODY', message: 'answer or answers is required' } }, 400);
     }
 
     // 会话存在性 + 归属校验（与其它 sessions 路由一致：无权限一律按 404 处理）
