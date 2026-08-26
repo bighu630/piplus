@@ -117,6 +117,27 @@ export function getAuthStatus() {
   return request<{ requiresPassword: boolean }>('/api/v1/auth/status');
 }
 
+/**
+ * 回填 ask_question 的待回答问题（单选/多选/自己输入/问卷/取消）。
+ * body 与后端 answerQuestion 约定一致：{ questionId, answer | answers, wasCustom?, customAnswers?, cancelled? }。
+ */
+export function answerAskQuestion(
+  sessionId: string,
+  body: {
+    questionId: string;
+    answer?: string | string[] | null;
+    answers?: unknown[];
+    wasCustom?: boolean;
+    customAnswers?: string[];
+    cancelled?: boolean;
+  },
+) {
+  return request<{ ok: boolean }>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/ask-answer`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 export function getModelsStatus() {
   return request<{ ok: boolean; count: number; models: ModelInfo[] }>('/api/v1/models/status');
 }

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
+import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO, AskQuestionPendingPayload } from '@piplus/shared';
+import { isAskQuestionPending } from '@piplus/shared';
 import { createWorkspaceSocket } from './ws-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthSession, useAuthStatus } from './hooks';
@@ -23,6 +24,8 @@ interface WebSocketContextValue {
   setSessionContext: (sessionId: string | null, projectId: string | null, activeTab: string) => void;
   clearStreamRuntimeErrors: (sessionId: string | null) => void;
   subscribeToMessages: (cb: (msg: any) => void) => () => void;
+  /** 订阅 ask_question_pending：工具发起提问等待回答时回调（含单题与问卷）。 */
+  subscribeToAskQuestionPending: (cb: (payload: AskQuestionPendingPayload) => void) => () => void;
   sendRaw: (msg: Record<string, unknown>) => void;
 }
 
@@ -47,6 +50,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   // 流式快照：按 sessionId 全局累积，TabChat 卸载/切会话不丢流式内容
   const streamSnapshotsRef = useRef<Record<string, ChatStreamSnapshot>>({});
   const messageListenersRef = useRef<Set<(msg: any) => void>>(new Set());
+  const askQuestionPendingListenersRef = useRef<Set<(payload: AskQuestionPendingPayload) => void>>(new Set());
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
   const stoppingFallbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -114,6 +118,12 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
           // Notify all message subscribers (terminal events, etc.)
           messageListenersRef.current.forEach(cb => cb(message));
+
+          // ═══ ask_question pending ═══
+          // 工具发起提问：前端据此渲染待回答表单（单题或问卷）。
+          if (isAskQuestionPending(message)) {
+            askQuestionPendingListenersRef.current.forEach(cb => cb(message.payload));
+          }
 
           // ═══ Chat stream events ═══
           if (message.kind === 'chat_stream' && message.scope?.session_id) {
@@ -400,6 +410,14 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     return () => { messageListenersRef.current.delete(cb); };
   }, []);
 
+  const subscribeToAskQuestionPending = useCallback(
+    (cb: (payload: AskQuestionPendingPayload) => void): (() => void) => {
+      askQuestionPendingListenersRef.current.add(cb);
+      return () => { askQuestionPendingListenersRef.current.delete(cb); };
+    },
+    [],
+  );
+
   const sendRaw = useCallback((msg: Record<string, unknown>) => {
     socketRef.current?.sendRaw?.(msg);
   }, []);
@@ -446,7 +464,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const chatStreamValue = useMemo(() => ({ useChatStream: useChatStreamImpl }), [useChatStreamImpl]);
 
   return (
-    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, clearStreamRuntimeErrors, subscribeToMessages, sendRaw, chatStream: chatStreamValue }}>
+    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, clearStreamRuntimeErrors, subscribeToMessages, subscribeToAskQuestionPending, sendRaw, chatStream: chatStreamValue }}>
       {children}
     </WebSocketContext.Provider>
   );
