@@ -283,8 +283,11 @@ function Sidebar({
       .filter((p): p is ProjectDTO => p !== null);
   }, [projects, sidebarSearch, showArchived, showCompleted, hiddenCompletedRoles]);
 
-  // Shared comparator: blank first (no children, compact), then pinned first, then newest pinned first, then last_activity_at desc
+  // Shared comparator: running first, blank first, then pinned first, then activity desc
   function sortByPinnedThenActivity(a: SessionTreeNodeDTO, b: SessionTreeNodeDTO): number {
+    // Running sessions first
+    if (a.runtime_status === 'running' && b.runtime_status !== 'running') return -1;
+    if (a.runtime_status !== 'running' && b.runtime_status === 'running') return 1;
     // Blank sessions at top
     if (a.role_template_key === 'blank' && b.role_template_key !== 'blank') return -1;
     if (a.role_template_key !== 'blank' && b.role_template_key === 'blank') return 1;
@@ -307,6 +310,9 @@ function Sidebar({
       bugfix_lead: 2,
     };
     return [...sessions].sort((a, b) => {
+      // Running sessions first, regardless of role
+      if (a.runtime_status === 'running' && b.runtime_status !== 'running') return -1;
+      if (a.runtime_status !== 'running' && b.runtime_status === 'running') return 1;
       // Pinned first
       if (a.pinned_at && !b.pinned_at) return -1;
       if (!a.pinned_at && b.pinned_at) return 1;
