@@ -157,6 +157,44 @@ describe('pi client gateway', () => {
     });
   });
 
+  test('getHistory 透传 toolResult 的 details（ask_question 结果渲染依赖）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pi-client-history-details-'));
+    const sessionFile = join(dir, 'session.jsonl');
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({ type: 'session', version: 2, id: 'pi_test_details', timestamp: '2026-08-26T04:05:00.000Z', cwd: process.cwd() })}\n` +
+        `${JSON.stringify({
+          type: 'message',
+          id: 'msg_tool_1',
+          parentId: null,
+          timestamp: '2026-08-26T04:06:00.000Z',
+        message: {
+          role: 'toolResult',
+          toolName: 'ask_question',
+          toolCallId: 'tc_1',
+          content: [{ type: 'text', text: '用户选择：A' }],
+          details: { question: 'Q?', options: ['A', 'B'], answer: 'A', multiSelect: false, wasCustom: false },
+          isError: false,
+          timestamp: Date.now(),
+        },
+      })}\n`,
+    );
+
+    const client = createPiClient();
+    const page = await client.getHistory('persisted_history', {
+      piSessionId: 'pi_test_details',
+      sessionFile,
+    }, null, 20);
+    expect(page.messages).toHaveLength(1);
+    expect(page.messages[0]).toMatchObject({
+      role: 'tool',
+      messageKind: 'tool',
+      toolName: 'ask_question',
+      text: '用户选择：A',
+      details: { question: 'Q?', options: ['A', 'B'], answer: 'A', multiSelect: false, wasCustom: false },
+    });
+  });
+
   test('sendMessage persists user message to pi session history after runtime is closed', async () => {
     const client = createPiClient();
     const created = await client.createSession({ prompt: 'hello', title: 'Send Test' });

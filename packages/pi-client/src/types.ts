@@ -86,6 +86,8 @@ export type PiHistoryMessage = {
   messageKind?: 'normal' | 'tool_call' | 'tool';
   toolName?: string;
   toolArgs?: Record<string, unknown>;
+  /** 工具返回的结构化结果（如 ask_question 的 details），工具结果消息上存在。 */
+  details?: unknown;
 };
 
 export type PiHistoryPage = {
