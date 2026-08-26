@@ -30,11 +30,13 @@ describe('executeAskQuestion', () => {
     expect(result.details).toMatchObject({ question: 'Q?', options: ['A', 'B'], answer: 'A', multiSelect: false });
   });
 
-  test('单题超时：details 含 cancelled:true（前端按“已取消”渲染）', async () => {
-    const result = await executeAskQuestion({ question: 'Q?', options: ['A', 'B'] }, { sessionId: 'sess_timeout' });
-
+  test('单题超时（无自动超时，手动 timeout 回填）：details 含 cancelled:true（前端按“已取消”渲染）', async () => {
+    const promise = executeAskQuestion({ question: 'Q?', options: ['A', 'B'] }, { sessionId: 'sess_timeout' });
+    const questionId = [...pendingQuestions.keys()].find((id) => pendingQuestions.get(id)?.sessionId === 'sess_timeout');
+    // 无自动超时：需手动以 timeout 标记回填（模拟极端超时路径，实际生产已无超时）
+    expect(answerQuestion(questionId!, { answer: null, cancelled: true, timeout: true })).toEqual({ ok: true });
+    const result = await promise;
     expect(result.content[0].text).toBe('用户未回答');
-    // 修复点：#7 单题超时 details 补 cancelled: true（与问卷超时的 cancelled 对齐）
     expect(result.details).toMatchObject({
       question: 'Q?',
       options: ['A', 'B'],
@@ -44,8 +46,8 @@ describe('executeAskQuestion', () => {
     });
   });
 
-  test('问卷超时：details 每题为未回答且 cancelled:true', async () => {
-    const result = await executeAskQuestion(
+  test('问卷超时（手动 timeout）：details 每题为未回答且 cancelled:true', async () => {
+    const promise = executeAskQuestion(
       {
         questions: [
           { question: 'Q1', options: ['A', 'B'] },
@@ -54,7 +56,9 @@ describe('executeAskQuestion', () => {
       },
       { sessionId: 'sess_q_timeout' },
     );
-
+    const questionId = [...pendingQuestions.keys()].find((id) => pendingQuestions.get(id)?.sessionId === 'sess_q_timeout');
+    expect(answerQuestion(questionId!, { answer: null, cancelled: true, timeout: true })).toEqual({ ok: true });
+    const result = await promise;
     expect(result.content[0].text).toBe('用户未回答');
     const details = result.details as { cancelled?: boolean; questions: Array<{ answer: unknown }> };
     expect(details.cancelled).toBe(true);

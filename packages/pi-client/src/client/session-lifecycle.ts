@@ -9,6 +9,7 @@ import {
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from '../constants';
+import { isAskPending } from '../ask-pending';
 import type { PiSessionLocator } from '../locator';
 import type { PiCreateSessionInput, PiCreateSessionResult, PiToolDef } from '../types';
 import type { ClientDeps } from './deps';
@@ -356,6 +357,16 @@ export async function closeRuntime(deps: ClientDeps, sessionId: string): Promise
   const session = deps.runtimeRegistry.get(sessionId);
   if (!session) return; // idempotent, already cleaned
   if (session.idleCleanupTimer) { clearTimeout(session.idleCleanupTimer); session.idleCleanupTimer = undefined; }
+  // 等待用户回答期间（ask_question pending）绝不回收：用户可在任意时间回答，
+  // 即使 runtime 已空闲，pending 的 promise 仍阻塞工具等待回答。
+  if (isAskPending(sessionId)) {
+    console.log('[pi-client] closeRuntime skipped — waiting for user answer (ask_question)', { sessionId });
+    // 延长等待：30s 后重试，仍 pending 则继续跳过
+    session.idleCleanupTimer = setTimeout(() => {
+      deps.client.closeRuntime(sessionId).catch(() => {});
+    }, 30_000);
+    return;
+  }
   // 绝不 dispose 正在流式生成的 agentSession —— dispose() 会 abort 在途生成。
   // 定时器触发时若 run 仍在进行，跳过本次回收；重试定时器 30s 后再次尝试。
   // 覆盖 worker 立即回收路径的极端时序，避免 worker runtime 泄漏。

@@ -5,8 +5,9 @@ import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from '@piplus/pi-client/constants';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleManagerDb } from '../role-manager/service';
 import { buildAllToolDefs, invokePlatformTool } from '../extensions/registry';
-import { ASK_QUESTION_SYSTEM_PROMPT } from '../extensions/ask-question';
+import { ASK_QUESTION_SYSTEM_PROMPT, isAskQuestionPendingForSession } from '../extensions/ask-question';
 import { setRequestContext, clearRequestContext, isCrossProjectWaiting, clearCrossProjectWait, isWaitingOnChild, getWaitingOnChild, clearWaitingOnChild } from './request-context';
+import { isAskPending as isPiAskPending } from '@piplus/pi-client/ask-pending';
 
 // TTL 单一来源：与 client 层定时器共用 @piplus/pi-client/constants（值导入走 /constants 子路径，
 // 避免拉起整个 client.ts 模块及其 ModelRuntime 初始化副作用）。
@@ -396,6 +397,7 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
   // Safety timeout: fires when the session produces no stream events for
   // safetyTimeoutMs. 豁免顺序（自上而下）：
+  // 0. ask_question 等待用户回答——无超时，用户可在任意时间回答；runtime 回收后重新激活仍可回答。
   // 1. 内存标记（主豁免）：父会话正处于 waitForChildWriteback 轮询——内存标记在 wait
   //    循环期间始终置位，不依赖子会话瞬时 DB 状态，对子 idle 窗口免疫（旧实现只有 DB
   //    查询，落在窗口内豁免失败会连坐杀父）。
@@ -419,6 +421,12 @@ export async function startSessionRun(input: StartSessionRunInput) {
       void (async () => {
         if (cleanupDone) return;
         const startedAt = timeoutStartedAt;
+        // 豁免 0：等待用户回答（ask_question）——无超时，即使 runtime 被回收后重新激活仍可回答。
+        if (isAskQuestionPendingForSession(input.sessionId) || isPiAskPending(input.sessionId)) {
+          console.log('[session-runtime] safety timeout exempted — waiting for user answer (ask_question)', { sessionId: input.sessionId });
+          scheduleTimeoutCheck();
+          return;
+        }
         // 豁免 1（主豁免）：父会话正在 waitForChildWriteback 轮询等待子会话 writeback。
         // 父在 wait 期间自身不产生 stream 事件，但子会话活动意味着 agent 未卡死。
         if (isWaitingOnChild(input.sessionId)) {

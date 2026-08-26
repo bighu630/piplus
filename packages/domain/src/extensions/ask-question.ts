@@ -1,4 +1,6 @@
 import type { PiToolDef } from '@piplus/pi-client';
+// 轻量导入 pi-client 的 pending 集合（无循环：ask-pending 不依赖 domain）
+import { markAskPending as piMarkAskPending, unmarkAskPending as piUnmarkAskPending } from '@piplus/pi-client/ask-pending';
 
 // ===== 类型定义，details 形状参考原扩展 curl.log =====
 
@@ -64,9 +66,17 @@ type PendingEntry = {
   params: Record<string, unknown>;
   resolve: (value: PendingResolveValue) => void;
   reject: (reason?: unknown) => void;
-  timeout: ReturnType<typeof setTimeout>;
   promise: Promise<PendingResolveValue>;
 };
+
+function setAskPending(sessionId: string) {
+  try { piMarkAskPending(sessionId); } catch {}
+}
+function clearAskPending(sessionId: string) {
+  const hasOther = Array.from(pendingQuestions.values()).some((e) => e.sessionId === sessionId);
+  if (hasOther) return;
+  try { piUnmarkAskPending(sessionId); } catch {}
+}
 
 // ===== 工具：normalizeOptions =====
 
@@ -147,8 +157,9 @@ function isQuestionnaireParams(params: Record<string, unknown>): boolean {
 }
 
 /**
- * 等待用户回答的超时时长，默认 5 分钟，可用 PIPLUS_ASK_QUESTION_TIMEOUT_MS 覆盖（便于测试与运维调整）。
- * 每次提问时解析：测试可在 beforeEach 动态调整，无需重启进程。
+ * 历史遗留：超时时长解析函数保留供测试兼容，但提问本身不再超时
+ * （用户可在任意时间回答；session runtime 回收后重新激活仍可回答）。
+ * 若未来需要恢复超时，可在此基础上重新启用。
  */
 function resolveTimeoutMs(): number {
   const raw =
@@ -159,6 +170,8 @@ function resolveTimeoutMs(): number {
   }
   return 5 * 60 * 1000;
 }
+// 兼容导出（旧测试曾导入）
+export { resolveTimeoutMs };
 
 function cleanLabel(label: unknown): string | undefined {
   if (typeof label !== 'string') return undefined;
@@ -181,24 +194,16 @@ export function createPending(
     reject = rej;
   });
 
-  // 超时自动返回“用户未回答”（默认 5 分钟）
-  const timeout = setTimeout(() => {
-    if (pendingQuestions.has(questionId)) {
-      pendingQuestions.delete(questionId);
-      resolve({ answer: null, cancelled: true, timeout: true });
-    }
-  }, resolveTimeoutMs());
-
   const entry: PendingEntry = {
     sessionId,
     questionId,
     params,
     resolve,
     reject,
-    timeout,
     promise,
   };
   pendingQuestions.set(questionId, entry);
+  setAskPending(sessionId);
 
   // 通知监听器推送 WS 事件（单题或问卷）
   const payload: AskQuestionPendingPayload = { questionId, sessionId };
@@ -244,8 +249,8 @@ export function answerQuestion(
   if (!entry) {
     return { ok: false, error: 'not_found' };
   }
-  clearTimeout(entry.timeout);
   pendingQuestions.delete(questionId);
+  clearAskPending(entry.sessionId);
 
   let resolved: PendingResolveValue;
 
@@ -572,8 +577,16 @@ export async function executeAskQuestion(
  *  每 turn 注入一次（SDK 链式语义，不累积）。 */
 export const ASK_QUESTION_SYSTEM_PROMPT = [
   '有一个 ask_question 工具可用于向用户提问：',
-  '- 需要用户决策、确认或补充信息时使用；调用会阻塞等待用户回答（默认 5 分钟超时，超时返回“用户未回答”）。',
+  '- 需要用户决策、确认或补充信息时使用；调用会阻塞等待用户回答（无超时，用户可在任意时间回答；session 空闲回收后重新激活仍可回答）。',
   '- 单题：传入 question + options（2-6 个简短选项），可选 multiSelect 允许多选；工具会自动追加“自己输入”选项。',
-  '- 问卷：传入 questions 数组（每项 question + options + 可选 multiSelect/label），用户逐题作答后统一提交。',
+  '- 问卷（questions 数组）：一次可提多个问题（每项 question + options + 可选 multiSelect/label），前端会分页导航让用户逐题作答后统一提交；需要连续收集多个决策时直接用 questions。',
   '- 用户可能取消（details.cancelled 或 answer 为 null），此时不要重试提问，转述结果即可。',
 ].join('\n');
+
+/** 供 runtime/safetyTimeout 查询：某会话是否有待回答的 ask_question。 */
+export function isAskQuestionPendingForSession(sessionId: string): boolean {
+  for (const entry of pendingQuestions.values()) {
+    if (entry.sessionId === sessionId) return true;
+  }
+  return false;
+}

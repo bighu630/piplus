@@ -652,6 +652,17 @@ function TabChat({
 
   const isRunning = runtimeStatus === 'running';
   const isStopping = runtimeStatus === 'stopping';
+  // 等待用户回答（ask_question 阻塞）：与 "正在运行" 同等处理，闪烁灯改为琥珀色
+  const hasWaitingAsk = useMemo(() => {
+    if (Object.keys(pendingAskMap).length === 0) return false;
+    // 存在未提交的待回答表单即视为等待中（已提交等待工具结果的也算等待，直到 tool result 到达）
+    for (const qid of Object.keys(pendingAskMap)) {
+      if (!submittedAskIds.has(qid)) return true;
+    }
+    // 全部已提交但工具结果尚未落库：仍视为等待（由卡片的 submitted 占位体现，此处仍需保持指示器）
+    // 若 pendingAskMap 非空且运行中，视为等待
+    return isRunning;
+  }, [pendingAskMap, submittedAskIds, isRunning]);
 
   // ask_question 提交（POST /api/v1/sessions/:sessionId/ask-answer）与取消。
   // 提交成功后标记 submitted（卡片显示“已提交”占位），工具结果经轮询到达后自动切换为结果卡片。
@@ -1119,8 +1130,19 @@ function TabChat({
           </div>
         )}
 
-        {/* Typing indicator */}
-        {isRunning && !streamingContent && (
+        {/* 等待用户回答（ask_question 阻塞）：与运行中同位置，琥珀色闪烁 */}
+        {hasWaitingAsk && isRunning && !streamingContent ? (
+          <div className="flex items-start w-full">
+            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-amber-700 dark:text-amber-300 font-sans">
+              <div className="flex space-x-1">
+                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span className="italic pl-1 font-medium">等待用户回答… 请选择或输入后提交</span>
+            </div>
+          </div>
+        ) : isRunning && !streamingContent ? (
           <div className="flex items-start w-full">
             <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-slate-500 dark:text-slate-400 font-sans">
               <div className="flex space-x-1">
@@ -1133,7 +1155,7 @@ function TabChat({
               </span>
             </div>
           </div>
-        )}
+        ) : null}
 
         {/* Stopping indicator */}
         {isStopping && (
