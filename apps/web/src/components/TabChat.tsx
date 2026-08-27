@@ -1149,14 +1149,14 @@ function TabChat({
           </div>
         )}
 
-        {/* 等待用户回答（ask_question 阻塞）：与运行中同位置，琥珀色闪烁 */}
+        {/* 等待用户回答（ask_question 阻塞）：与运行中同位置，蓝色闪烁 */}
         {hasWaitingAsk && isRunning && !streamingContent ? (
           <div className="flex items-start w-full">
-            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-amber-700 dark:text-amber-300 font-sans">
+            <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-blue-700 dark:text-blue-300 font-sans">
               <div className="flex space-x-1">
-                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
               </div>
               <span className="italic pl-1 font-medium">等待用户回答… 请选择或输入后提交</span>
             </div>

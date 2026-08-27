@@ -349,7 +349,7 @@ function Sidebar({
     const isCollapsed = collapsedSessions[session.id];
     const isArchived = Boolean(session.archived_at);
     const isAsking = askingSessionIds.has(session.id);
-    const statusDotColor = isAsking ? 'bg-amber-500' : runtimeColor(session.runtime_status);
+    const statusDotColor = isAsking ? 'bg-blue-500' : runtimeColor(session.runtime_status);
     const isPinned = Boolean(session.pinned_at);
 
 
