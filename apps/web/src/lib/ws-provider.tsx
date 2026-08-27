@@ -26,6 +26,10 @@ interface WebSocketContextValue {
   subscribeToMessages: (cb: (msg: any) => void) => () => void;
   /** 订阅 ask_question_pending：工具发起提问等待回答时回调（含单题与问卷）。 */
   subscribeToAskQuestionPending: (cb: (payload: AskQuestionPendingPayload) => void) => () => void;
+  /** 全局待回答的 ask_question（按 questionId），跨会话持久，切换回来不丢失 */
+  askingPendingMap: Record<string, AskQuestionPendingPayload>;
+  /** 清理指定 questionId 的待回答（提交后或工具结果到达时） */
+  clearAskPending?: (questionId: string) => void;
   sendRaw: (msg: Record<string, unknown>) => void;
 }
 
@@ -51,6 +55,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const streamSnapshotsRef = useRef<Record<string, ChatStreamSnapshot>>({});
   const messageListenersRef = useRef<Set<(msg: any) => void>>(new Set());
   const askQuestionPendingListenersRef = useRef<Set<(payload: AskQuestionPendingPayload) => void>>(new Set());
+  const [askingPendingMap, setAskingPendingMap] = useState<Record<string, AskQuestionPendingPayload>>({});
+  const askingPendingMapRef = useRef<Record<string, AskQuestionPendingPayload>>({});
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
   const stoppingFallbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -120,9 +126,15 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           messageListenersRef.current.forEach(cb => cb(message));
 
           // ═══ ask_question pending ═══
-          // 工具发起提问：前端据此渲染待回答表单（单题或问卷）。
+          // 工具发起提问：全局持久化（含非活跃会话），切换回来不丢失；
+          // 同时通知订阅者，Sidebar 据此将对应会话的绿灯覆为琥珀色。
           if (isAskQuestionPending(message)) {
-            askQuestionPendingListenersRef.current.forEach(cb => cb(message.payload));
+            const payload = message.payload;
+            if (payload?.questionId) {
+              askingPendingMapRef.current = { ...askingPendingMapRef.current, [payload.questionId]: payload };
+              setAskingPendingMap({ ...askingPendingMapRef.current });
+            }
+            askQuestionPendingListenersRef.current.forEach(cb => cb(payload));
           }
 
           // ═══ Chat stream events ═══
@@ -463,8 +475,33 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   // 稳定 chatStream context 引用（impl 经 useCallback 固定，memo 不会随 provider 渲染重建）
   const chatStreamValue = useMemo(() => ({ useChatStream: useChatStreamImpl }), [useChatStreamImpl]);
 
+  // ask_question 回答后（工具结果经 messages 轮询落库，runtime 变 idle），前端可按需清理
+  // 此处提供清理器：TabChat 提交成功或检测到 tool result 时调用，可让琥珀灯熄灭
+  const clearAskPending = useCallback((questionId: string) => {
+    if (!questionId) return;
+    if (!askingPendingMapRef.current[questionId]) return;
+    const { [questionId]: _, ...rest } = askingPendingMapRef.current;
+    askingPendingMapRef.current = rest;
+    setAskingPendingMap({ ...rest });
+  }, []);
+
+  // 暴露给 context：TabChat 提交后可调用，Sidebar 仅消费 askingPendingMap
+  const contextValue = useMemo(() => ({
+    connected,
+    localRuntimeStatusBySession,
+    subscribeToStream,
+    setSessionContext,
+    clearStreamRuntimeErrors,
+    subscribeToMessages,
+    subscribeToAskQuestionPending,
+    askingPendingMap,
+    clearAskPending,
+    sendRaw,
+    chatStream: chatStreamValue,
+  }), [connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, clearStreamRuntimeErrors, subscribeToMessages, subscribeToAskQuestionPending, askingPendingMap, chatStreamValue]);
+
   return (
-    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, clearStreamRuntimeErrors, subscribeToMessages, subscribeToAskQuestionPending, sendRaw, chatStream: chatStreamValue }}>
+    <WebSocketContext.Provider value={contextValue as unknown as WebSocketContextValue}>
       {children}
     </WebSocketContext.Provider>
   );

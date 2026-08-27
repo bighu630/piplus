@@ -318,29 +318,22 @@ function TabChat({
   const prevSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
   const prevScrollHeightRef = useRef<number | null>(null);
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
-  // ask_question 待回答：questionId → WS pending payload（含表单内容）；
-  // 提交后记录 submitted（等待工具结果），工具结果到达后由 tool result 卡片接管。
-  const [pendingAskMap, setPendingAskMap] = useState<Record<string, AskQuestionPendingPayload>>({});
   const [submittedAskIds, setSubmittedAskIds] = useState<Set<string>>(new Set());
   const [submittingAskId, setSubmittingAskId] = useState<string | null>(null);
   const [askSubmitError, setAskSubmitError] = useState<string | null>(null);
-  const { connected: wsConnected, clearStreamRuntimeErrors, subscribeToAskQuestionPending } = useWebSocket();
+  const { connected: wsConnected, clearStreamRuntimeErrors, askingPendingMap, clearAskPending } = useWebSocket() as unknown as {
+    connected: boolean;
+    clearStreamRuntimeErrors: (id: string | null) => void;
+    askingPendingMap: Record<string, AskQuestionPendingPayload>;
+    clearAskPending?: (qid: string) => void;
+  };
+  // 全局 pending（含非活跃会话），切换回来不丢失；本地仅保留 submitted/submitting 交互态
+  const pendingAskMap = askingPendingMap ?? {};
   // 流式快照统一由 ws-provider 按 sessionId 管理（80ms 节流），本组件只消费
   const { phase, streamingContent, streamNote, runtimeErrors } = useChatStream(selectedSessionId ?? null);
 
-  // 订阅 ask_question_pending：收到即按 questionId 存表单内容（同时态工具结果会通过
-  // 历史轮询 arrive，form 只在工具结果尚未出现时渲染）。按会话过滤避免跨会话串台。
+  // 提交态按会话隔离：切会话时仅清提交/错误态，全局 pending 由 ws-provider 持久化，回来不丢失
   useEffect(() => {
-    return subscribeToAskQuestionPending((payload) => {
-      if (!payload?.questionId) return;
-      if (payload.sessionId && selectedSessionId && payload.sessionId !== selectedSessionId) return;
-      setPendingAskMap((prev) => (prev[payload.questionId] ? prev : { ...prev, [payload.questionId]: payload }));
-    });
-  }, [subscribeToAskQuestionPending, selectedSessionId]);
-
-  // 切换会话时清空待回答/提交态（残留表单不属于新会话）
-  useEffect(() => {
-    setPendingAskMap({});
     setSubmittedAskIds(new Set());
     setSubmittingAskId(null);
     setAskSubmitError(null);
@@ -653,16 +646,40 @@ function TabChat({
   const isRunning = runtimeStatus === 'running';
   const isStopping = runtimeStatus === 'stopping';
   // 等待用户回答（ask_question 阻塞）：与 "正在运行" 同等处理，闪烁灯改为琥珀色
+  // 仅统计当前会话未提交的待回答，提交后即不再视为等待（即使 pending 仍在全局 map 中）
   const hasWaitingAsk = useMemo(() => {
-    if (Object.keys(pendingAskMap).length === 0) return false;
-    // 存在未提交的待回答表单即视为等待中（已提交等待工具结果的也算等待，直到 tool result 到达）
-    for (const qid of Object.keys(pendingAskMap)) {
-      if (!submittedAskIds.has(qid)) return true;
+    const forThisSession = Object.values(pendingAskMap).filter((p) => !selectedSessionId || p.sessionId === selectedSessionId);
+    return forThisSession.some((p) => !submittedAskIds.has(p.questionId));
+  }, [pendingAskMap, submittedAskIds, selectedSessionId]);
+
+  // 工具结果到达后清理全局 pending，侧边栏琥珀灯熄灭（切换回来不再误判为等待）
+  useEffect(() => {
+    if (!clearAskPending) return;
+    for (const [qid, payload] of Object.entries(pendingAskMap)) {
+      if (selectedSessionId && payload.sessionId && payload.sessionId !== selectedSessionId) continue;
+      // 若对应的 tool_call 已有 tool result（askAnswered），则该提问已完成
+      const sig = askQuestionSignature(asAskQuestionParts(payload as unknown as Record<string, unknown>));
+      const answered = messages.some((m) => {
+        if (m.message_kind !== 'tool_call' || m.tool_name !== 'ask_question' || !m.tool_args_json) return false;
+        if (isToolCallPending(m.id, 'ask_question', messages)) return false;
+        try {
+          const parsed = JSON.parse(m.tool_args_json) as Record<string, unknown>;
+          return askQuestionSignature(asAskQuestionParts(parsed)) === sig;
+        } catch {
+          return false;
+        }
+      });
+      if (answered) {
+        clearAskPending(qid);
+        setSubmittedAskIds((prev) => {
+          if (!prev.has(qid)) return prev;
+          const next = new Set(prev);
+          next.delete(qid);
+          return next;
+        });
+      }
     }
-    // 全部已提交但工具结果尚未落库：仍视为等待（由卡片的 submitted 占位体现，此处仍需保持指示器）
-    // 若 pendingAskMap 非空且运行中，视为等待
-    return isRunning;
-  }, [pendingAskMap, submittedAskIds, isRunning]);
+  }, [messages, pendingAskMap, selectedSessionId, clearAskPending]);
 
   // ask_question 提交（POST /api/v1/sessions/:sessionId/ask-answer）与取消。
   // 提交成功后标记 submitted（卡片显示“已提交”占位），工具结果经轮询到达后自动切换为结果卡片。
@@ -798,7 +815,9 @@ function TabChat({
             if (askPendingSig) {
               for (const key of Object.keys(pendingAskMap)) {
                 const p = pendingAskMap[key];
-                if (p && askQuestionSignature(asAskQuestionParts(p as unknown as Record<string, unknown>)) === askPendingSig) {
+                if (!p) continue;
+                if (selectedSessionId && p.sessionId && p.sessionId !== selectedSessionId) continue;
+                if (askQuestionSignature(asAskQuestionParts(p as unknown as Record<string, unknown>)) === askPendingSig) {
                   askPendingPayload = p;
                   break;
                 }
