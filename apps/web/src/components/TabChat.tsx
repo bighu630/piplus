@@ -1330,6 +1330,7 @@ function TabChat({
         sending={sending}
         isRunning={isRunning}
         isStopping={isStopping}
+        isAsking={hasWaitingAsk}
         sendShortcutMode={sendShortcutMode}
         currentModelSupportsImages={currentModelSupportsImages}
         visionRelayEnabled={visionRelayEnabled}
