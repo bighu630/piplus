@@ -117,6 +117,10 @@ export function getAuthStatus() {
   return request<{ requiresPassword: boolean }>('/api/v1/auth/status');
 }
 
+export function getAskPending(sessionId: string) {
+  return request<{ pending: Array<{ questionId: string; sessionId: string; question?: string; options?: string[]; multiSelect?: boolean; label?: string; questions?: Array<{ question: string; options: string[]; multiSelect?: boolean; label?: string }> }> }>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/ask-pending`);
+}
+
 /**
  * 回填 ask_question 的待回答问题（单选/多选/自己输入/问卷/取消）。
  * body 与后端 answerQuestion 约定一致：{ questionId, answer | answers, wasCustom?, customAnswers?, cancelled? }。

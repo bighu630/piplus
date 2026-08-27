@@ -590,3 +590,31 @@ export function isAskQuestionPendingForSession(sessionId: string): boolean {
   }
   return false;
 }
+
+/** 列出某会话的全部待回答（用于刷新后重建表单）。 */
+export function listPendingForSession(sessionId: string): AskQuestionPendingPayload[] {
+  const result: AskQuestionPendingPayload[] = [];
+  for (const entry of pendingQuestions.values()) {
+    if (entry.sessionId !== sessionId) continue;
+    const payload: AskQuestionPendingPayload = { questionId: entry.questionId, sessionId: entry.sessionId };
+    const params = entry.params;
+    if (Array.isArray(params.questions) && (params.questions as unknown[]).length > 0) {
+      payload.questions = ((params.questions as unknown[]) ?? []).map((raw) => {
+        const q = (raw ?? {}) as Record<string, unknown>;
+        return {
+          question: String(q.question ?? ''),
+          options: Array.isArray(q.options) ? normalizeOptions((q.options as unknown[]).map(String)) : [],
+          multiSelect: q.multiSelect === true,
+          label: cleanLabel(q.label),
+        } as AskQuestionInput;
+      });
+    } else {
+      if (typeof params.question === 'string') payload.question = params.question;
+      if (Array.isArray(params.options)) payload.options = normalizeOptions((params.options as unknown[]).map(String));
+      payload.multiSelect = params.multiSelect === true;
+      payload.label = cleanLabel(params.label);
+    }
+    result.push(payload);
+  }
+  return result;
+}

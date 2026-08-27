@@ -8,6 +8,7 @@ import { createEvent } from '../../../ws/protocol';
 import { WS_EVENT_ASK_QUESTION_PENDING } from '@piplus/shared/ws';
 import {
   answerQuestion,
+  listPendingForSession,
   onAskQuestionPending,
   type AskQuestionPendingPayload,
 } from '@piplus/domain';
@@ -133,5 +134,40 @@ export function registerAskQuestionRoutes(app: Hono) {
     }
 
     return c.json({ ok: true });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/ask-pending:
+   *   get:
+   *     summary: 查询当前会话的待回答 ask_question（用于刷新后重建表单）
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     responses:
+   *       200:
+   *         description: 返回待回答列表。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   */
+  app.get('/api/v1/sessions/:sessionId/ask-pending', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const userId = (c as any).get('userId') as string;
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    if (!session) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+
+    const [project] = await db
+      .select({ id: projects.id, createdBy: projects.createdBy })
+      .from(projects)
+      .where(eq(projects.id, session.projectId))
+      .limit(1);
+    if (!project || project.createdBy !== userId) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
+    }
+
+    const pending = listPendingForSession(sessionId);
+    return c.json({ pending });
   });
 }

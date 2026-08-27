@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useRef, useState, useCallb
 import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO, AskQuestionPendingPayload } from '@piplus/shared';
 import { isAskQuestionPending } from '@piplus/shared';
 import { createWorkspaceSocket } from './ws-client';
+import { getAskPending } from './api';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthSession, useAuthStatus } from './hooks';
 import { sendSystemNotification } from './notification';
@@ -88,6 +89,25 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     if (sessionId && sessionId !== prev) {
       socketRef.current?.subscribeSession(sessionId);
       queryClient.invalidateQueries({ queryKey: ['session', 'messages', sessionId] });
+      // 刷新后重建：WS 事件在刷新前已发送，内存已清，需从后端拉取待回答以重建表单/琥珀灯
+      getAskPending(sessionId)
+        .then((res) => {
+          if (res.pending?.length) {
+            const next = { ...askingPendingMapRef.current };
+            let changed = false;
+            for (const p of res.pending) {
+              if (p.questionId && !next[p.questionId]) {
+                next[p.questionId] = p as AskQuestionPendingPayload;
+                changed = true;
+              }
+            }
+            if (changed) {
+              askingPendingMapRef.current = next;
+              setAskingPendingMap(next);
+            }
+          }
+        })
+        .catch(() => {});
     }
     prevSubscribedSessionRef.current = sessionId;
     socketRef.current?.setContext({
