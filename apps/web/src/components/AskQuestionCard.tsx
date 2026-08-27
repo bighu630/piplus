@@ -406,7 +406,13 @@ function PendingQuestionnaire({
             disabled={disabled}
             value={values[active]!}
             custom={customs[active]!}
-            onChange={(v) => setValues((prev) => prev.map((p, i) => (i === active ? v : p)))}
+            onChange={(v) => {
+              setValues((prev) => prev.map((p, i) => (i === active ? v : p)));
+              // 单选完成自动跳到下一题
+              if (v !== null && active < questions.length - 1) {
+                setTimeout(() => setActive((a) => (a === active ? a + 1 : a)), 220);
+              }
+            }}
             onCustomChange={(v) => setCustoms((prev) => prev.map((c, i) => (i === active ? v : c)))}
           />
         )}
