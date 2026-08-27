@@ -3,11 +3,13 @@ import {
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
+  type ExtensionAPI,
   type SessionEntry,
 } from '@earendil-works/pi-coding-agent';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from '../constants';
+import { isAskPending } from '../ask-pending';
 import type { PiSessionLocator } from '../locator';
 import type { PiCreateSessionInput, PiCreateSessionResult, PiToolDef } from '../types';
 import type { ClientDeps } from './deps';
@@ -16,6 +18,17 @@ import { collectCommands } from './commands';
 export function sessionFileHasModelChange(sessionManager: SessionManager, provider: string, modelId: string) {
   const entries = sessionManager.getEntries() as SessionEntry[];
   return entries.some((entry) => entry.type === 'model_change' && entry.provider === provider && entry.modelId === modelId);
+}
+
+/**
+ * 在扩展工厂中注册 before_agent_start 处理器：向 systemPrompt 追加附加提示文本
+ * （如 domain 传入的 ask_question 使用指引）。
+ * SDK 链式语义：每个 turn 以 base systemPrompt 为输入，再叠加本段文本，因此每 turn 只追加一次、不会累积。
+ */
+export function registerAgentStartSystemPrompt(pi: ExtensionAPI, systemPrompt: string): void {
+  pi.on('before_agent_start', (event) => ({
+    systemPrompt: event.systemPrompt ? `${event.systemPrompt}\n\n${systemPrompt}` : systemPrompt,
+  }));
 }
 
 export async function createSession(
@@ -177,9 +190,11 @@ export async function ensureRuntime(
     cwd: string;
     tools: PiToolDef[];
     toolHandler: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>;
+    /** 附加系统提示文本（如 ask_question 使用指引），经 before_agent_start 注入。 */
+    systemPrompt?: string;
   },
 ): Promise<void> {
-  const { locator, cwd, tools, toolHandler } = options;
+  const { locator, cwd, tools, toolHandler, systemPrompt } = options;
   const existing = deps.runtimeRegistry.get(sessionId);
 
   if (existing?.agentSession) {
@@ -228,6 +243,10 @@ export async function ensureRuntime(
       agentDir: getAgentDir(),
       extensionFactories: [
         (pi) => {
+          // ask_question 等附加系统提示：before_agent_start 每 turn 注入一次（链式、不累积）
+          if (systemPrompt) {
+            registerAgentStartSystemPrompt(pi, systemPrompt);
+          }
           for (const toolDef of tools) {
             pi.registerTool({
               name: toolDef.name,
@@ -236,6 +255,17 @@ export async function ensureRuntime(
               parameters: toolDef.parameters as any,
               execute: async (_toolCallId, params) => {
                 const result = await toolHandler(toolDef.name, params as Record<string, unknown>, { sessionId });
+                // handler 返回 { content, details }（如 ask_question）时直接透传，保留 details
+                // 供前端渲染；否则按原逻辑包一层 text 文本内容。
+                if (
+                  result !== null &&
+                  typeof result === 'object' &&
+                  !Array.isArray(result) &&
+                  'content' in result &&
+                  'details' in result
+                ) {
+                  return result as { content: Array<{ type: 'text'; text: string }>; details: unknown };
+                }
                 return {
                   content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }],
                   details: {},
@@ -327,6 +357,16 @@ export async function closeRuntime(deps: ClientDeps, sessionId: string): Promise
   const session = deps.runtimeRegistry.get(sessionId);
   if (!session) return; // idempotent, already cleaned
   if (session.idleCleanupTimer) { clearTimeout(session.idleCleanupTimer); session.idleCleanupTimer = undefined; }
+  // 等待用户回答期间（ask_question pending）绝不回收：用户可在任意时间回答，
+  // 即使 runtime 已空闲，pending 的 promise 仍阻塞工具等待回答。
+  if (isAskPending(sessionId)) {
+    console.log('[pi-client] closeRuntime skipped — waiting for user answer (ask_question)', { sessionId });
+    // 延长等待：30s 后重试，仍 pending 则继续跳过
+    session.idleCleanupTimer = setTimeout(() => {
+      deps.client.closeRuntime(sessionId).catch(() => {});
+    }, 30_000);
+    return;
+  }
   // 绝不 dispose 正在流式生成的 agentSession —— dispose() 会 abort 在途生成。
   // 定时器触发时若 run 仍在进行，跳过本次回收；重试定时器 30s 后再次尝试。
   // 覆盖 worker 立即回收路径的极端时序，避免 worker runtime 泄漏。

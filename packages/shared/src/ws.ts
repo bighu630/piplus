@@ -84,6 +84,39 @@ export type EventMessage = {
   payload: Record<string, unknown>;
 };
 
+/** 服务端下发：ask_question 工具已发起提问，正在等待用户回答（单题或问卷）。 */
+export const WS_EVENT_ASK_QUESTION_PENDING = 'ask_question_pending';
+
+/** ask_question 问卷模式中的单个问题。字段与 packages/domain/src/extensions/ask-question.ts 的 AskQuestionInput 一致。 */
+export type AskQuestionPendingItem = {
+  question: string;
+  options: string[];
+  multiSelect?: boolean;
+  label?: string;
+};
+
+/** ask_question_pending 事件 payload。单题使用 question/options/multiSelect；问卷使用 questions 数组。 */
+export type AskQuestionPendingPayload = {
+  questionId: string;
+  sessionId?: string;
+  question?: string;
+  options?: string[];
+  multiSelect?: boolean;
+  label?: string;
+  questions?: AskQuestionPendingItem[];
+};
+
+export type ServerAskQuestionPending = EventMessage & {
+  type: typeof WS_EVENT_ASK_QUESTION_PENDING;
+  payload: AskQuestionPendingPayload;
+};
+
+export function isAskQuestionPending(message: unknown): message is ServerAskQuestionPending {
+  if (!message || typeof message !== 'object') return false;
+  const value = message as { kind?: string; type?: string };
+  return value.kind === 'event' && value.type === WS_EVENT_ASK_QUESTION_PENDING;
+}
+
 export type TerminalOutputMessage = {
   kind: 'terminal';
   type: 'terminal_output';

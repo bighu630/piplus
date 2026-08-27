@@ -113,6 +113,8 @@ export type ChatMessageDTO = {
   created_at: string;
   tool_name?: string | null;
   tool_args_json?: string | null;
+  /** 工具返回的结构化结果（如 ask_question 的 details）。由 pi 会话文件透传，可能缺失。 */
+  details?: unknown | null;
 };
 
 export type ProjectTodoDTO = {
