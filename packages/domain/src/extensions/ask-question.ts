@@ -577,7 +577,7 @@ export async function executeAskQuestion(
  *  每 turn 注入一次（SDK 链式语义，不累积）。 */
 export const ASK_QUESTION_SYSTEM_PROMPT = [
   '有一个 ask_question 工具可用于向用户提问：',
-  '- 需要用户决策、确认或补充信息时使用；调用会阻塞等待用户回答（无超时，用户可在任意时间回答；session 空闲回收后重新激活仍可回答）。',
+  '- 当你需要用户决策、确认方案或补充信息才能继续时，必须调用 ask_question，而不要只在普通文本里提问；调用会阻塞等待用户回答（无超时，用户可在任意时间回答；session 空闲回收后重新激活仍可回答）。',
   '- 单题：传入 question + options（2-6 个简短选项），可选 multiSelect 允许多选；工具会自动追加“自己输入”选项。',
   '- 问卷（questions 数组）：一次可提多个问题（每项 question + options + 可选 multiSelect/label），前端会分页导航让用户逐题作答后统一提交；需要连续收集多个决策时直接用 questions。',
   '- 用户可能取消（details.cancelled 或 answer 为 null），此时不要重试提问，转述结果即可。',
