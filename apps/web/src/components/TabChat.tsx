@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
-import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO } from '@piplus/shared';
+import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO, AskQuestionPendingPayload } from '@piplus/shared';
+import { answerAskQuestion } from '../lib/api';
 import type { SessionMessageImageAttachment } from '../lib/api';
+import AskQuestionCard, { type AskQuestionAnswerPayload, type AskQuestionResultDetails } from './AskQuestionCard';
 import {
   Copy,
   Check,
@@ -132,6 +134,51 @@ function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessage
     }
   }
   return true;
+}
+
+/**
+ * ask_question 待回答内容签名：用于将 WS ask_question_pending 事件与同内容的
+ * ask_question tool_call 关联（questionId 由后端生成、不在 tool_args 中）。
+ */
+function askQuestionSignature(parts: { question?: string; options?: unknown; multiSelect?: boolean; questions?: unknown }): string {
+  const items = (parts.questions ?? []) as Array<{ question?: string; options?: unknown; multiSelect?: boolean }>;
+  if (Array.isArray(items) && items.length > 0) {
+    return JSON.stringify(items.map((q) => [q?.question, q?.options, q?.multiSelect === true]));
+  }
+  return JSON.stringify([parts.question, parts.options, parts.multiSelect === true]);
+}
+
+/** 从 args（tool_call）或 WS payload（pending）提取用于匹配的内容形状。 */
+function asAskQuestionParts(args: Record<string, unknown>): { question?: string; options?: unknown; multiSelect?: boolean; questions?: unknown } {
+  return {
+    question: typeof args.question === 'string' ? args.question : undefined,
+    options: Array.isArray(args.options) ? args.options : undefined,
+    multiSelect: args.multiSelect === true,
+    questions: Array.isArray(args.questions) ? args.questions : undefined,
+  };
+}
+
+/**
+ * 解析已回答 details：优先取消息上的 details 字段；否则尝试从 content_text 解析 JSON
+ * （部分后端不落 details 时为其内嵌 JSON）；再否则返回 null、由卡片降级为 content text。
+ */
+function parseAskQuestionDetails(msg: ChatMessageDTO): AskQuestionResultDetails | null {
+  const details = (msg as ChatMessageDTO & { details?: unknown }).details;
+  if (details !== null && details !== undefined && typeof details === 'object') {
+    return details as AskQuestionResultDetails;
+  }
+  if (typeof msg.content_text === 'string' && msg.content_text.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(msg.content_text);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) &&
+        ('question' in parsed || 'questions' in parsed || 'answer' in parsed)) {
+        return parsed as AskQuestionResultDetails;
+      }
+    } catch {
+      // 非 JSON：降级为 content text 展示
+    }
+  }
+  return null;
 }
 
 function sanitizeStreamingContent(content: string): string {
@@ -271,9 +318,26 @@ function TabChat({
   const prevSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
   const prevScrollHeightRef = useRef<number | null>(null);
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
-  const { connected: wsConnected, clearStreamRuntimeErrors } = useWebSocket();
+  const [submittedAskIds, setSubmittedAskIds] = useState<Set<string>>(new Set());
+  const [submittingAskId, setSubmittingAskId] = useState<string | null>(null);
+  const [askSubmitError, setAskSubmitError] = useState<string | null>(null);
+  const { connected: wsConnected, clearStreamRuntimeErrors, askingPendingMap, clearAskPending } = useWebSocket() as unknown as {
+    connected: boolean;
+    clearStreamRuntimeErrors: (id: string | null) => void;
+    askingPendingMap: Record<string, AskQuestionPendingPayload>;
+    clearAskPending?: (qid: string) => void;
+  };
+  // 全局 pending（含非活跃会话），切换回来不丢失；本地仅保留 submitted/submitting 交互态
+  const pendingAskMap = askingPendingMap ?? {};
   // 流式快照统一由 ws-provider 按 sessionId 管理（80ms 节流），本组件只消费
   const { phase, streamingContent, streamNote, runtimeErrors } = useChatStream(selectedSessionId ?? null);
+
+  // 提交态按会话隔离：切会话时仅清提交/错误态，全局 pending 由 ws-provider 持久化，回来不丢失
+  useEffect(() => {
+    setSubmittedAskIds(new Set());
+    setSubmittingAskId(null);
+    setAskSubmitError(null);
+  }, [selectedSessionId]);
 
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
@@ -581,6 +645,67 @@ function TabChat({
 
   const isRunning = runtimeStatus === 'running';
   const isStopping = runtimeStatus === 'stopping';
+  // 等待用户回答（ask_question 阻塞）：与 "正在运行" 同等处理，闪烁灯改为琥珀色
+  // 仅统计当前会话未提交的待回答，提交后即不再视为等待（即使 pending 仍在全局 map 中）
+  const hasWaitingAsk = useMemo(() => {
+    const forThisSession = Object.values(pendingAskMap).filter((p) => !selectedSessionId || p.sessionId === selectedSessionId);
+    return forThisSession.some((p) => !submittedAskIds.has(p.questionId));
+  }, [pendingAskMap, submittedAskIds, selectedSessionId]);
+
+  // 工具结果到达后清理全局 pending，侧边栏琥珀灯熄灭（切换回来不再误判为等待）
+  useEffect(() => {
+    if (!clearAskPending) return;
+    for (const [qid, payload] of Object.entries(pendingAskMap)) {
+      if (selectedSessionId && payload.sessionId && payload.sessionId !== selectedSessionId) continue;
+      // 若对应的 tool_call 已有 tool result（askAnswered），则该提问已完成
+      const sig = askQuestionSignature(asAskQuestionParts(payload as unknown as Record<string, unknown>));
+      const answered = messages.some((m) => {
+        if (m.message_kind !== 'tool_call' || m.tool_name !== 'ask_question' || !m.tool_args_json) return false;
+        if (isToolCallPending(m.id, 'ask_question', messages)) return false;
+        try {
+          const parsed = JSON.parse(m.tool_args_json) as Record<string, unknown>;
+          return askQuestionSignature(asAskQuestionParts(parsed)) === sig;
+        } catch {
+          return false;
+        }
+      });
+      if (answered) {
+        clearAskPending(qid);
+        setSubmittedAskIds((prev) => {
+          if (!prev.has(qid)) return prev;
+          const next = new Set(prev);
+          next.delete(qid);
+          return next;
+        });
+      }
+    }
+  }, [messages, pendingAskMap, selectedSessionId, clearAskPending]);
+
+  // ask_question 提交（POST /api/v1/sessions/:sessionId/ask-answer）与取消。
+  // 提交成功后标记 submitted（卡片显示“已提交”占位），工具结果经轮询到达后自动切换为结果卡片。
+  const handleAskQuestionAnswer = useCallback(
+    async (value: AskQuestionAnswerPayload) => {
+      if (!selectedSessionId) return;
+      setSubmittingAskId(value.questionId);
+      setAskSubmitError(null);
+      try {
+        await answerAskQuestion(selectedSessionId, {
+          questionId: value.questionId,
+          answer: value.answer,
+          answers: value.answers,
+          wasCustom: value.wasCustom,
+          customAnswers: value.customAnswers,
+          cancelled: value.cancelled,
+        });
+        setSubmittedAskIds((prev) => new Set(prev).add(value.questionId));
+      } catch (err) {
+        setAskSubmitError(err instanceof Error ? err.message : '提交失败，请重试');
+      } finally {
+        setSubmittingAskId((prev) => (prev === value.questionId ? null : prev));
+      }
+    },
+    [selectedSessionId],
+  );
 
   // 兜底：如果最后一条消息是工具调用且 session 运行中，末尾连续的 tool_call 一定需要转圈
   const trailingToolCallIds = useMemo(() => {
@@ -680,6 +805,50 @@ function TabChat({
               ? parsedArgs.role
               : null;
 
+            // ═══ ask_question：待回答时渲染表单卡片（WS pending 事件按内容特征与 tool_call 关联）═══
+            const askAnswered = toolName === 'ask_question' && !isToolCallPending(msg.id, toolName, messages);
+            const askPendingSig =
+              toolName === 'ask_question' && parsedArgs
+                ? askQuestionSignature(asAskQuestionParts(parsedArgs))
+                : null;
+            let askPendingPayload: AskQuestionPendingPayload | null = null;
+            if (askPendingSig) {
+              for (const key of Object.keys(pendingAskMap)) {
+                const p = pendingAskMap[key];
+                if (!p) continue;
+                if (selectedSessionId && p.sessionId && p.sessionId !== selectedSessionId) continue;
+                if (askQuestionSignature(asAskQuestionParts(p as unknown as Record<string, unknown>)) === askPendingSig) {
+                  askPendingPayload = p;
+                  break;
+                }
+              }
+            }
+            const renderAskPendingForm = toolName === 'ask_question' && !askAnswered && askPendingPayload !== null;
+
+            if (renderAskPendingForm) {
+              return (
+                <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+                  <div className="flex flex-col items-start max-w-full flex-1 min-w-0 gap-1">
+                    <AskQuestionCard
+                      mode="pending"
+                      sessionId={selectedSessionId ?? ''}
+                      pending={askPendingPayload!}
+                      disabled={submittingAskId === askPendingPayload!.questionId}
+                      submitted={submittedAskIds.has(askPendingPayload!.questionId)}
+                      onSubmit={handleAskQuestionAnswer}
+                      onCancel={handleAskQuestionAnswer}
+                    />
+                    {askSubmitError && (
+                      <div className="text-[11px] text-red-600 dark:text-red-400 px-1">提交失败：{askSubmitError}</div>
+                    )}
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
+                      {new Date(msg.created_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
                 <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
@@ -759,6 +928,27 @@ function TabChat({
             const summary = msg.content_text
               ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
               : '(empty result)';
+
+            // ═══ ask_question 已回答：渲染结果卡片（单选✓/自己输入/多选逐行/取消warning/问卷逐题）。
+            //     优先用透传的 details，缺失时降级为 content text。 ═══
+            if (toolName === 'ask_question') {
+              const details = parseAskQuestionDetails(msg);
+              return (
+                <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+                  <div className="flex flex-col items-start max-w-full flex-1 min-w-0 gap-1">
+                    <AskQuestionCard
+                      mode="result"
+                      sessionId={selectedSessionId ?? ''}
+                      details={details}
+                      content={msg.content_text ?? ''}
+                    />
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
+                      {new Date(msg.created_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                </div>
+              );
+            }
 
             // spawn_session / writeback_to_parent 结果中提取 summary 字段用于 Markdown 渲染
             let spawnSummary: string | null = null;
@@ -959,8 +1149,19 @@ function TabChat({
           </div>
         )}
 
-        {/* Typing indicator */}
-        {isRunning && !streamingContent && (
+        {/* 等待用户回答（ask_question 阻塞）：与运行中同位置，蓝色闪烁 */}
+        {hasWaitingAsk && isRunning && !streamingContent ? (
+          <div className="flex items-start w-full">
+            <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-blue-700 dark:text-blue-300 font-sans">
+              <div className="flex space-x-1">
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span className="italic pl-1 font-medium">等待用户回答… 请选择或输入后提交</span>
+            </div>
+          </div>
+        ) : isRunning && !streamingContent ? (
           <div className="flex items-start w-full">
             <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-slate-500 dark:text-slate-400 font-sans">
               <div className="flex space-x-1">
@@ -973,7 +1174,7 @@ function TabChat({
               </span>
             </div>
           </div>
-        )}
+        ) : null}
 
         {/* Stopping indicator */}
         {isStopping && (
@@ -1129,6 +1330,7 @@ function TabChat({
         sending={sending}
         isRunning={isRunning}
         isStopping={isStopping}
+        isAsking={hasWaitingAsk}
         sendShortcutMode={sendShortcutMode}
         currentModelSupportsImages={currentModelSupportsImages}
         visionRelayEnabled={visionRelayEnabled}

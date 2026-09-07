@@ -43,6 +43,7 @@ interface ChatInputProps {
   sending: boolean;
   isRunning: boolean;
   isStopping: boolean;
+  isAsking?: boolean;
   sendShortcutMode?: 'enter' | 'mod_enter';
   currentModelSupportsImages?: boolean | null;
   visionRelayEnabled?: boolean;
@@ -58,6 +59,7 @@ export default function ChatInput({
   sending,
   isRunning,
   isStopping,
+  isAsking,
   sendShortcutMode,
   currentModelSupportsImages,
   visionRelayEnabled,
@@ -305,8 +307,8 @@ export default function ChatInput({
 
           {/* Textarea */}
           <textarea
-            className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition"
-            disabled={isRunning || isStopping || sending}
+            className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition disabled:bg-slate-100 dark:disabled:bg-slate-800/50"
+            disabled={isRunning || isStopping || sending || Boolean(isAsking)}
             ref={textareaRef}
             onChange={(e) => {
               const value = e.target.value;
@@ -395,7 +397,7 @@ export default function ChatInput({
                 textarea.selectionStart = textarea.selectionEnd = start + 1;
               });
             }}
-            placeholder="向当前会话发送消息…"
+            placeholder={isAsking ? "请先回答上方提问…" : "向当前会话发送消息…"}
             value={draft}
           />
 
@@ -469,7 +471,7 @@ export default function ChatInput({
             {/* Send button */}
             <button
               className="flex items-center space-x-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
-              disabled={isRunning || isStopping || sending || (draft.trim().length === 0 && attachments.length === 0)}
+              disabled={isRunning || isStopping || sending || Boolean(isAsking) || (draft.trim().length === 0 && attachments.length === 0)}
               onClick={() => { void handleSubmit(); }}
             >
               <span>{isStopping ? '正在停止…' : sending ? '发送中…' : '发送'}</span>

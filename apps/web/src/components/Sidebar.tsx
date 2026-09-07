@@ -25,6 +25,7 @@ import {
 import { ROLE_ICONS_MAP } from '../lib/role-icons';
 import { useRoleTemplates } from '../lib/hooks';
 import { fuzzyMatch } from '../lib/fuzzy';
+import { useWebSocket } from '../lib/ws-provider';
 const appVersion = __APP_VERSION__;
 
 interface SidebarProps {
@@ -146,6 +147,16 @@ function Sidebar({
   hideRoleLabels,
 }: SidebarProps) {
   const roleTemplatesQuery = useRoleTemplates();
+  // 询问中会话：绿灯覆为琥珀色，与 TabChat 琥珀等待指示同色
+  let askingSessionIds: Set<string> = new Set();
+  try {
+    const ws = (useWebSocket as unknown as () => { askingPendingMap?: Record<string, { sessionId: string }> })();
+    if (ws?.askingPendingMap) {
+      askingSessionIds = new Set(Object.values(ws.askingPendingMap).map((p) => p.sessionId).filter(Boolean) as string[]);
+    }
+  } catch {
+    askingSessionIds = new Set();
+  }
   const [sidebarSearch, setSidebarSearch] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(() => {
     try {
@@ -337,7 +348,8 @@ function Sidebar({
     const hasChildren = session.children.length > 0;
     const isCollapsed = collapsedSessions[session.id];
     const isArchived = Boolean(session.archived_at);
-    const statusDotColor = runtimeColor(session.runtime_status);
+    const isAsking = askingSessionIds.has(session.id);
+    const statusDotColor = isAsking ? 'bg-blue-500' : runtimeColor(session.runtime_status);
     const isPinned = Boolean(session.pinned_at);
 
 
@@ -414,7 +426,7 @@ function Sidebar({
                 </span>
               </div>
               {statusDotColor ? (
-                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${session.runtime_status === 'running' ? 'animate-pulse' : ''}`} />
+                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${(session.runtime_status === 'running' || isAsking) ? 'animate-pulse' : ''}`} />
               ) : null}
             </>
           ) : (
@@ -445,7 +457,7 @@ function Sidebar({
                 {roleLabel(session.role_template_key)}
               </span>
               {statusDotColor ? (
-                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${session.runtime_status === 'running' ? 'animate-pulse' : ''}`} />
+                <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${(session.runtime_status === 'running' || isAsking) ? 'animate-pulse' : ''}`} />
               ) : null}
             </div>
           ))}

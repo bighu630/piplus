@@ -333,6 +333,7 @@ export function registerChatRoutes(app: Hono, piClient: PiClient) {
         created_at: row.createdAt,
         tool_name: row.toolName ?? null,
         tool_args_json: row.toolArgs ? JSON.stringify(row.toolArgs) : null,
+        details: row.details ?? null,
       })),
     });
   });
