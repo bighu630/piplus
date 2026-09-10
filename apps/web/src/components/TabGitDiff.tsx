@@ -63,6 +63,19 @@ interface FileTreeNode {
 
 type GitOp = 'pull' | 'push' | 'commit' | 'checkout';
 
+/**
+ * The API returns checkout failures as `{ error: { message } }` (git's stderr), and the shared
+ * request() helper turns non-2xx responses into `new Error(body.error.message)` — so a failed
+ * checkout carries git's real error in `err.message`. Fall back to a readable default when the
+ * message is missing or is just the generic `request_failed:<status>` placeholder.
+ */
+function checkoutErrorMessage(err: unknown, fallback: string): string {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  const trimmed = message.trim();
+  if (!trimmed || /^request_failed:\d+$/.test(trimmed)) return fallback;
+  return trimmed;
+}
+
 function buildFileTree(files: string[]): FileTreeNode[] {
   const root: FileTreeNode[] = [];
 
@@ -545,11 +558,11 @@ function TabGitDiff({
                                     ? `已切换到分支 "${b.name}"`
                                     : (res.stderr || `切换到 "${b.name}" 失败`),
                                 });
-                              } catch {
+                              } catch (err) {
                                 setOpFeedback({
                                   op: 'checkout',
                                   result: 'error',
-                                  message: `切换到 "${b.name}" 失败`,
+                                  message: checkoutErrorMessage(err, `切换到 "${b.name}" 失败`),
                                 });
                               }
                               setTimeout(clearFeedback, 6000);
@@ -607,11 +620,11 @@ function TabGitDiff({
                                     ? `已切换到标签 "${t.name}"（detached HEAD）`
                                     : (res.stderr || `切换到标签 "${t.name}" 失败`),
                                 });
-                              } catch {
+                              } catch (err) {
                                 setOpFeedback({
                                   op: 'checkout',
                                   result: 'error',
-                                  message: `切换到标签 "${t.name}" 失败`,
+                                  message: checkoutErrorMessage(err, `切换到标签 "${t.name}" 失败`),
                                 });
                               }
                               setTimeout(clearFeedback, 6000);

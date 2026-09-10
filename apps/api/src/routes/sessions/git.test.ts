@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { createSeedDb } from '@piplus/db/init';
 import { createApp } from '../../app';
 import { mkdir, rm } from 'node:fs/promises';
@@ -24,8 +24,30 @@ function mustGit(cwd: string, ...args: string[]): string {
   return result.stdout;
 }
 
+/**
+ * Temp paths created by this suite: /tmp repos, temp sqlite DBs and worktree dirs. Tracked so
+ * afterEach can remove them unconditionally — a failing assertion mid-test must not leak files.
+ */
+const tempPaths: string[] = [];
+
+function trackTempPath(p: string): string {
+  tempPaths.push(p);
+  return p;
+}
+
+afterEach(async () => {
+  const paths = tempPaths.splice(0, tempPaths.length);
+  for (const p of paths) {
+    await rm(p, { recursive: true, force: true });
+    // SQLite keeps sidecar files next to the database file.
+    await rm(`${p}-wal`, { force: true });
+    await rm(`${p}-shm`, { force: true });
+    await rm(`${p}-journal`, { force: true });
+  }
+});
+
 async function makeRepo(label: string): Promise<string> {
-  const dir = path.join('/tmp', `piplus-git-${label}-${crypto.randomUUID()}`);
+  const dir = trackTempPath(path.join('/tmp', `piplus-git-${label}-${crypto.randomUUID()}`));
   await mkdir(dir, { recursive: true });
   mustGit(dir, 'init', '-b', 'main');
   // Without an identity `git commit` fails in a fresh temp repo.
@@ -42,7 +64,7 @@ async function commitFile(dir: string, fileName: string, content: string, messag
 }
 
 async function seedSession(repoDir: string): Promise<{ app: TestApp; sessionId: string }> {
-  const dbPath = `/tmp/piplus-git-db-${crypto.randomUUID()}.sqlite`;
+  const dbPath = trackTempPath(`/tmp/piplus-git-db-${crypto.randomUUID()}.sqlite`);
   createSeedDb(dbPath);
   Bun.env.DATABASE_URL = `file:${dbPath}`;
   const app = createApp();
@@ -126,6 +148,70 @@ describe('git tags and detached HEAD', () => {
     expect(mustGit(repo, 'symbolic-ref', '-q', 'HEAD')).toBe('refs/heads/feature');
 
     await rm(repo, { recursive: true, force: true });
+  });
+
+  test('git/tags keeps plain tag names when a same-named branch exists and checkout round-trips', async () => {
+    const repo = await makeRepo('same-name-branch-tag');
+    // Tag points at commit A; the same-named branch points at a different commit B.
+    const tagSha = await commitFile(repo, 'a.txt', 'tag target', 'commit A (tag target)');
+    mustGit(repo, 'tag', 'v2.0.0');
+    const branchSha = await commitFile(repo, 'a.txt', 'branch target', 'commit B (branch target)');
+    mustGit(repo, 'branch', 'v2.0.0', branchSha);
+    expect(branchSha).not.toBe(tagSha);
+
+    const { app, sessionId } = await seedSession(repo);
+
+    // 1) The list endpoint must expose the plain tag name, never the disambiguated `tags/v2.0.0`.
+    const listed = await apiGet(app, sessionId, 'tags');
+    expect(listed.status).toBe(200);
+    expect(listed.body.tags).toHaveLength(1);
+    expect(listed.body.tags[0].name).toBe('v2.0.0');
+    expect(listed.body.tags[0].is_current).toBe(false);
+
+    // 2) Checkout with the name exactly as returned by the list endpoint must succeed.
+    const checkout = await apiCheckout(app, sessionId, { ref: listed.body.tags[0].name, type: 'tag' });
+    expect(checkout.status).toBe(200);
+
+    // 3) HEAD must be at the tag's commit (commit A), not at the same-named branch's commit (B).
+    expect(mustGit(repo, 'rev-parse', 'HEAD')).toBe(tagSha);
+    expect(mustGit(repo, 'rev-parse', 'HEAD')).not.toBe(branchSha);
+
+    // 4) The tag must now be flagged current — the display name and is_current share one source.
+    const after = await apiGet(app, sessionId, 'tags');
+    expect(after.status).toBe(200);
+    expect(after.body.detached).toBe(true);
+    expect(after.body.tags.find((t: any) => t.name === 'v2.0.0').is_current).toBe(true);
+  });
+
+  test('POST git/checkout reports git stderr via error.message and preserves local changes on failure', async () => {
+    const repo = await makeRepo('checkout-dirty');
+    await commitFile(repo, 'a.txt', 'base', 'base commit');
+    mustGit(repo, 'checkout', '-b', 'other');
+    await commitFile(repo, 'a.txt', 'other version', 'other commit');
+    mustGit(repo, 'checkout', 'main');
+
+    const { app, sessionId } = await seedSession(repo);
+
+    // Dirty working tree: `git checkout other` must refuse to overwrite the local edit.
+    await Bun.write(path.join(repo, 'a.txt'), 'local uncommitted work');
+    const res = await apiCheckout(app, sessionId, { ref: 'other' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.result).toBe('error');
+    expect(typeof res.body.stderr).toBe('string');
+    expect(res.body.stderr.length).toBeGreaterThan(0);
+    expect(res.body.stderr).toContain('a.txt');
+    // The web client reads `body.error.message` on non-2xx — this is what surfaces git stderr.
+    expect(res.body.error).toBeDefined();
+    expect(res.body.error.code).toBe('CHECKOUT_FAILED');
+    expect(typeof res.body.error.message).toBe('string');
+    expect(res.body.error.message.length).toBeGreaterThan(0);
+    expect(res.body.error.message).toContain('a.txt');
+
+    // The failed checkout must not drop the local modification nor switch the ref.
+    expect(mustGit(repo, 'symbolic-ref', '-q', 'HEAD')).toBe('refs/heads/main');
+    expect(mustGit(repo, 'status', '--porcelain')).toBe('M a.txt');
+    expect(await Bun.file(path.join(repo, 'a.txt')).text()).toBe('local uncommitted work');
   });
 
   test('git/tags marks the checked out tag as current after tag checkout', async () => {
@@ -248,6 +334,10 @@ describe('git tags and detached HEAD', () => {
     const dashRef = await apiCheckout(app, sessionId, { ref: '-f', type: 'tag' });
     expect(dashRef.status).toBe(400);
     expect(dashRef.body.error.code).toBe('INVALID_BRANCH');
+    // The shared validation must reject `-f` without `type` (branch mode) too.
+    const dashRefBranchMode = await apiCheckout(app, sessionId, { ref: '-f' });
+    expect(dashRefBranchMode.status).toBe(400);
+    expect(dashRefBranchMode.body.error.code).toBe('INVALID_BRANCH');
     // The local modification must survive the rejected request.
     expect(mustGit(repo, 'status', '--porcelain')).toBe('M a.txt');
     expect(await Bun.file(path.join(repo, 'a.txt')).text()).toBe('local modification');
@@ -272,7 +362,7 @@ describe('git tags and detached HEAD', () => {
     await commitFile(repo, 'a.txt', 'one', 'first commit');
     mustGit(repo, 'tag', 'v0.1.0');
     mustGit(repo, 'branch', 'feature-a');
-    const worktreeDir = `${repo}-wt`;
+    const worktreeDir = trackTempPath(`${repo}-wt`);
     mustGit(repo, 'worktree', 'add', worktreeDir, 'feature-a');
 
     const { app, sessionId } = await seedSession(repo);

@@ -21,7 +21,7 @@ function isDetachedHead(cwd: string): boolean {
 /** Names of every tag pointing at the current HEAD (all of them, not just the closest one). */
 function tagsPointingAtHead(cwd: string): string[] {
   try {
-    return execGit(cwd, 'tag --points-at HEAD')
+    return execGit(cwd, "tag --points-at HEAD --format='%(refname:lstrip=2)'")
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean);
@@ -291,7 +291,7 @@ export function registerGitRoutes(app: Hono) {
 
       const output = execGit(
         cwd,
-        `tag --list --sort=-creatordate --format='%(refname:short)|||%(objecttype)|||%(creatordate:short)|||%(subject)'`,
+        `tag --list --sort=-creatordate --format='%(refname:lstrip=2)|||%(objecttype)|||%(creatordate:short)|||%(subject)'`,
       );
       const tags = output
         .split('\n')
@@ -527,7 +527,19 @@ export function registerGitRoutes(app: Hono) {
       return c.json({ session_id: sessionId, cwd: mainCwd, result: 'ok', stdout: stdout.trim(), branch });
     } catch (err: unknown) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
-      return c.json({ session_id: sessionId, cwd: mainCwd, result: 'error', stderr, branch }, 500);
+      return c.json(
+        {
+          session_id: sessionId,
+          cwd: mainCwd,
+          result: 'error',
+          stderr,
+          branch,
+          // `error` is append-only: the web client's request() throws on non-2xx and reads
+          // `body.error.message`, so git's stderr must be duplicated there to surface it.
+          error: { code: 'CHECKOUT_FAILED', message: stderr },
+        },
+        500,
+      );
     }
   });
 }
