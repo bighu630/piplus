@@ -5,7 +5,7 @@ import { createSeedDb } from '@piplus/db/init';
 import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
-import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup, finalizeSessionStop } from './runtime';
+import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup, finalizeSessionStop, finalizeForcedRuntimeReclaim, markSessionIdleIfRunOwned } from './runtime';
 import { ASK_QUESTION_SYSTEM_PROMPT } from '../extensions/ask-question';
 import { setCrossProjectWait, clearCrossProjectWait, setWaitingOnChild, clearWaitingOnChild, isWaitingOnChild } from './request-context';
 
@@ -23,6 +23,7 @@ function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error;
     unsubscribed: string[];
     sent: Array<{ sessionId: string; content: string }>;
     closeRuntimeCalls: string[];
+    stopSessionCalls: string[];
   } = {
     runtimeEnsured: [],
     promptsInjected: [],
@@ -31,6 +32,7 @@ function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error;
     unsubscribed: [],
     sent: [],
     closeRuntimeCalls: [],
+    stopSessionCalls: [],
   };
 
   const client: PiClient = {
@@ -70,7 +72,8 @@ function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error;
       if (opts?.sendError) throw opts.sendError;
       return { sessionId, runId: 'run_pi' };
     },
-    async stopSession() {
+    async stopSession(sessionId: string) {
+      state.stopSessionCalls.push(sessionId);
       return { status: 'stopped' as const };
     },
     async waitForSessionIdle() {
@@ -183,6 +186,62 @@ async function setupSession(overrides?: {
   } as any);
 
   return { db };
+}
+
+/**
+ * 有界轮询等待条件成立（超时返回 false）。
+ * 固定 sleep 在慢 CI 上会 flake（要么观测不到、要么把断言变成空跑）；
+ * 轮询在超时后仍返回一次判定结果，调用方必须对返回值断言——不得当弱断言用。
+ */
+async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return true;
+    await Bun.sleep(5);
+  }
+  return await predicate();
+}
+
+type TestDb = Awaited<ReturnType<typeof setupSession>>['db'];
+
+async function readSessionRuntime(db: TestDb, sessionId: string) {
+  const [row] = await db
+    .select({ runtimeStatus: sessions.runtimeStatus, lastRuntimeError: sessions.lastRuntimeError })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId))
+    .limit(1);
+  return row;
+}
+
+/** 有界轮询等待会话落到目标 runtimeStatus（慢 CI 上固定 sleep 会 flake）。 */
+async function waitForRuntimeStatus(db: TestDb, sessionId: string, status: 'idle' | 'running', timeoutMs = 3000): Promise<boolean> {
+  return await waitUntil(async () => (await readSessionRuntime(db, sessionId))?.runtimeStatus === status, timeoutMs);
+}
+
+/**
+ * 有界轮询：在 windows × windowMs 的预算内反复确认会话「始终未被 safety timeout 收敛」。
+ * - 固定 sleep 在慢 CI 上只观测一次，且无法区分「豁免生效」与「定时器根本没跑」；
+ * - 轮询在每个窗口内多次读 DB，并在预算耗尽后再断言一次（等价于原 sleep 的强度，不放宽）；
+ * - 若预算内出现 idle，立即由断言报失败——不是「睡完再看」的单点抽样。
+ */
+async function expectStillRunningAcrossWindows(
+  db: TestDb,
+  sessionId: string,
+  options: { windowMs: number; windows: number; unsubscribed?: string[] },
+) {
+  const deadline = Date.now() + options.windowMs * options.windows;
+  const pollInterval = Math.max(5, Math.floor(options.windowMs / 4));
+  while (Date.now() < deadline) {
+    const row = await readSessionRuntime(db, sessionId);
+    expect(row?.runtimeStatus).toBe('running');
+    expect(row?.lastRuntimeError).toBeNull();
+    if (options.unsubscribed) expect(options.unsubscribed).not.toContain(sessionId);
+    await Bun.sleep(pollInterval);
+  }
+  const final = await readSessionRuntime(db, sessionId);
+  expect(final?.runtimeStatus).toBe('running');
+  expect(final?.lastRuntimeError).toBeNull();
+  if (options.unsubscribed) expect(options.unsubscribed).not.toContain(sessionId);
 }
 
 describe('startSessionRun', () => {
@@ -699,19 +758,19 @@ describe('startSessionRun', () => {
         onRuntimeStatusChange: async () => {},
       });
 
-      // Wait past the safety timeout — 内存标记豁免（子会话 idle 也不受影响）
-      await Bun.sleep(400);
-
-      const [parent] = await db.select().from(sessions).where(eq(sessions.id, 'session_wait_marker')).limit(1);
-      expect(parent?.runtimeStatus).toBe('running');
-      expect(parent?.lastRuntimeError).toBeNull();
-      // No cleanup ran — stream subscription still active
-      expect(state.unsubscribed).not.toContain('session_wait_marker');
+      // 内存标记豁免（子会话 idle 也不受影响）：在 ≥1 个安全窗口内轮询确认始终未被收敛。
+      // （旧写法：固定 sleep(400) 单点抽样——慢 CI 上既可能漏观测，也可能空跑）
+      await expectStillRunningAcrossWindows(db, 'session_wait_marker', {
+        windowMs: 150,
+        windows: 1,
+        unsubscribed: state.unsubscribed,
+      });
 
       // Marker cleared — countdown resumes and the timeout finally fires
       clearWaitingOnChild('session_wait_marker');
 
-      await Bun.sleep(400);
+      // 有界轮询等待超时恢复执行（证明计时器确实在跑，上方的「仍 running」不是空跑）
+      expect(await waitForRuntimeStatus(db, 'session_wait_marker', 'idle')).toBe(true);
 
       const [parentAfter] = await db.select().from(sessions).where(eq(sessions.id, 'session_wait_marker')).limit(1);
       expect(parentAfter?.runtimeStatus).toBe('idle');
@@ -721,6 +780,101 @@ describe('startSessionRun', () => {
     } finally {
       // 即使断言失败也要清理标记，避免模块级单例 Map 残留污染其他测试
       clearWaitingOnChild('session_wait_marker');
+    }
+  });
+
+  test('parallel parent waits: clearing one child keeps the parent exempt via the other child', async () => {
+    // 回归（线上事故场景）：父并行 spawn_session(wait=true) 等两个 worker。先返回的
+    // waitForChildWriteback 在 finally 里只应清理自己那个子会话的标记；旧实现 clear(parent)
+    // 会把另一个仍在进行的等待一并清掉 → 父失去豁免 1，被自身 safety timeout 强杀。
+    const { db } = await setupSession({ sessionId: 'session_parallel_wait_parent', roleTemplateId: 'role_worker' });
+    const now = new Date();
+
+    // 两个子会话在 DB 中均为 idle（瞬时窗口）：豁免 2 的 DB 查询查不到 active child，
+    // 父是否被豁免完全取决于内存多条目标记（豁免 1）。
+    for (const childId of ['session_parallel_wait_child_1', 'session_parallel_wait_child_2']) {
+      await db.insert(sessions).values({
+        id: childId,
+        projectId: 'project_test_runtime',
+        parentSessionId: 'session_parallel_wait_parent',
+        rootSessionId: 'session_parallel_wait_parent',
+        depth: 1,
+        roleTemplateId: 'role_worker',
+        piSessionId: `pi_${childId}`,
+        piSessionLocatorJson: stringifyLocator({ piSessionId: `pi_${childId}`, sessionFile: `/tmp/pi-${childId}.jsonl` }),
+        requestedByMessageId: null,
+        title: 'Parallel Wait Child',
+        titleSource: 'default',
+        status: 'active',
+        runtimeStatus: 'idle',
+        currentModelProvider: null,
+        currentModelId: null,
+        lastActivityAt: now,
+        lastRunAt: now,
+        lastStopAt: null,
+        lastRuntimeError: null,
+        createdBy: 'user_seed',
+        archivedAt: null,
+        archivedBy: null,
+        createdAt: now,
+        updatedAt: now,
+        roleBasePromptSnapshot: 'base',
+        userSuppliedPrompt: '',
+        parentSuppliedPrompt: '',
+        compiledPrompt: 'compiled',
+      } as any);
+    }
+
+    const { client, state } = makePiClient();
+    // sendMessage never resolves — session stays running with no stream events
+    const pendingClient: PiClient = { ...client, sendMessage: () => new Promise<never>(() => {}) };
+
+    try {
+      // 父并行等待两个子会话（两次 spawn_session wait=true）——多条目并存
+      setWaitingOnChild('session_parallel_wait_parent', 'req_parallel_1', 'session_parallel_wait_child_1');
+      setWaitingOnChild('session_parallel_wait_parent', 'req_parallel_2', 'session_parallel_wait_child_2');
+
+      await startSessionRun({
+        db,
+        piClient: pendingClient,
+        sessionId: 'session_parallel_wait_parent',
+        userId: 'user_seed',
+        content: 'x',
+        safetyTimeoutMs: 150,
+        onStreamEvent: async () => {},
+        onRuntimeStatusChange: async () => {},
+      });
+
+      // 先跨过 1 个安全窗口：父并行等两子，豁免 1 必须让它始终未被收敛
+      await expectStillRunningAcrossWindows(db, 'session_parallel_wait_parent', {
+        windowMs: 150,
+        windows: 1,
+        unsubscribed: state.unsubscribed,
+      });
+
+      // 第一个 wait 循环先退出：精确清理自己那个子会话
+      clearWaitingOnChild('session_parallel_wait_parent', 'session_parallel_wait_child_1');
+
+      // 旧实现：clear 连 child_2 的标记一起清掉 → 父被超时强杀 → 以下轮询断言 FAIL。
+      // 在 ≥2 个窗口内持续确认仍 running（固定 sleep 的单点抽样换成全程轮询）
+      await expectStillRunningAcrossWindows(db, 'session_parallel_wait_parent', {
+        windowMs: 150,
+        windows: 2,
+        unsubscribed: state.unsubscribed,
+      });
+
+      // 第二个 wait 循环也退出后，豁免 1 才真正失效，超时恢复执行
+      clearWaitingOnChild('session_parallel_wait_parent', 'session_parallel_wait_child_2');
+
+      expect(await waitForRuntimeStatus(db, 'session_parallel_wait_parent', 'idle')).toBe(true);
+
+      const [parentAfter] = await db.select().from(sessions).where(eq(sessions.id, 'session_parallel_wait_parent')).limit(1);
+      expect(parentAfter?.runtimeStatus).toBe('idle');
+      expect(parentAfter?.lastRuntimeError).toBeNull();
+      expect(state.unsubscribed).toContain('session_parallel_wait_parent');
+    } finally {
+      // 即使断言失败也要清理标记，避免模块级单例 Map 残留污染其他测试
+      clearWaitingOnChild('session_parallel_wait_parent');
     }
   });
 
@@ -814,6 +968,81 @@ describe('startSessionRun', () => {
       expect(state.unsubscribed).toContain('session_sibling_child');
     } finally {
       clearWaitingOnChild('session_sibling_parent');
+    }
+  });
+
+  test('parallel siblings are each exempted while the parent waits on both', async () => {
+    // 回归（并行场景）：父标记改为多条目后，豁免 4 必须对父正在等的每个子会话各自成立。
+    // 旧实现单条目：后一次 setWaitingOnChild 覆盖前一次，只有一个子会话能命中豁免 4，
+    // 另一个子会话被自身 safety timeout 误杀。
+    const childId1 = 'session_parallel_managed_child_1';
+    const childId2 = 'session_parallel_managed_child_2';
+    const parentId = 'session_parallel_managed_parent';
+
+    const setup1 = await setupSession({ sessionId: childId1, roleTemplateId: 'role_worker' });
+    const setup2 = await setupSession({ sessionId: childId2, roleTemplateId: 'role_worker' });
+    // 无需真实插入父行——豁免逻辑只读子行 + 内存标记
+    await setup1.db.update(sessions)
+      .set({ parentSessionId: parentId, updatedAt: new Date() })
+      .where(eq(sessions.id, childId1));
+    await setup2.db.update(sessions)
+      .set({ parentSessionId: parentId, updatedAt: new Date() })
+      .where(eq(sessions.id, childId2));
+
+    const { client: client1, state: state1 } = makePiClient();
+    const { client: client2, state: state2 } = makePiClient();
+    // sendMessage never resolves — sessions stay running with no stream events
+    const pendingClient1: PiClient = { ...client1, sendMessage: () => new Promise<never>(() => {}) };
+    const pendingClient2: PiClient = { ...client2, sendMessage: () => new Promise<never>(() => {}) };
+
+    try {
+      // 父并行等待两个子会话——两条标记并存，两个子各自精确匹配自己那条
+      setWaitingOnChild(parentId, 'req_parallel_managed_1', childId1);
+      setWaitingOnChild(parentId, 'req_parallel_managed_2', childId2);
+
+      await startSessionRun({
+        db: setup1.db,
+        piClient: pendingClient1,
+        sessionId: childId1,
+        userId: 'user_seed',
+        content: 'x',
+        safetyTimeoutMs: 150,
+        onStreamEvent: async () => {},
+        onRuntimeStatusChange: async () => {},
+      });
+      await startSessionRun({
+        db: setup2.db,
+        piClient: pendingClient2,
+        sessionId: childId2,
+        userId: 'user_seed',
+        content: 'x',
+        safetyTimeoutMs: 150,
+        onStreamEvent: async () => {},
+        onRuntimeStatusChange: async () => {},
+      });
+
+      // 跨过 2 个豁免窗口（未达连续豁免上限 3）——两个子都必须仍被豁免
+      await Bun.sleep(350);
+
+      const [child1] = await setup1.db.select().from(sessions).where(eq(sessions.id, childId1)).limit(1);
+      const [child2] = await setup2.db.select().from(sessions).where(eq(sessions.id, childId2)).limit(1);
+      // 旧实现：child_1 的标记已被 child_2 覆盖 → child_1 超时被杀 → 以下断言 FAIL
+      expect(child1?.runtimeStatus).toBe('running');
+      expect(child2?.runtimeStatus).toBe('running');
+      expect(state1.unsubscribed).not.toContain(childId1);
+      expect(state2.unsubscribed).not.toContain(childId2);
+
+      // 父 wait 两个循环都退出 → 豁免失效，两个子各自被自身超时回收
+      clearWaitingOnChild(parentId);
+      await Bun.sleep(400);
+
+      const [child1After] = await setup1.db.select().from(sessions).where(eq(sessions.id, childId1)).limit(1);
+      const [child2After] = await setup2.db.select().from(sessions).where(eq(sessions.id, childId2)).limit(1);
+      expect(child1After?.runtimeStatus).toBe('idle');
+      expect(child2After?.runtimeStatus).toBe('idle');
+    } finally {
+      // 即使断言失败也要清理标记，避免模块级单例 Map 残留污染其他测试
+      clearWaitingOnChild(parentId);
     }
   });
 
@@ -1160,4 +1389,499 @@ describe('finalizeSessionStop', () => {
     expect(session?.runtimeStatus).toBe('running');
     expect(statusCalls).toBe(0);
   });
+});
+
+// B1：pi-client 卡死兜底强杀（forced runtime dispose）后，domain 必须把会话状态收敛回 idle，
+// 否则迟到的 writeback 因「父会话仍 running」而无法触发 auto-wake，结果永久躺在 DB 里（线上事故）。
+// finalizeForcedRuntimeReclaim 是幂等的条件收敛：lastRunAt 护栏保证绝不覆盖已接管会话的新 run。
+describe('finalizeForcedRuntimeReclaim', () => {
+  const SESSION = 'session_test_runtime';
+  const DISPOSED_AT = Date.parse('2026-01-01T00:10:00.000Z');
+
+  async function seedRunningSession(overrides: {
+    runtimeStatus?: string;
+    lastRunAt?: Date | null;
+    lastRuntimeError?: string | null;
+  } = {}) {
+    const { db } = await setupSession();
+    await db.update(sessions).set({
+      runtimeStatus: overrides.runtimeStatus ?? 'running',
+      lastRunAt: overrides.lastRunAt === undefined ? new Date('2026-01-01T00:00:00.000Z') : overrides.lastRunAt,
+      lastRuntimeError: overrides.lastRuntimeError === undefined ? 'stale_error' : overrides.lastRuntimeError,
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    }).where(eq(sessions.id, SESSION));
+    return { db };
+  }
+
+  type StatusPayload = { sessionId: string; projectId: string; runtimeStatus: 'idle'; error: string | null };
+
+  test('running 且 lastRunAt <= disposedAt：收敛 idle + 广播一次（payload 形状断言）', async () => {
+    const { db } = await seedRunningSession({ lastRunAt: new Date('2026-01-01T00:00:00.000Z') });
+    const broadcasts: StatusPayload[] = [];
+
+    const converged = await finalizeForcedRuntimeReclaim({
+      db,
+      sessionId: SESSION,
+      disposedAt: DISPOSED_AT,
+      attempts: 3,
+      noProgressMs: 1_800_000,
+      onRuntimeStatusChange: async (payload) => {
+        broadcasts.push(payload);
+      },
+    });
+
+    expect(converged).toBe(true);
+    expect(broadcasts).toEqual([{
+      sessionId: SESSION,
+      projectId: 'project_test_runtime',
+      runtimeStatus: 'idle',
+      error: null,
+    }]);
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, SESSION)).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+    expect(session?.lastRuntimeError).toBeNull();
+  });
+
+  test('running 但 lastRunAt > disposedAt（已被更新的 run 接管）：不覆盖、不广播、返回 false', async () => {
+    const newerRunAt = new Date('2026-01-01T00:20:00.000Z');
+    const { db } = await seedRunningSession({ lastRunAt: newerRunAt });
+    const broadcasts: StatusPayload[] = [];
+
+    const converged = await finalizeForcedRuntimeReclaim({
+      db,
+      sessionId: SESSION,
+      disposedAt: DISPOSED_AT,
+      onRuntimeStatusChange: async (payload) => {
+        broadcasts.push(payload);
+      },
+    });
+
+    expect(converged).toBe(false);
+    expect(broadcasts).toEqual([]);
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, SESSION)).limit(1);
+    expect(session?.runtimeStatus).toBe('running');
+    expect(session?.lastRunAt?.toISOString()).toBe(newerRunAt.toISOString());
+  });
+
+  test('已 idle：skip 不广播、返回 false（不重复收敛）', async () => {
+    const { db } = await seedRunningSession({ runtimeStatus: 'idle', lastRuntimeError: null });
+    const broadcasts: StatusPayload[] = [];
+
+    const converged = await finalizeForcedRuntimeReclaim({
+      db,
+      sessionId: SESSION,
+      disposedAt: DISPOSED_AT,
+      onRuntimeStatusChange: async (payload) => {
+        broadcasts.push(payload);
+      },
+    });
+
+    expect(converged).toBe(false);
+    expect(broadcasts).toEqual([]);
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, SESSION)).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+  });
+
+  test('stopping：skip 不广播、返回 false（正在进行中的用户停止流程自己收尾）', async () => {
+    const { db } = await seedRunningSession({ runtimeStatus: 'stopping' });
+    const broadcasts: StatusPayload[] = [];
+
+    const converged = await finalizeForcedRuntimeReclaim({
+      db,
+      sessionId: SESSION,
+      disposedAt: DISPOSED_AT,
+      onRuntimeStatusChange: async (payload) => {
+        broadcasts.push(payload);
+      },
+    });
+
+    expect(converged).toBe(false);
+    expect(broadcasts).toEqual([]);
+
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, SESSION)).limit(1);
+    expect(session?.runtimeStatus).toBe('stopping');
+  });
+
+  test('会话不存在：返回 false 且不抛（handler 不得因迟到会话被删而报错）', async () => {
+    const { db } = await setupSession();
+    let broadcasts = 0;
+
+    const converged = await finalizeForcedRuntimeReclaim({
+      db,
+      sessionId: 'session_never_exists',
+      disposedAt: DISPOSED_AT,
+      onRuntimeStatusChange: async () => {
+        broadcasts++;
+      },
+    });
+
+    expect(converged).toBe(false);
+    expect(broadcasts).toBe(0);
+  });
+});
+
+// 配套加固：被强杀旧 run 的迟到 cleanup（线上实测可迟到 5 分钟）不得把新 run 的状态改成 idle，
+// 也不得回收新 run 的 runtime。所有权判据 = lastRunAt（markSessionRunning 每次 run 写入），
+// 绝不能用 updated_at（writeback/活动会刷新）。
+describe('markSessionIdleIfRunOwned / doCleanup 所有权判定', () => {
+  const SESSION = 'session_test_runtime';
+
+  test('自身 run（lastRunAt === runStartedAt）正常收敛 idle 并写入 error/updatedAt', async () => {
+    const { db } = await setupSession();
+    const runStartedAt = new Date('2026-01-01T00:00:00.000Z');
+    const finishedAt = new Date('2026-01-01T00:02:00.000Z');
+    await db.update(sessions).set({ runtimeStatus: 'running', lastRunAt: runStartedAt, lastRuntimeError: null, updatedAt: runStartedAt }).where(eq(sessions.id, SESSION));
+
+    const owned = await markSessionIdleIfRunOwned(db, SESSION, runStartedAt, finishedAt, 'boom');
+
+    expect(owned).toBe(true);
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, SESSION)).limit(1);
+    expect(session?.runtimeStatus).toBe('idle');
+    expect(session?.lastRuntimeError).toBe('boom');
+    expect(session?.updatedAt?.toISOString()).toBe(finishedAt.toISOString());
+  });
+
+  test('lastRunAt 已被更新的 run 推进：返回 false 且绝不覆盖新 run 的状态', async () => {
+    const { db } = await setupSession();
+    const oldRunStartedAt = new Date('2026-01-01T00:00:00.000Z');
+    const newRunStartedAt = new Date('2026-01-01T00:05:00.000Z');
+    await db.update(sessions).set({ runtimeStatus: 'running', lastRunAt: newRunStartedAt, lastRuntimeError: null, updatedAt: newRunStartedAt }).where(eq(sessions.id, SESSION));
+
+    const owned = await markSessionIdleIfRunOwned(db, SESSION, oldRunStartedAt, new Date('2026-01-01T00:06:00.000Z'), 'late_error');
+
+    expect(owned).toBe(false);
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, SESSION)).limit(1);
+    expect(session?.runtimeStatus).toBe('running');
+    expect(session?.lastRunAt?.toISOString()).toBe(newRunStartedAt.toISOString());
+    expect(session?.lastRuntimeError).toBeNull();
+  });
+
+  // lastRunAt IS NULL 的收敛语义（刻意选保守出口，见 markSessionIdleIfRunOwned JSDoc）：
+  // 不变量是「running 会话的 lastRunAt 必非 NULL」（认领即写 lastRunAt，doCleanup 必在
+  // 认领与 markSessionRunning 之后），因此本用例在真实运行中不可达；
+  // 一旦外部写者（如 chat 路由 vision 占位）把会话置 running 而没写 lastRunAt，
+  // 所有权无法证明 → 绝不写 idle/不误覆盖（旧实现与修复后行为一致）。
+  test('lastRunAt IS NULL：不视为本 run 所有（返回 false）且不写 idle/不写错误', async () => {
+    const { db } = await setupSession();
+    await db.update(sessions)
+      .set({ runtimeStatus: 'running', lastRunAt: null, lastRuntimeError: null, updatedAt: new Date() })
+      .where(eq(sessions.id, SESSION));
+
+    const owned = await markSessionIdleIfRunOwned(db, SESSION, new Date(), new Date('2026-01-01T00:06:00.000Z'), 'boom');
+
+    expect(owned).toBe(false);
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, SESSION)).limit(1);
+    expect(session?.runtimeStatus).toBe('running');
+    expect(session?.lastRunAt).toBeNull();
+    expect(session?.lastRuntimeError).toBeNull();
+  });
+
+  // 被强杀/被接管的旧 run 迟到 cleanup 的两种出口（成功与失败）都必须完全不碰新 run。
+  async function runSupersededWorker(options: { sessionId: string; sendError?: Error }) {
+    const { db } = await setupSession({ sessionId: options.sessionId });
+    // worker 角色：若所有权判定误判为「仍拥有会话」，doCleanup 会调用 closeRuntime（可观测）
+    const workerRoleTmplId = `rt_worker_${options.sessionId}`;
+    await db.insert(roleTemplates).values({
+      id: workerRoleTmplId,
+      key: 'worker',
+      version: '1',
+      name: 'Worker',
+      description: 'Worker role',
+      basePrompt: 'Do work.',
+      configJson: '{}',
+      createdBy: 'system',
+      ownerType: 'system',
+      visibility: 'public',
+      isBuiltin: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any);
+    await db.update(sessions).set({ roleTemplateId: workerRoleTmplId }).where(eq(sessions.id, options.sessionId));
+
+    const oldRunStartedAt = new Date('2026-01-01T00:00:00.000Z');
+    const newRunStartedAt = new Date('2026-01-01T00:01:00.000Z');
+    const { client, state } = options.sendError ? makePiClient({ sendError: options.sendError }) : makePiClient();
+
+    // 模拟「旧 run 的 sendMessage 还在途，新 run 已认领会话」：
+    // 在 sendMessage 返回前把 lastRunAt 推进到更晚（新 run 的 markSessionRunning 语义）
+    const baseSendMessage = client.sendMessage.bind(client);
+    client.sendMessage = async (sessionId: string, content: string) => {
+      await db.update(sessions).set({
+        runtimeStatus: 'running',
+        lastRunAt: newRunStartedAt,
+        lastRuntimeError: null,
+        updatedAt: newRunStartedAt,
+      }).where(eq(sessions.id, sessionId));
+      return baseSendMessage(sessionId, content);
+    };
+
+    const statusEvents: Array<{ runtimeStatus: 'running' | 'idle'; error: string | null }> = [];
+    await startSessionRun({
+      db,
+      piClient: client,
+      sessionId: options.sessionId,
+      userId: 'user_seed',
+      content: 'old run',
+      startedAt: oldRunStartedAt,
+      onRuntimeStatusChange: async ({ runtimeStatus, error }) => {
+        statusEvents.push({ runtimeStatus, error });
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    return { db, state, statusEvents, newRunStartedAt };
+  }
+
+  test('doCleanup 端到端（成功出口）：旧 run 迟到 cleanup 不置 idle、不广播 idle、不回收新 run 的 runtime', async () => {
+    const workerSessionId = 'session_worker_superseded';
+    const { db, state, statusEvents, newRunStartedAt } = await runSupersededWorker({ sessionId: workerSessionId });
+
+    // 会话仍归新 run：状态与 lastRunAt 都不得被旧 run 的 cleanup 改动
+    const [session] = await db.select().from(sessions).where(eq(sessions.id, workerSessionId)).limit(1);
+    expect(session?.runtimeStatus).toBe('running');
+    expect(session?.lastRunAt?.toISOString()).toBe(newRunStartedAt.toISOString());
+    expect(session?.lastRuntimeError).toBeNull();
+
+    // 不广播 idle（只有启动时的 running）
+    expect(statusEvents).toEqual([{ runtimeStatus: 'running', error: null }]);
+    // 不回收新 run 的 runtime（避免连坐杀掉新 run）
+    expect(state.closeRuntimeCalls).not.toContain(workerSessionId);
+  });
+
+  test('doCleanup 端到端（失败出口）：旧 run 迟到失败 cleanup 不 abort 新 run、不写旧 run 错误事件', async () => {
+    const workerSessionId = 'session_worker_superseded_error';
+    const { db, state, statusEvents } = await runSupersededWorker({
+      sessionId: workerSessionId,
+      sendError: new Error('old_run_failed'),
+    });
+
+    // 旧 run 的失败 cleanup 对被新 run 接管的会话不得有任何副作用：
+    // abort（stopSession）会打断新 run 的在途生成，closeRuntime 会回收新 run 的 runtime
+    expect(state.stopSessionCalls).not.toContain(workerSessionId);
+    expect(state.closeRuntimeCalls).not.toContain(workerSessionId);
+    expect(statusEvents).toEqual([{ runtimeStatus: 'running', error: null }]);
+
+    // 旧 run 的错误事件不得写进已归新 run 的会话
+    const events = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, workerSessionId));
+    expect(events.filter((e) => e.type === 'chat_runtime_error')).toHaveLength(0);
+  });
+
+  // ─── R1 blocker 回归：认领窗口（原子认领已生效、markSessionRunning 尚未执行）──────
+  // 旧实现：原子认领只写 runtimeStatus/updatedAt，lastRunAt 仍停在旧 run 的认领时刻 →
+  // 窗口内旧 run 的迟到 cleanup 只查 lastRunAt → 被误判为「仍是所有者」→
+  // 对**新 run** 执行 stopSession(abort) + 广播陈旧 idle + 写陈旧 chat_runtime_error。
+  // 可达性：B1 强杀后会话提前变 idle → 新 run（auto-wake/用户消息）毫秒级认领并在 runtime
+  // 刚被回收时走 ensureRuntime 重建（秒级窗口），而旧 run 的 prompt 要等它在途 tool
+  // （如每 2s 轮询父会话状态的 wait 循环）落定后才走 doCleanup → 必然晚于认领。
+  test('R1 blocker：认领即写 lastRunAt，认领窗口内 run 身份已切换（旧实现窗口内仍是旧值/null）', async () => {
+    const sessionId = 'session_claim_window_identity';
+    const { db } = await setupSession({ sessionId, roleTemplateId: 'role_worker' });
+    const { client, state } = makePiClient();
+    const newStartedAt = new Date();
+    let ensureEntered = false;
+    const delayedClient: PiClient = {
+      ...client,
+      ensureRuntime: async (sid, options) => {
+        ensureEntered = true;
+        // 慢 ensureRuntime：runtime 刚被强杀回收，重建耗时长，窗口敞开可观测
+        await Bun.sleep(400);
+        await client.ensureRuntime(sid, options);
+      },
+      // 新 run 停在 sendMessage：不产生 doCleanup，窗口内容与状态稳定可观测
+      sendMessage: () => new Promise<never>(() => {}),
+    };
+
+    try {
+      void startSessionRun({
+        db, piClient: delayedClient, sessionId, userId: 'user_seed', content: 'new run',
+        startedAt: newStartedAt, safetyTimeoutMs: 60_000,
+        onRuntimeStatusChange: async () => {},
+      }).catch(() => {});
+
+      // 等到 ensureRuntime 已进入（认领先于它执行）
+      expect(await waitUntil(() => ensureEntered)).toBe(true);
+      const [row] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+      expect(row?.runtimeStatus).toBe('running');
+      // 修复点：认领即写 lastRunAt（不变量：running 会话的 lastRunAt 必然由某个 run 的认领写入）
+      expect(row?.lastRunAt?.toISOString()).toBe(newStartedAt.toISOString());
+      // 仍在窗口内：markSessionRunning/ sendMessage 都还没发生
+      expect(state.sent).toHaveLength(0);
+      expect(row?.lastRuntimeError).toBeNull();
+    } finally {
+      // 新 run 永不结束（pending sendMessage）→ 取消 domain 回收定时器避免污染模块级 Map
+      clearIdleRuntimeCleanup(sessionId);
+    }
+  });
+
+  // B1 同源衍生（同一个认领窗口的另一条受害者）：强杀通知是 `void notifyForcedRuntimeDispose(...)`
+  // 异步落库的，而新 run 可以毫秒级认领 —— 通知到达时 disposedAt（强杀时刻）已早于本次认领。
+  // 修复前窗口内 lastRunAt 仍是旧值 → `lte(lastRunAt, disposedAt)` 成立 → 把**新 run** 收敛成
+  // idle（新 run 仍在跑但 DB 已 idle，甚至可被后续请求重复认领）。认领即写 lastRunAt 后护栏才真正覆盖该窗口。
+  test('R1 blocker 衍生：陈旧强杀通知落在认领窗口内不得把新 run 收敛为 idle', async () => {
+    const sessionId = 'session_claim_window_stale_notify';
+    const { db } = await setupSession({ sessionId, roleTemplateId: 'role_worker' });
+    const { client } = makePiClient();
+    const newStartedAt = new Date();
+    // 会话此前已跑过 run（真实场景：父会话已等过一轮子会话）：窗口内 lastRunAt 是**旧 run 的非 NULL 值**
+    const priorRunAt = new Date(newStartedAt.getTime() - 10 * 60_000);
+    await db.update(sessions)
+      .set({ lastRunAt: priorRunAt, updatedAt: priorRunAt })
+      .where(eq(sessions.id, sessionId));
+    let ensureEntered = false;
+    const delayedClient: PiClient = {
+      ...client,
+      ensureRuntime: async (sid, options) => {
+        ensureEntered = true;
+        await Bun.sleep(400);
+        await client.ensureRuntime(sid, options);
+      },
+      sendMessage: () => new Promise<never>(() => {}),
+    };
+
+    try {
+      void startSessionRun({
+        db, piClient: delayedClient, sessionId, userId: 'user_seed', content: 'new run',
+        startedAt: newStartedAt, safetyTimeoutMs: 60_000,
+        onRuntimeStatusChange: async () => {},
+      }).catch(() => {});
+      expect(await waitUntil(() => ensureEntered)).toBe(true);
+
+      // disposedAt 比本次认领早 1ms：模拟「旧 runtime 早已 dispose、通知现在才落库」
+      const converged = await finalizeForcedRuntimeReclaim({ db, sessionId, disposedAt: newStartedAt.getTime() - 1 });
+      expect(converged).toBe(false);
+
+      const [row] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+      expect(row?.runtimeStatus).toBe('running');
+      expect(row?.lastRunAt?.toISOString()).toBe(newStartedAt.toISOString());
+    } finally {
+      clearIdleRuntimeCleanup(sessionId);
+    }
+  });
+
+  test('R1 blocker：旧 run 迟到 cleanup 落在认领窗口内 → 完全不碰新 run（不 abort/不广播/不写错误/不回收）', async () => {
+    const sessionId = 'session_worker_claim_window';
+    const { db } = await setupSession({ sessionId, roleTemplateId: 'role_worker' });
+
+    // 1) 旧 run：sendMessage 挂起（模拟强杀后旧 run 的在途 tool 仍在等子会话 writeback）
+    const oldStartedAt = new Date(Date.now() - 10 * 60_000);
+    const { client: oldClient, state: oldState } = makePiClient();
+    let releaseOldRun!: (err: Error) => void;
+    const oldSendGate = new Promise<never>((_, reject) => { releaseOldRun = reject; });
+    const gatedOldClient: PiClient = {
+      ...oldClient,
+      sendMessage: async (sid, content) => {
+        oldState.sent.push({ sessionId: sid, content });
+        return oldSendGate;
+      },
+    };
+    const oldBroadcasts: Array<{ runtimeStatus: 'running' | 'idle'; error: string | null }> = [];
+    await startSessionRun({
+      db, piClient: gatedOldClient, sessionId, userId: 'user_seed', content: 'old run',
+      startedAt: oldStartedAt, safetyTimeoutMs: 60_000,
+      onRuntimeStatusChange: async ({ runtimeStatus, error }) => { oldBroadcasts.push({ runtimeStatus, error }); },
+    });
+    expect(await waitUntil(() => oldState.sent.length === 1)).toBe(true);
+
+    // 2) B1：卡死兜底强杀 → domain 把会话收敛回 idle（lastRunAt 停在旧 run 的认领时刻）
+    expect(await finalizeForcedRuntimeReclaim({ db, sessionId, disposedAt: Date.now() })).toBe(true);
+
+    // 3) 新 run：ensureRuntime 慢 500ms → 认领后长时间停在「认领 → markSessionRunning」窗口
+    const newStartedAt = new Date();
+    const { client: newClient, state: newState } = makePiClient();
+    const gatedNewClient: PiClient = {
+      ...newClient,
+      ensureRuntime: async (sid, options) => {
+        // 800ms：窗口足够宽，慢 CI 上「窗口内观测」也不会滑到 markSessionRunning 之后
+        await Bun.sleep(800);
+        await newClient.ensureRuntime(sid, options);
+      },
+      sendMessage: () => new Promise<never>(() => {}),
+    };
+    const newBroadcasts: Array<{ runtimeStatus: 'running' | 'idle'; error: string | null }> = [];
+    void startSessionRun({
+      db, piClient: gatedNewClient, sessionId, userId: 'user_seed', content: 'new run',
+      startedAt: newStartedAt, safetyTimeoutMs: 60_000,
+      onRuntimeStatusChange: async ({ runtimeStatus, error }) => { newBroadcasts.push({ runtimeStatus, error }); },
+    }).catch(() => {});
+
+    // 等新 run 的原子认领生效（仍停在 ensureRuntime 内 → 窗口敞开）
+    expect(await waitUntil(async () => {
+      const [row] = await db.select({ status: sessions.runtimeStatus }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+      return row?.status === 'running';
+    })).toBe(true);
+    expect(newState.sent).toHaveLength(0);
+    // 认领窗口内：markSessionRunning / running 广播都还没发生（证明下面旧 run 的 cleanup 确实落在窗口内）
+    expect(newBroadcasts).toEqual([]);
+
+    try {
+      // 4) 旧 run 的 sendMessage 落定（失败出口）→ 迟到 cleanup 立即执行（落在窗口内）
+      releaseOldRun(new Error('old_run_failed_after_forced_reclaim'));
+      // unsubscribe 在所有权判定之后、一切副作用之前：它出现即证明判定已完成
+      expect(await waitUntil(() => oldState.unsubscribed.includes(sessionId))).toBe(true);
+
+      // 负向断言的宽限窗口：修复后这些副作用一次都不会出现；
+      // 一旦出现立即退出循环，交给下方断言报失败（固定 sleep 之外再留足余量，慢 CI 不 flake）。
+      const quietDeadline = Date.now() + 300;
+      while (Date.now() < quietDeadline) {
+        const staleSideEffect = oldState.stopSessionCalls.includes(sessionId)
+          || oldState.closeRuntimeCalls.includes(sessionId)
+          || oldBroadcasts.some((b) => b.runtimeStatus === 'idle')
+          || newBroadcasts.some((b) => b.runtimeStatus === 'idle');
+        if (staleSideEffect) break;
+        await Bun.sleep(10);
+      }
+
+      // 窗口内视角（新 run 尚未走完启动，lastRunAt 仍应是认领写入的值）：
+      // 1) 不 abort 新 run；2) 不广播陈旧 idle；3) 不写陈旧 chat_runtime_error；
+      // 4) 新 run 仍是所有者（runtimeStatus/lastRunAt/lastRuntimeError 都不被旧 run 改动）；
+      // 5) 不回收新 run 的 runtime。汇总成单次断言：修复前一次性展示全部副作用
+      // （分条 expect 只会报第一个）。
+      const events = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, sessionId));
+      const [inWindow] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+      expect({
+        stopSessionCalls: oldState.stopSessionCalls,
+        closeRuntimeCalls: oldState.closeRuntimeCalls,
+        oldIdleBroadcasts: oldBroadcasts.filter((b) => b.runtimeStatus === 'idle'),
+        newIdleBroadcasts: newBroadcasts.filter((b) => b.runtimeStatus === 'idle'),
+        staleErrorEvents: events.filter((e) => e.type === 'chat_runtime_error').length,
+        runtimeStatus: inWindow?.runtimeStatus,
+        lastRunAt: inWindow?.lastRunAt?.toISOString(),
+        lastRuntimeError: inWindow?.lastRuntimeError,
+      }).toEqual({
+        stopSessionCalls: [],
+        closeRuntimeCalls: [],
+        oldIdleBroadcasts: [],
+        newIdleBroadcasts: [],
+        staleErrorEvents: 0,
+        runtimeStatus: 'running',
+        lastRunAt: newStartedAt.toISOString(),
+        lastRuntimeError: null,
+      });
+
+      // 分条重申（保持逐项断言的强度与可读性，避免汇总对象被重构时漏项）
+      expect(oldState.stopSessionCalls).not.toContain(sessionId);
+      expect(oldState.closeRuntimeCalls).not.toContain(sessionId);
+      expect(oldBroadcasts).toEqual([{ runtimeStatus: 'running', error: null }]);
+      expect(newBroadcasts).toEqual([]);
+      expect(events.filter((e) => e.type === 'chat_runtime_error')).toHaveLength(0);
+      expect(inWindow?.runtimeStatus).toBe('running');
+      expect(inWindow?.lastRunAt?.toISOString()).toBe(newStartedAt.toISOString());
+      expect(inWindow?.lastRuntimeError).toBeNull();
+
+      // 新 run 继续走完启动（ensureRuntime 800ms → markSessionRunning → running 广播）：
+      // 旧 run 的迟到 cleanup 不得打断它，也不得留下任何陈旧副作用
+      expect(await waitUntil(() => newBroadcasts.some((b) => b.runtimeStatus === 'running'))).toBe(true);
+      const [afterStartup] = await db.select().from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+      expect(newBroadcasts).toEqual([{ runtimeStatus: 'running', error: null }]);
+      expect(afterStartup?.runtimeStatus).toBe('running');
+      expect(afterStartup?.lastRunAt?.toISOString()).toBe(newStartedAt.toISOString());
+      expect(afterStartup?.lastRuntimeError).toBeNull();
+    } finally {
+      clearIdleRuntimeCleanup(sessionId);
+    }
+  });
+
 });

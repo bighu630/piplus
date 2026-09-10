@@ -784,8 +784,10 @@ async function waitForChildWriteback(
       message: '子会话超时未返回结果',
     };
   } finally {
-    // wait 循环退出（含 deadline 超时）必须清除标记，否则父会话永久豁免、超时永不触发
-    clearWaitingOnChild(ctx.sessionId);
+    // wait 循环退出（含 deadline 超时）必须清除标记，否则父会话永久豁免、超时永不触发。
+    // 只清自己这个子会话（多条目精确清理）：父并行 wait 多个子会话时，先退出者不得
+    // 连带清掉其他仍在进行的等待标记（否则父失去豁免 1 被强杀）。
+    clearWaitingOnChild(ctx.sessionId, childSessionId);
   }
 }
 
