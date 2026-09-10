@@ -12,6 +12,7 @@ import {
   Info,
   GitPullRequest,
   GitCommitVertical,
+  Tag,
   ArrowUpCircle,
   X,
   FileText,
@@ -19,7 +20,7 @@ import {
   FolderOpen,
   PanelLeft,
 } from 'lucide-react';
-import { useSessionGitDiff, useGitBranches, useGitCommits, useGitShow, useGitPullMutation, useGitPushMutation, useGitCommitMutation, useAddGitignoreMutation, useGitCheckoutMutation } from '../lib/hooks';
+import { useSessionGitDiff, useGitBranches, useGitTags, useGitCommits, useGitShow, useGitPullMutation, useGitPushMutation, useGitCommitMutation, useAddGitignoreMutation, useGitCheckoutMutation } from '../lib/hooks';
 
 interface GitActionResult {
   session_id: string;
@@ -61,6 +62,19 @@ interface FileTreeNode {
 }
 
 type GitOp = 'pull' | 'push' | 'commit' | 'checkout';
+
+/**
+ * The API returns checkout failures as `{ error: { message } }` (git's stderr), and the shared
+ * request() helper turns non-2xx responses into `new Error(body.error.message)` — so a failed
+ * checkout carries git's real error in `err.message`. Fall back to a readable default when the
+ * message is missing or is just the generic `request_failed:<status>` placeholder.
+ */
+function checkoutErrorMessage(err: unknown, fallback: string): string {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  const trimmed = message.trim();
+  if (!trimmed || /^request_failed:\d+$/.test(trimmed)) return fallback;
+  return trimmed;
+}
 
 function buildFileTree(files: string[]): FileTreeNode[] {
   const root: FileTreeNode[] = [];
@@ -225,6 +239,7 @@ function TabGitDiff({
   const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
   const gitDiffQuery = useSessionGitDiff(activeTab === 'diff' ? selectedSessionId : null);
   const gitBranchesQuery = useGitBranches(activeTab === 'diff' ? selectedSessionId : null);
+  const gitTagsQuery = useGitTags(activeTab === 'diff' ? selectedSessionId : null);
   const gitCommitsQuery = useGitCommits(activeTab === 'diff' ? selectedSessionId : null, 50);
   const gitShowQuery = useGitShow(selectedCommitHash ? selectedSessionId : null, selectedCommitHash);
   const gitPullMut = useGitPullMutation();
@@ -259,9 +274,15 @@ function TabGitDiff({
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
+  const [refMode, setRefMode] = useState<'branch' | 'tag'>('branch');
   const branchSelectorRef = useRef<HTMLDivElement>(null);
   const [commitDropdownOpen, setCommitDropdownOpen] = useState(false);
   const commitSelectorRef = useRef<HTMLDivElement>(null);
+
+  // Reset reference mode to branches whenever the session changes
+  useEffect(() => {
+    setRefMode('branch');
+  }, [selectedSessionId]);
 
   // Close commit dropdown on outside click
   useEffect(() => {
@@ -447,6 +468,9 @@ function TabGitDiff({
   const isCheckingOut = gitCheckoutMut.isPending;
   const currentBranch = gitBranchesQuery.data?.current_branch ?? null;
   const branches = gitBranchesQuery.data?.branches ?? null;
+  const detached = gitBranchesQuery.data?.detached ?? false;
+  const detachedRef = gitBranchesQuery.data?.detached_ref ?? null;
+  const tags = gitTagsQuery.data?.tags ?? null;
   const sessionWorktreePath = gitBranchesQuery.data?.session_worktree_path ?? null;
   const cwd = gitDiffQuery.data?.cwd ?? gitBranchesQuery.data?.cwd ?? null;
   const commits = gitCommitsQuery.data?.commits ?? null;
@@ -476,16 +500,46 @@ function TabGitDiff({
               ) : (
                 <GitBranch className="w-3.5 h-3.5 text-blue-500" />
               )}
-              <span>{currentBranch || '—'}</span>
+              {detached ? (
+                <>
+                  <Tag className="w-3.5 h-3.5 shrink-0 text-violet-500" />
+                  <span>detached @ {detachedRef || currentBranch || 'HEAD'}</span>
+                </>
+              ) : (
+                <span>{currentBranch || '—'}</span>
+              )}
               <ChevronDown className={`w-3 h-3 transition ${branchDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
 
             {branchDropdownOpen && (
               <div className="absolute left-0 top-full mt-1 z-20 w-56 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg overflow-hidden">
-                  <div className="px-3 py-2 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider border-b border-slate-100 dark:border-slate-700">
-                    分支 ({branches?.length ?? 0})
+                  <div className="flex items-center gap-1 px-2 py-1.5 border-b border-slate-100 dark:border-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => setRefMode('branch')}
+                      className={`flex-1 px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider transition cursor-pointer ${
+                        refMode === 'branch'
+                          ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300'
+                          : 'text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      分支 ({branches?.length ?? 0})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRefMode('tag')}
+                      className={`flex-1 px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider transition cursor-pointer ${
+                        refMode === 'tag'
+                          ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-300'
+                          : 'text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700/50'
+                      }`}
+                    >
+                      标签 ({tags?.length ?? 0})
+                    </button>
                   </div>
                   <div className="max-h-60 overflow-y-auto">
+                    {refMode === 'branch' ? (
+                    <>
                     {branches?.map((b) => {
                       const isWorktreeBranch = b.is_worktree;
                       return (
@@ -496,7 +550,7 @@ function TabGitDiff({
                             if (!b.is_current) {
                               setBranchDropdownOpen(false);
                               try {
-                                const res = await gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId!, branch: b.name });
+                                const res = await gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId!, ref: b.name, type: 'branch' });
                                 setOpFeedback({
                                   op: 'checkout',
                                   result: res.result,
@@ -504,11 +558,11 @@ function TabGitDiff({
                                     ? `已切换到分支 "${b.name}"`
                                     : (res.stderr || `切换到 "${b.name}" 失败`),
                                 });
-                              } catch {
+                              } catch (err) {
                                 setOpFeedback({
                                   op: 'checkout',
                                   result: 'error',
-                                  message: `切换到 "${b.name}" 失败`,
+                                  message: checkoutErrorMessage(err, `切换到 "${b.name}" 失败`),
                                 });
                               }
                               setTimeout(clearFeedback, 6000);
@@ -545,6 +599,72 @@ function TabGitDiff({
                     )}
                     {branches && branches.length === 0 && (
                       <div className="px-3 py-4 text-xs text-slate-400 text-center">无分支</div>
+                    )}
+                    </>
+                    ) : (
+                    <>
+                    {tags?.map((t) => {
+                      return (
+                        <button
+                          key={t.name}
+                          type="button"
+                          onClick={async () => {
+                            if (!t.is_current) {
+                              setBranchDropdownOpen(false);
+                              try {
+                                const res = await gitCheckoutMut.mutateAsync({ sessionId: selectedSessionId!, ref: t.name, type: 'tag' });
+                                setOpFeedback({
+                                  op: 'checkout',
+                                  result: res.result,
+                                  message: res.result === 'ok'
+                                    ? `已切换到标签 "${t.name}"（detached HEAD）`
+                                    : (res.stderr || `切换到标签 "${t.name}" 失败`),
+                                });
+                              } catch (err) {
+                                setOpFeedback({
+                                  op: 'checkout',
+                                  result: 'error',
+                                  message: checkoutErrorMessage(err, `切换到标签 "${t.name}" 失败`),
+                                });
+                              }
+                              setTimeout(clearFeedback, 6000);
+                            } else {
+                              setBranchDropdownOpen(false);
+                            }
+                          }}
+                          disabled={t.is_current || isCheckingOut}
+                          className={`w-full flex items-start space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
+                            t.is_current
+                              ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 font-semibold'
+                              : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                          } disabled:opacity-50`}
+                        >
+                          <Tag className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${t.is_annotated ? 'text-violet-500' : 'text-slate-400'}`} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1">
+                              <span className="truncate">{t.name}</span>
+                              {t.is_annotated && (
+                                <span className="shrink-0 px-1 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 leading-none">
+                                  annotated
+                                </span>
+                              )}
+                              {t.is_current && <span className="ml-auto shrink-0 text-[10px] text-blue-500">当前</span>}
+                            </div>
+                            <div className="truncate mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">
+                              {t.date ? `${t.date} · ` : ''}
+                              {t.subject}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {!tags && (
+                      <div className="px-3 py-4 text-xs text-slate-400 text-center">加载中…</div>
+                    )}
+                    {tags && tags.length === 0 && (
+                      <div className="px-3 py-4 text-xs text-slate-400 text-center">无标签</div>
+                    )}
+                    </>
                     )}
                   </div>
                 </div>
@@ -660,6 +780,12 @@ function TabGitDiff({
                 <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 leading-none">
                   <span>W</span>
                   <span>worktree</span>
+                </span>
+              )}
+              {detached && (
+                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 leading-none">
+                  <Tag className="w-2.5 h-2.5" />
+                  <span>detached{detachedRef ? ` @ ${detachedRef}` : ''}</span>
                 </span>
               )}
             </div>
