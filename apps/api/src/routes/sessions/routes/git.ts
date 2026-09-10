@@ -209,6 +209,9 @@ export function registerGitRoutes(app: Hono) {
       const branches = branchOutput
         .split('\n')
         .filter(Boolean)
+        // Detached HEAD makes `git branch` emit a pseudo entry such as
+        // "(HEAD detached at v2.0.0)". It is not a real branch, so drop it.
+        .filter((line: string) => !/^\s*\(HEAD detached (at|from) /.test(line))
         .map((line: string) => {
           const [name, headMarker] = line.split('|||');
           return { name: name.trim(), is_current: headMarker.trim() === '*' };

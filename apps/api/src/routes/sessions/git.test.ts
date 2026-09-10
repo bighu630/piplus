@@ -307,6 +307,14 @@ describe('git tags and detached HEAD', () => {
     expect(detachedAtTag.body.detached).toBe(true);
     expect(detachedAtTag.body.detached_ref).toBe('v1.0.0');
 
+    // Sanity guard: git really does emit a pseudo branch entry while detached, so the
+    // assertions below stay meaningful rather than passing vacuously.
+    expect(mustGit(repo, 'branch', '--format=%(refname:short)')).toContain('(HEAD detached at');
+    // That pseudo entry must not surface as a fake branch, and no real branch is current.
+    expect(detachedAtTag.body.branches.some((b: any) => b.name.startsWith('('))).toBe(false);
+    expect(detachedAtTag.body.branches.every((b: any) => b.is_current === false)).toBe(true);
+    expect(detachedAtTag.body.branches.map((b: any) => b.name)).toContain('main');
+
     // Detached at a commit with no tag → fall back to the short sha.
     mustGit(repo, 'checkout', '--detach', secondSha);
     const detachedAtSha = await apiGet(app, sessionId, 'branches');
