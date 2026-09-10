@@ -177,4 +177,39 @@ describe('ensureBuiltinRows 内置 upsert、用户行不动', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('(d) feature_lead 与 bugfix_lead 的 worker 派发纪律表述一致、不再鼓励派发', () => {
+    const { dir, dbPath } = seedFreshDb();
+    try {
+      const rows = readRoles(dbPath);
+      const promptOf = (id: string) => String(rows.find((r) => r.id === id)!.base_prompt);
+      const feature = promptOf('role_feature_lead');
+      const bugfix = promptOf('role_bugfix_lead');
+      const disciplineLines = (prompt: string) => prompt.split('\n').filter((line) => line.startsWith('- 子会话使用纪律'));
+
+      // 两份提示词引用同一段纪律文字，避免表述漂移/自相矛盾
+      const featureDiscipline = disciplineLines(feature);
+      const bugfixDiscipline = disciplineLines(bugfix);
+      expect(featureDiscipline).toHaveLength(1);
+      expect(bugfixDiscipline).toHaveLength(1);
+      expect(featureDiscipline[0]).toBe(bugfixDiscipline[0]);
+
+      // 纪律要点：只用于并行提速、串行/简单任务自己做、拿不准自己做
+      expect(featureDiscipline[0]).toContain('worker 只用于并行提速');
+      expect(featureDiscipline[0]).toContain('串行/顺序执行的步骤、简单任务');
+      expect(featureDiscipline[0]).toContain('拿不准是否值得并行');
+
+      for (const prompt of [feature, bugfix]) {
+        // 删除鼓励派发的旧表述
+        expect(prompt).not.toContain('最大化并行性');
+        expect(prompt).not.toContain('创建 worker（`wait=true`）');
+        // 保留必要信息：objective/scope/task 三件套、用户对齐不委派
+        expect(prompt).toContain('objective/scope/task');
+        expect(prompt).toContain('不委派给 worker');
+        expect(prompt).toContain('派发 worker');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
