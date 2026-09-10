@@ -65,6 +65,9 @@ export async function subscribeSession(
     runtimeUnsubscribe = session.agentSession.subscribe((event) => {
       const mapped = mapAgentSessionEvent(sessionId, runId, event);
       if (!mapped) return;
+      // 任何成功 mapped 的事件都算进展（含 tool_execution_start 映射的 activity）：
+      // closeRuntime 卡死兜底按"连续无进展时长"判断，收到事件即刷新进度时间。
+      session.lastStreamEventAt = Date.now();
       void listener(mapped);
     });
   }

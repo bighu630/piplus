@@ -8,8 +8,10 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from '../constants';
+import { NON_WORKER_IDLE_RUNTIME_TTL_MS, resolveCloseRuntimeRetryIntervalMs, resolveForcedReclaimNoProgressMs } from '../constants';
 import { isAskPending } from '../ask-pending';
+import { notifyForcedRuntimeDispose } from '../runtime-lifecycle-hooks';
+import { isSessionRuntimePinned } from '../runtime-pins';
 import type { PiSessionLocator } from '../locator';
 import type { PiCreateSessionInput, PiCreateSessionResult, PiToolDef } from '../types';
 import type { ClientDeps } from './deps';
@@ -148,8 +150,9 @@ export async function restoreRuntime(
     const { session: agentSession } = await createAgentSession(options);
     const session = deps.runtimeRegistry.ensure(sessionId, locator, runtimeCwd);
     session.agentSession = agentSession;
-    // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数
+    // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数与无进展观察窗口
     session.closeRetries = 0;
+    session.streamingSince = undefined;
 
     // Collect slash commands from restored agent session
     try {
@@ -217,8 +220,9 @@ export async function ensureRuntime(
         console.log('[pi-client] ensureRuntime idle cleanup triggered', { sessionId });
         deps.client.closeRuntime(sessionId).catch(() => {});
       }, NON_WORKER_IDLE_RUNTIME_TTL_MS);
-      // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数
+      // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数与无进展观察窗口
       existing.closeRetries = 0;
+      existing.streamingSince = undefined;
       return;
     }
   }
@@ -298,8 +302,9 @@ export async function ensureRuntime(
     session.agentSession = agentSession;
     session.toolDefs = tools;
     session.toolHandler = toolHandler;
-    // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数
+    // 新 run 意味着正常状态：复位上次流式守卫的失败重试计数与无进展观察窗口
     session.closeRetries = 0;
+    session.streamingSince = undefined;
 
     // Migrate prompt from piSessionId entry (stored by createSession)
     const piSessionId = locator.piSessionId;
@@ -353,41 +358,125 @@ export async function ensureRuntime(
   }
 }
 
+export type StreamingReclaimDecision = {
+  lastProgressAt: number;
+  noProgressMs: number;
+  shouldForceDispose: boolean;
+};
+
+/**
+ * 流式 runtime 是否达到卡死兜底强杀阈值（纯函数，便于单测）。
+ * 判据是「连续无进展时长」而不是重试次数：进度基准 = 最近一次成功 mapped 的
+ * stream 事件时间（lastStreamEventAt，工具活动等 activity 事件同样计入），
+ * 窗口内从未有事件时以观察窗口起点（streamingSince）为基准；
+ * 距现在超过阈值才强杀——正常长 run（持续有事件）永远不会被强杀。
+ */
+export function decideStreamingReclaim(input: {
+  now: number;
+  streamingSince: number;
+  lastStreamEventAt?: number;
+  noProgressThresholdMs: number;
+}): StreamingReclaimDecision {
+  const lastProgressAt = input.lastStreamEventAt ?? input.streamingSince;
+  const noProgressMs = Math.max(0, input.now - lastProgressAt);
+  return {
+    lastProgressAt,
+    noProgressMs,
+    shouldForceDispose: noProgressMs >= input.noProgressThresholdMs,
+  };
+}
+
 export async function closeRuntime(deps: ClientDeps, sessionId: string): Promise<void> {
   const session = deps.runtimeRegistry.get(sessionId);
   if (!session) return; // idempotent, already cleaned
   if (session.idleCleanupTimer) { clearTimeout(session.idleCleanupTimer); session.idleCleanupTimer = undefined; }
+  // 平台级合法长等待（父会话等待子会话 writeback / 跨项目等待）期间绝不做任何回收：
+  // 这类等待可能长时间无 stream 事件（甚至 isStreaming 持续为 true），
+  // 但 dispose 会 abort 在途 turn，导致子会话 writeback 结果永远进不了父会话上下文。
+  // pin 由 domain 等待循环在进入前设置、finally 解除；期间不累计尝试、不强杀。
+  if (isSessionRuntimePinned(sessionId)) {
+    console.log('[pi-client] closeRuntime skipped — session pinned by platform long wait', { sessionId });
+    // 豁免时长不得计入无进展窗口：清空窗口与进度基准，下个 tick（unpin 之后）重新起算。
+    // 否则「pinned 时长 > 阈值」时解除 pin 的首个 tick 会把整段豁免时长当成无进展，
+    // 立刻强杀——那正是本机制要避免的事故（pin 的生命周期取舍见
+    // docs/session-runtime-reclamation.md「0.1 pin 生命周期无界」）。
+    session.streamingSince = undefined;
+    session.lastStreamEventAt = undefined;
+    session.idleCleanupTimer = setTimeout(() => {
+      deps.client.closeRuntime(sessionId).catch(() => {});
+    }, resolveCloseRuntimeRetryIntervalMs());
+    return;
+  }
   // 等待用户回答期间（ask_question pending）绝不回收：用户可在任意时间回答，
   // 即使 runtime 已空闲，pending 的 promise 仍阻塞工具等待回答。
   if (isAskPending(sessionId)) {
     console.log('[pi-client] closeRuntime skipped — waiting for user answer (ask_question)', { sessionId });
-    // 延长等待：30s 后重试，仍 pending 则继续跳过
+    // 同 pin 分支：豁免时长（用户可能几小时后才回答）不得计入无进展窗口，
+    // 解除豁免后从新窗口起算，不把等待时长当成 agent 卡死证据。
+    session.streamingSince = undefined;
+    session.lastStreamEventAt = undefined;
+    // 延长等待：按重试间隔重新检查，仍 pending 则继续跳过
     session.idleCleanupTimer = setTimeout(() => {
       deps.client.closeRuntime(sessionId).catch(() => {});
-    }, 30_000);
+    }, resolveCloseRuntimeRetryIntervalMs());
     return;
   }
   // 绝不 dispose 正在流式生成的 agentSession —— dispose() 会 abort 在途生成。
-  // 定时器触发时若 run 仍在进行，跳过本次回收；重试定时器 30s 后再次尝试。
-  // 覆盖 worker 立即回收路径的极端时序，避免 worker runtime 泄漏。
+  // 定时器触发时若 run 仍在进行，按「连续无进展时长」判断：收到任何 mapped
+  // stream 事件（含 tool_execution_start 映射的 activity）都算进展，有进展就继续
+  // 跳过；只有 provider 挂死导致窗口内连续 noProgress 达阈值才强杀兜底，
+  // 避免僵尸 runtime + 定时器无限循环，同时不再误杀合法长 run（与重试次数无关）。
   if (session.agentSession?.isStreaming) {
-    // 重试计数封顶：provider 连接挂死导致 isStreaming 永不复位时，强制 dispose 兜底，
-    // 避免僵尸 runtime + 定时器无限循环。
-    // 上界：30min（client 定时器原始触发）+ 40 × 30s ≈ 50min 连续流式的合法长 run
-    // 才会被强制回收——正常 run 每次开始都会经 ensureRuntime 刷新定时器并复位计数。
-    session.closeRetries = (session.closeRetries ?? 0) + 1;
-    if (session.closeRetries < 40) {
-      console.log('[pi-client] closeRuntime skipped — agent still streaming', { sessionId, retry: session.closeRetries });
+    const now = Date.now();
+    if (session.streamingSince === undefined) {
+      // 新观察窗口：丢弃上个窗口的陈旧进展时间，从发现流式的此刻重新计时
+      session.streamingSince = now;
+      session.lastStreamEventAt = undefined;
+    }
+    const decision = decideStreamingReclaim({
+      now,
+      streamingSince: session.streamingSince,
+      lastStreamEventAt: session.lastStreamEventAt,
+      noProgressThresholdMs: resolveForcedReclaimNoProgressMs(),
+    });
+    if (decision.shouldForceDispose) {
+      const attempts = (session.closeRetries ?? 0) + 1;
+      console.warn('[pi-client] closeRuntime force disposing after no stream progress', {
+        sessionId,
+        attempts,
+        noProgressMs: decision.noProgressMs,
+      });
+      session.agentSession?.dispose();
+      session.agentSession = undefined;
+      // 复位观察窗口与尝试计数
+      session.streamingSince = undefined;
+      session.closeRetries = 0;
+      // 通知上层（domain）做善后；handler 错误由 notify 内部隔离，不阻塞回收
+      void notifyForcedRuntimeDispose({
+        sessionId,
+        disposedAt: Date.now(),
+        attempts,
+        noProgressMs: decision.noProgressMs,
+      });
+      // 落到下方通用清理路径
+    } else {
+      session.closeRetries = (session.closeRetries ?? 0) + 1;
+      console.log('[pi-client] closeRuntime skipped — agent still streaming', {
+        sessionId,
+        attempts: session.closeRetries,
+        noProgressMs: decision.noProgressMs,
+        lastStreamEventAt: session.lastStreamEventAt,
+      });
       session.idleCleanupTimer = setTimeout(() => {
         deps.client.closeRuntime(sessionId).catch(() => {});
-      }, 30_000);
+      }, resolveCloseRuntimeRetryIntervalMs());
       return;
     }
-    console.warn('[pi-client] closeRuntime force disposing after 40 streaming retries', { sessionId });
   }
   session.agentSession?.dispose();
   session.agentSession = undefined;
   session.closeRetries = 0;
+  session.streamingSince = undefined;
   session.listeners.clear();
   session.toolHandler = undefined;
   session.toolDefs = [];
