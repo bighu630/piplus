@@ -53,10 +53,19 @@ async function prepareSession(
   return sessionId;
 }
 
-function makeHeaders(token?: string) {
+/** 默认 dev 身份：与 prepareSession 的 owner 一致（配合 test-setup 的 PIPLUS_DEV_AUTH=1）。 */
+const DEV_USER = 'local-user';
+
+/**
+ * 请求头：显式携带 dev 身份（x-user-id 回退），与其它 sessions 路由测试一致。
+ * 本项目 auth 在测试进程里恒为开启（test-setup 固定 APP_PASSWORD），
+ * 因此匿名请求会 401 —— 每个请求都必须表名身份。
+ * 传 token 时走真实 v2 token 的认证路径。
+ */
+function makeHeaders(token?: string, userId: string = DEV_USER) {
   return {
     'content-type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : { 'x-user-id': userId }),
   };
 }
 
@@ -148,25 +157,34 @@ describe('POST /api/v1/sessions/:sessionId/ask-answer', () => {
     expect(value.answer).toBeNull();
   });
 
-  test('会话归属不匹配 → 404，pending 不被消费', async () => {
+  test('会话归属不匹配 → 404，pending 不被消费；归属匹配才可回填', async () => {
     const path = makeDbPath();
     createSeedDb(path);
     Bun.env.DATABASE_URL = `file:${path}`;
     const app = createApp();
-    // auth 关闭时 requireAuth 一律 userId='local-user'；会话 owner 为 user_seed → 归属不匹配
-    const sessionId = await prepareSession(path, 'user_seed');
+    // 会话 owner 是 owner_user，请求者用另一个 dev 身份 → 归属不匹配
+    const sessionId = await prepareSession(path, 'owner_user');
 
-    const { questionId } = createPending(sessionId, { question: 'Q?', options: ['A', 'B'] });
+    const { questionId, promise } = createPending(sessionId, { question: 'Q?', options: ['A', 'B'] });
 
-    const res = await app.request(`/api/v1/sessions/${sessionId}/ask-answer`, {
+    const denied = await app.request(`/api/v1/sessions/${sessionId}/ask-answer`, {
       method: 'POST',
-      headers: { ...makeHeaders(), 'x-user-id': 'user_seed' },
+      headers: makeHeaders(undefined, 'other_user'),
       body: JSON.stringify({ questionId, answer: 'A' }),
     });
-    expect(res.status).toBe(404);
+    expect(denied.status).toBe(404);
     // pending 未被消费，仍可用匹配身份回填
     expect(pendingQuestions.has(questionId)).toBe(true);
-    answerQuestion(questionId, 'A');
+
+    // 正对照：同一 pending 换成 owner 的 dev 身份即可回填 → 证明 404 确实源于归属校验，
+    // 而不是「所有请求都被拒」这种恒真断言。
+    const allowed = await app.request(`/api/v1/sessions/${sessionId}/ask-answer`, {
+      method: 'POST',
+      headers: makeHeaders(undefined, 'owner_user'),
+      body: JSON.stringify({ questionId, answer: 'A' }),
+    });
+    expect(allowed.status).toBe(200);
+    expect((await promise).answer).toBe('A');
   });
 
   test('会话不存在 → 404', async () => {
@@ -271,9 +289,10 @@ describe('POST /api/v1/sessions/:sessionId/ask-answer', () => {
     const app = createApp(); // 注册路由时挂载 ask_question_pending → socketHub 监听
     const sessionId = await prepareSession(path, 'local-user');
 
-    // 挂一个订阅了该会话的假 socket
+    // 挂一个订阅了该会话的假 socket：auth 开启时 authorizeSubscribe 要求连接带
+    // __userId（真实连接由 ws/server.ts 认证握手写入），这里模拟已认证连接。
     const received: string[] = [];
-    const fakeSocket = { send(data: string) { received.push(data); } };
+    const fakeSocket = { send(data: string) { received.push(data); }, __userId: DEV_USER };
     socketHub.attach(fakeSocket);
     socketHub.handleClientMessage(fakeSocket, {
       kind: 'client',
@@ -289,14 +308,16 @@ describe('POST /api/v1/sessions/:sessionId/ask-answer', () => {
     expect(events.length).toBe(1);
     expect(events[0].payload?.questionId).toBe(questionId);
 
-    // 其它会话订阅的连接不应收到
+    // 另一条已认证连接，订阅的是另一个**真实会话**（同属 local-user）：订阅成功，
+    // 但不应收到本会话的 ask_question_pending —— 否则断言会因「订阅被拒」而恒真。
+    const otherSessionId = await prepareSession(path, DEV_USER);
     const otherReceived: string[] = [];
-    const otherSocket = { send(data: string) { otherReceived.push(data); } };
+    const otherSocket = { send(data: string) { otherReceived.push(data); }, __userId: DEV_USER };
     socketHub.attach(otherSocket);
     socketHub.handleClientMessage(otherSocket, {
       kind: 'client',
       type: 'subscribe_session',
-      payload: { session_id: 'other-session' },
+      payload: { session_id: otherSessionId },
     });
     const { questionId: q2 } = createPending(sessionId, { question: 'Q2?', options: ['A'] });
     expect(otherReceived.some((s) => s.includes('ask_question_pending'))).toBe(false);
