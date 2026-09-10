@@ -8,6 +8,36 @@ import path from 'node:path';
 import { getDbPath } from '../../../db-context';
 import { execGit, resolveProjectDir } from '../project-fs';
 
+/** True when HEAD is not on a branch (git symbolic-ref fails on a detached HEAD). */
+function isDetachedHead(cwd: string): boolean {
+  try {
+    execGit(cwd, 'symbolic-ref -q HEAD');
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Names of every tag pointing at the current HEAD (all of them, not just the closest one). */
+function tagsPointingAtHead(cwd: string): string[] {
+  try {
+    return execGit(cwd, 'tag --points-at HEAD')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function shortHeadSha(cwd: string): string | null {
+  try {
+    return execGit(cwd, 'rev-parse --short HEAD').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerGitRoutes(app: Hono) {
   /**
    * @swagger
@@ -215,7 +245,71 @@ export function registerGitRoutes(app: Hono) {
         worktree_path: worktreeBranches.get(b.name) ?? null,
       }));
 
-      return c.json({ session_id: sessionId, cwd, current_branch: currentBranch, branches: annotatedBranches, session_worktree_path: resolved.sessionWorktreePath });
+      const detached = isDetachedHead(cwd);
+      return c.json({
+        session_id: sessionId,
+        cwd,
+        current_branch: currentBranch,
+        branches: annotatedBranches,
+        session_worktree_path: resolved.sessionWorktreePath,
+        detached,
+        detached_ref: detached ? (tagsPointingAtHead(cwd)[0] ?? shortHeadSha(cwd)) : null,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
+    }
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git/tags:
+   *   get:
+   *     summary: 获取项目 Git 标签列表及 detached HEAD 状态
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 返回项目标签列表，并标记当前是否 detached HEAD 以及哪些标签指向当前提交。
+   *     responses:
+   *       200:
+   *         description: 查询成功。
+   *       404:
+   *         description: 会话不存在或无访问权限。
+   *       500:
+   *         description: Git 操作失败。
+   */
+  app.get('/api/v1/sessions/:sessionId/git/tags', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      const detached = isDetachedHead(cwd);
+      const pointingAtHead = new Set(detached ? tagsPointingAtHead(cwd) : []);
+
+      const output = execGit(
+        cwd,
+        `tag --list --sort=-creatordate --format='%(refname:short)|||%(objecttype)|||%(creatordate:short)|||%(subject)'`,
+      );
+      const tags = output
+        .split('\n')
+        .filter(Boolean)
+        .map((line: string) => {
+          const [name = '', objecttype = '', date = '', subject = ''] = line.split('|||');
+          const tagName = name.trim();
+          return {
+            name: tagName,
+            is_current: pointingAtHead.has(tagName),
+            is_annotated: objecttype.trim() === 'tag',
+            date: date.trim(),
+            subject: subject.trim(),
+          };
+        })
+        .filter((tag) => Boolean(tag.name));
+
+      return c.json({ session_id: sessionId, cwd, detached, tags });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
@@ -343,11 +437,11 @@ export function registerGitRoutes(app: Hono) {
    * @swagger
    * /api/v1/sessions/{sessionId}/git/checkout:
    *   post:
-   *     summary: 切换到指定 Git 分支
+   *     summary: 切换到指定 Git 分支或标签
    *     tags: [Sessions, Git]
    *     security:
    *       - bearerAuth: []
-   *     description: 切换到指定分支。
+   *     description: 切换到指定分支（type 省略或为 branch）或标签（type 为 tag，检出后处于 detached HEAD）。
    *     responses:
    *       200:
    *         description: 切换成功。
@@ -362,14 +456,18 @@ export function registerGitRoutes(app: Hono) {
     const userId = (c as any).get('userId') as string;
     const sessionId = decodeURIComponent(c.req.param('sessionId'));
     const body = await c.req.json().catch(() => ({}));
-    const branch = String((body as { branch?: string }).branch ?? '').trim();
+    // `ref` takes precedence; `branch` is the legacy field kept for backward compatibility.
+    const branch = String((body as { ref?: string; branch?: string }).ref ?? (body as { branch?: string }).branch ?? '').trim();
+    const refType: 'branch' | 'tag' = (body as { type?: string }).type === 'tag' ? 'tag' : 'branch';
 
     if (!branch) {
-      return c.json({ error: { code: 'EMPTY_BRANCH', message: 'Branch name is required' } }, 400);
+      return c.json({ error: { code: 'EMPTY_REF', message: 'Ref name is required' } }, 400);
     }
 
-    // Validate branch name format (allow letters, numbers, dots, hyphens, underscores, slashes)
-    if (!/^[a-zA-Z0-9._\-/]+$/.test(branch)) {
+    // Validate ref name format (allow letters, numbers, dots, hyphens, underscores, slashes).
+    // A leading '-' is rejected as well: `git checkout -f` would be parsed as a git option and
+    // can silently discard local changes.
+    if (branch.startsWith('-') || !/^[a-zA-Z0-9._\-/]+$/.test(branch)) {
       return c.json({ error: { code: 'INVALID_BRANCH', message: 'Branch name contains invalid characters' } }, 400);
     }
 
@@ -387,6 +485,7 @@ export function registerGitRoutes(app: Hono) {
     // Parse worktree list to check if the target branch is checked out in another worktree
     const resolvedMainCwd = path.resolve(mainCwd);
     let worktreePath: string | null = null;
+    if (refType === 'branch') {
     try {
       const worktreeOutput = execGit(mainCwd, 'worktree list');
       const wtLines = worktreeOutput.trim().split('\n').filter(Boolean);
@@ -406,6 +505,7 @@ export function registerGitRoutes(app: Hono) {
     } catch {
       // worktree list failed — fall back to normal checkout behavior
     }
+    }
 
     if (worktreePath) {
       // Branch is checked out in a worktree — update session worktree_path, no git checkout
@@ -419,7 +519,11 @@ export function registerGitRoutes(app: Hono) {
     }
 
     try {
-      const stdout = execGit(mainCwd, `checkout "${branch.replace(/"/g, '\\"')}"`);
+      // Tag refs use the fully qualified refs/tags/<name> form: it disambiguates from a
+      // same-named branch, guarantees a detached HEAD and can never be parsed as an option.
+      const stdout = refType === 'tag'
+        ? execGit(mainCwd, `checkout refs/tags/${branch}`)
+        : execGit(mainCwd, `checkout "${branch.replace(/"/g, '\\"')}"`);
       return c.json({ session_id: sessionId, cwd: mainCwd, result: 'ok', stdout: stdout.trim(), branch });
     } catch (err: unknown) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
