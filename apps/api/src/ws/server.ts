@@ -137,7 +137,8 @@ export function createWebSocketHooks(c: Context): WSEvents {
 
     // 身份判定顺序与 middleware/auth.ts 的 requireAuth 一致：
     // 1. 有效 v2 token → 'local-user'
-    // 2. 非 production 且带 x-user-id 头 → 该头值（开发/测试回退；production 下拒绝）
+    // 2. auth 开启时，仅显式开启 PIPLUS_DEV_AUTH=1 且非 production 才信任 x-user-id
+    //    （开发/测试回退；与 HTTP 侧同一开关，未开启时拒绝，production 下拒绝）
     // 3. auth 关闭（本地 Electron 场景）→ 默认 'local-user'
     const authEnabled = isAuthEnabled();
     let userId: string | undefined;
@@ -146,8 +147,12 @@ export function createWebSocketHooks(c: Context): WSEvents {
     } else if (!authEnabled) {
       userId = c.req.header('x-user-id') ?? 'local-user';
     } else {
+      const config = getServerConfig();
       const devUserId = c.req.header('x-user-id');
-      if (devUserId && getServerConfig().nodeEnv !== 'production') {
+      // 与 middleware/auth.ts 相同：必须显式 PIPLUS_DEV_AUTH=1 且非 production；
+      // NODE_ENV 大小写不敏感比较。缺开关时不再信任 x-user-id（修复 Docker 未设
+      // NODE_ENV 时的握手旁路）。
+      if (devUserId && config.devAuth && (config.nodeEnv ?? '').toLowerCase() !== 'production') {
         userId = devUserId;
       }
     }
