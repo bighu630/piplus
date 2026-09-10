@@ -19,6 +19,51 @@
 
 ---
 
+## 0. 补充修复：idle runtime 强杀误杀（无进展时长判据 + platform pin 豁免 + 强杀通知 hook）
+
+**事故**：父会话在并行 `spawn_session(wait=true)` 等待两个 worker 期间，`closeRuntime` 的卡死兜底按「连续重试次数 ≥ 40（≈20 分钟）」强制 `dispose()`，杀掉在途 turn → 子会话 writeback 结果永远进不了父会话上下文。根因：(1) 判据是「自第一次 tick 起的连续重试次数」而非「有没有进展」，ask-pending 暂停 tick 使预算起点任意；(2) client 不知道 domain 的合法长等待（父等子 writeback / 跨项目等待），domain 的 safety timeout 同刻豁免而 client 仍强杀。
+
+新判据与机制（`packages/pi-client/src`）：
+
+- **判据 = 连续无进展时长**：`ActiveSessionRuntime.lastStreamEventAt`（最近一次成功 mapped 的 stream 事件时间，`tool_execution_start → activity` 等工具活动同样算进展）与 `streamingSince`（观察窗口起点）决定 `noProgressMs`；只有 `noProgressMs >= 阈值` 才强杀。`closeRetries` 退化为尝试计数（仅日志/hook 用）。判据抽为纯函数 `decideStreamingReclaim`（client/session-lifecycle.ts）。
+- **platform 长等待 pin 豁免**：`@piplus/pi-client/runtime-pins` 提供 refcount pin（`pinSessionRuntime` / `unpinSessionRuntime` / `isSessionRuntimePinned` / `resetSessionRuntimePins`）。domain 在等待子会话 writeback、跨项目等待期间 pin、`finally` 解除；pin 期间 `closeRuntime` 完全跳过（不累计尝试、不强杀、不 dispose）。
+- **强杀通知 hook**：`@piplus/pi-client/runtime-lifecycle-hooks` 的 `registerForcedRuntimeDisposeHandler` / `notifyForcedRuntimeDispose`，强杀后串行通知 `{ sessionId, disposedAt, attempts, noProgressMs }`；单个 handler 抛错只 `console.error`，不影响 dispose、不影响其它 handler，也不向外抛。
+- ask-pending 豁免语义不变（顺序：pin 检查 → ask-pending 检查 → 流式无进展检查）。
+
+环境变量（调用时读取，非法/<=0 回落默认）：
+
+| 环境变量 | 含义 | 默认 |
+|---|---|---|
+| `PIPLUS_CLOSE_RUNTIME_RETRY_MS` | 流式 / pin / ask-pending 跳过后的重新检查间隔 | `30_000` |
+| `PIPLUS_FORCED_RECLAIM_NO_PROGRESS_MS` | 流式 runtime 连续无进展多久后强杀（僵尸兜底） | `1_800_000`（30 分钟） |
+
+回归测试：`packages/pi-client/src/client/session-reclaim.test.ts`（有进展不强杀 / 无进展到阈值才强杀 / pin 完全豁免 / unpin 恢复 / hook 错误隔离 / ask-pending 不回归 / pin 豁免时长不计入无进展窗口）、`packages/domain/src/session/runtime.test.ts`（认领窗口所有权回归）、`packages/domain/src/session/request-context.test.ts`（等待标记 ↔ pin 配对）。
+
+### 0.1 pin 生命周期无界（已知取舍，独立审查 R1 记录）
+
+`getSubagentTimeoutMs()` 默认 `0` = 永不超时（`packages/domain/src/settings/service.ts:29`），父会话等待子会话 writeback / 跨项目回复期间**没有时长上限**，因此：
+
+- 父会话的 pin（`setWaitingOnChild` / `setCrossProjectWait` → `pinSessionRuntime`）在等待期间**无界**（等待多久就豁免多久）；
+- 期间 **pi-client 的卡死兜底强杀（`PIPLUS_FORCED_RECLAIM_NO_PROGRESS_MS`，默认 30 分钟）与 domain 的 safety timeout（`PIPLUS_SESSION_TIMEOUT_MS`，默认 10 分钟）双双永久豁免**（豁免 1/3 = 内存等待标记 + pin 两层同时生效）。
+
+**取舍：本次刻意不加时长上限。** 加任何上限都会在「长等待末端」重现本机制要修的事故——上限到时点在 writeback 到达前一刻解除豁免 → 强杀在途 turn → 子会话结果永远进不了父会话上下文（线上事故的原始形态）；而且任何固定上限都必须与子会话的真实完成时间赛跑，本质不可靠。宁可把「无需上限」定义成：合法等待由子会话的完成事件显式终结。
+
+**pin 的唯一出口**（解除豁免、恢复正常回收判据的路径，全部都有终结信号，不依赖计时器）：
+
+| 出口 | 触发者 | 行为 |
+|---|---|---|
+| 子 writeback 到达 | 子会话 `writeback_to_parent` / 跨项目回复 | wait 循环退出 → `clearWaitingOnChild(parent, child)` / `clearCrossProjectWait(parent)` → refcount 归零 → 下个 tick 起恢复正常「连续无进展」判据 |
+| 父 missing | 子会话写回时找不到父（父被删/归档） | 同上：等待循环退出并清理自己那条标记 |
+| stopping | 用户点停止 / 停止收尾 | `finalizeSessionStop` 把会话收敛回 idle（`stopping→idle` 条件更新）→ 新 run 可重新认领 |
+| idle 检测 | domain `doCleanup`（父自身 run 结束，含 safety timeout / 错误出口） | `clearRequestContext` / `clearCrossProjectWait` / `clearWaitingOnChild(sessionId)`（不带 child = 清全部条目并逐条 unpin） |
+| 进程重启 | `recoverStuckSessions`（启动时） | 内存 pin 随进程消失；DB 中非 idle 会话复位 idle（`lastRuntimeError='recovered_after_restart'`） |
+
+风险与监控建议（**未实现**）：pin 的生命周期无界意味着「子会话永不 writeback 且不退出」时父会话会一直保持豁免（不回收 runtime，占用内存与上下文）。比硬上限更安全的做法是把 pin 时长/refcount 做可观测告警：pin 超过阈值（如数小时）时记日志/打点，由人判断子会话是否真死，而不是让代码猜一个会误杀的时限。
+
+代码内的指引：`packages/pi-client/src/runtime-pins.ts`、`packages/domain/src/session/request-context.ts` 的 `setWaitingOnChild` / `setCrossProjectWait`、`packages/pi-client/src/client/session-lifecycle.ts` 的 pin 分支均注明「pin 生命周期取舍见本文件 0.1」。
+
+---
+
 ## 1. 架构总览：两套"定时器 + 状态"
 
 runtime 生命周期由 **两个层级的 30 分钟定时器** 共同管理，外加 DB 中的 `sessions.runtimeStatus`（`idle`/`running`/`stopping`，schema.ts:62）作为状态机。
