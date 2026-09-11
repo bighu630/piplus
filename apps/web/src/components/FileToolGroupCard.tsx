@@ -119,7 +119,7 @@ const FileRow = React.memo(function FileRow({
               </span>
             )}
             {writeEditSummary.removed > 0 && (
-              <span className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0">
+              <span className="text-[10px] font-mono font-bold text-rose-700 dark:text-rose-400 shrink-0">
                 -{writeEditSummary.removed}
               </span>
             )}
@@ -134,7 +134,7 @@ const FileRow = React.memo(function FileRow({
           </span>
         )}
         {isError && (
-          <span className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0">
+          <span className="text-[10px] font-mono font-bold text-rose-700 dark:text-rose-400 shrink-0">
             失败
           </span>
         )}
@@ -270,7 +270,7 @@ function FileToolGroupCard({
               <Wrench className={`w-3.5 h-3.5 shrink-0 ${scheme.accent}`} />
               <span className={`text-xs font-semibold font-mono ${scheme.title}`}>{label}</span>
               {hasError && (
-                <span className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0">
+                <span className="text-[10px] font-mono font-bold text-rose-700 dark:text-rose-400 shrink-0">
                   失败
                 </span>
               )}

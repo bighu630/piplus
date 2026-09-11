@@ -152,7 +152,7 @@ function ToolCallCard({
               {resultIsError && (
                 <span
                   data-testid="tool-call-error-badge"
-                  className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0"
+                  className="text-[10px] font-mono font-bold text-rose-700 dark:text-rose-400 shrink-0"
                 >
                   失败
                 </span>
@@ -250,14 +250,14 @@ function ToolCallCard({
                           resultIsError ? (
                             <span
                               data-testid="tool-result-status"
-                              className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400"
+                              className="text-[10px] font-mono font-bold text-rose-700 dark:text-rose-400"
                             >
                               失败
                             </span>
                           ) : (
                             <span
                               data-testid="tool-result-status"
-                              className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400"
+                              className="text-[10px] font-mono font-bold text-emerald-700 dark:text-emerald-400"
                             >
                               成功
                             </span>
