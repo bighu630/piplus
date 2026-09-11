@@ -174,8 +174,6 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(details()[0].textContent).not.toContain('a1');
     // 非全展开状态：总控按钮仍是「展开全部」
     expect(allButton()!.textContent!.trim()).toBe('展开全部');
-    // 行内 chevron 与明细展开状态一致
-    expect(rows()[1].getAttribute('data-testid')).toBe('tool-file-row');
   });
 
   test('点击总控按钮展开全部文件，再点收起全部', () => {
@@ -185,6 +183,8 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(details()).toHaveLength(3);
     expect(allButton()!.textContent!.trim()).toBe('收起全部');
     expect(header()!.textContent).toContain('收起全部');
+    // 展开态仍然只有卡片级一个总控按钮（明细内无按钮）
+    expect(container!.querySelectorAll('button')).toHaveLength(1);
 
     click(allButton());
     expect(details()).toHaveLength(0);
@@ -300,5 +300,13 @@ describe('FileToolGroupCard edit 行', () => {
     );
     expect(lineTypes.filter((t) => t === 'add')).toHaveLength(1);
     expect(lineTypes.filter((t) => t === 'delete')).toHaveLength(1);
+  });
+
+  test('纯删除只显示 -N，不出现 +0', () => {
+    const call = fileCall('e1-tool-0', 'edit', { path: 'src/a.ts', edits: [{ oldText: 'a\nb', newText: '' }] });
+    render(<Harness calls={[call]} />);
+
+    expect(rows()[0].textContent).not.toContain('+0');
+    expect(rows()[0].textContent).toContain('-2');
   });
 });

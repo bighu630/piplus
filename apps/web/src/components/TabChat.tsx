@@ -26,7 +26,7 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
-import { buildFileToolGroups } from '../lib/tool-summary';
+import { buildFileToolGroups, parseToolArgsJson } from '../lib/tool-summary';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -749,17 +749,7 @@ function TabChat({
             const toolName = msg.tool_name || 'unknown';
 
             // ask_question 待回答匹配与 spawn_session 角色后缀仍需解析后的 args；卡片展示交由 ToolCallCard
-            let parsedArgs: Record<string, unknown> | null = null;
-            if (msg.tool_args_json) {
-              try {
-                const parsed: unknown = JSON.parse(msg.tool_args_json);
-                if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                  parsedArgs = parsed as Record<string, unknown>;
-                }
-              } catch {
-                // 解析失败：ToolCallCard 降级展示原始 args 文本
-              }
-            }
+            const { parsedArgs } = parseToolArgsJson(msg.tool_args_json);
             const spawnSessionRole = toolName === 'spawn_session' && typeof parsedArgs?.role === 'string'
               ? parsedArgs.role
               : null;

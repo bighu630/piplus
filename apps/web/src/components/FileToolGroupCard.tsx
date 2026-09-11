@@ -29,7 +29,7 @@ export interface FileToolGroupCardProps {
   runningIds: Set<string>;
 }
 
-function FileRow({
+const FileRow = React.memo(function FileRow({
   call,
   result,
   expanded,
@@ -41,10 +41,20 @@ function FileRow({
   onToggle: (id: string) => void;
 }) {
   const toolName = call.tool_name || 'unknown';
-  const { argsStr, parsedArgs } = parseToolArgsJson(call.tool_args_json);
-
-  const writeEditSummary = parsedArgs ? summarizeWriteEdit(toolName, parsedArgs, result?.details) : null;
-  const writeEditDiff = parsedArgs ? parseWriteEditDiff(toolName, parsedArgs) : null;
+  // 解析与统计按输入缓存：write 的 args 可能携带整份文件内容（几十~百 KB），
+  // 流式期间 TabChat 频繁重渲染时不应每行重复 JSON.parse / LCS
+  const { argsStr, parsedArgs } = React.useMemo(
+    () => parseToolArgsJson(call.tool_args_json),
+    [call.tool_args_json],
+  );
+  const writeEditSummary = React.useMemo(
+    () => (parsedArgs ? summarizeWriteEdit(toolName, parsedArgs, result?.details) : null),
+    [toolName, parsedArgs, result?.details],
+  );
+  const writeEditDiff = React.useMemo(
+    () => (parsedArgs ? parseWriteEditDiff(toolName, parsedArgs) : null),
+    [toolName, parsedArgs],
+  );
   const readPath = toolName === 'read' && parsedArgs && typeof parsedArgs.path === 'string'
     ? parsedArgs.path
     : null;
@@ -118,7 +128,7 @@ function FileRow({
       )}
     </div>
   );
-}
+});
 
 function FileToolGroupCard({
   calls,
