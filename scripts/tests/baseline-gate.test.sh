@@ -163,6 +163,13 @@ assert_exit_nonzero "A7 缺根 node_modules 时失败" "$rc"
 assert_contains "A7 提示 bun install" "bun install" "$(cat "$OUT")"
 mv "$A_REPO/node_modules.off" "$A_REPO/node_modules"
 
+# A9：git hook 导出的 GIT_DIR / GIT_INDEX_FILE 不得污染基线。
+# 回归背景：linked worktree 里跑 pre-merge-commit 时，git 会把 GIT_DIR 导成绝对路径，
+# 优先级高于 `git -C`，导致 apps/api 里用 fixture 的 git 用例全部假失败（真实发布被拦）。
+rc="$(run_check BASELINE_NO_CACHE=1 GIT_DIR=/nonexistent GIT_INDEX_FILE=/nonexistent/index)"
+assert_exit_zero "A9 忽略调用方泄漏的 GIT_DIR/GIT_INDEX_FILE" "$rc"
+assert_contains "A9 仍然完成全量检查" "基线检查通过" "$(cat "$OUT")"
+
 # A8：工作区有未 staged 改动时，被测内容 ≠ index tree，必须禁用缓存（否则会误标已通过）
 rm -f "$CACHE"
 rc="$(run_check)"

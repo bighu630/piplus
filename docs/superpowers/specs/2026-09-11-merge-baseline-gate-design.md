@@ -68,6 +68,7 @@
   - `pre-push` 用被推送 sha 的 tree（`BASELINE_TREE_KEY`）。
   - 缓存放在 `git-common-dir`（而非 `.git`）以便跨 worktree 共享。
   - **工作区有未 staged 的改动的禁用缓存**（`git diff --quiet` 检测）：此时"被测内容" ≠ index tree，用 index tree 当 key 会把一棵没真正验证过的树标成已通过。pre-merge-commit 阶段合并结果全部在 index 里、无未 staged 改动，所以双闸缓存照常生效。
+- 开头清掉 git hook 汄漏的 `GIT_DIR` / `GIT_INDEX_FILE` / `GIT_WORK_TREE` 等变量：git 会把内部变量导出给 hook 进程，而它们的优先级高于 `git -C <dir>` 与 cwd —— linked worktree 下 `GIT_DIR` 是绝对路径，会让 apps/api 里用 fixture 仓库的 9 个 git 用例把 fixture 初始化到错误仓库而全部假失败（首次发布合併就被这个假失败拦住）。主工作区里 `GIT_DIR` 未导出、`GIT_INDEX_FILE` 是相对路径，所以恰好没暴露。由自测 A9 覆盖。
 - 环境变量：`BASELINE_SKIP=1`（应急跳过）、`BASELINE_NO_CACHE=1`（强制实跑）、`BASELINE_TREE_KEY`。
 
 ### 3. `.githooks/pre-merge-commit`

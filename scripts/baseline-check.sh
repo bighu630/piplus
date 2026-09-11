@@ -18,6 +18,16 @@
 # 退出码：0 = 全部通过或缓存命中；1 = 有步骤失败 / 前置条件不满足
 set -uo pipefail
 
+# 调用方可能是 git hook：git 会把自己的内部变量导出给 hook 进程，而这些变量会
+# 污染测试里对 fixture 仓库的 git 调用 —— GIT_DIR / GIT_INDEX_FILE 的优先级高于
+# `git -C <dir>` 与 cwd，于是 `git -C /tmp/fixture init` 会去操作外面这个仓库。
+# 实测（linked worktree 里跑 pre-merge-commit）：GIT_DIR 是绝对路径，apps/api 的
+# 9 个 git 用例把 fixture 初始化到了错误仓库而全部假失败；主工作区里 GIT_DIR 未导出、
+# GIT_INDEX_FILE 又是相对路径，所以当时恰好没暴露。
+# 脚本自身靠 cwd 发现仓库即可，所以在做任何事之前先清干净。
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX \
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR 2>/dev/null || true
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   echo "baseline-check: 不在 git 仓库内，无法定位仓库根" >&2
   exit 1
