@@ -221,3 +221,83 @@ export function findToolResultMessage(
   }
   return null;
 }
+
+/** write/edit/read：会与文件交互、需要聚合展示的三类工具调用 */
+export function isFileToolCall(msg: ChatMessageDTO): boolean {
+  return msg.message_kind === 'tool_call'
+    && (msg.tool_name === 'write' || msg.tool_name === 'edit' || msg.tool_name === 'read');
+}
+
+/** 从 tool_call 消息 id 还原所属 assistant 消息 id（pi-client history 生成规则：`${entryId}-tool-${i}`） */
+export function assistantEntryId(msgId: string): string {
+  return msgId.replace(/-tool-\d+$/, '');
+}
+
+export interface FileToolGroup {
+  /** 组内第一条调用的 id：既作组 id，也决定该组在消息流中的渲染位置 */
+  id: string;
+  calls: ChatMessageDTO[];
+}
+
+/**
+ * 把「同一条 assistant 消息内的 write/edit/read 调用」聚合为组：
+ * 同一回合的多次文件操作在一张卡片里以多行文件列表展示（每行可独立展开，卡片级只有一个总控按钮）。
+ * 调用方在渲染时：组渲染在 groups.get(msg.id) 命中的位置，memberIds 中的其它消息跳过。
+ */
+export function buildFileToolGroups(messages: ChatMessageDTO[]): {
+  groups: Map<string, FileToolGroup>;
+  memberIds: Set<string>;
+} {
+  const byEntry = new Map<string, ChatMessageDTO[]>();
+  for (const msg of messages) {
+    if (!isFileToolCall(msg)) continue;
+    const entryId = assistantEntryId(msg.id);
+    const list = byEntry.get(entryId);
+    if (list) list.push(msg);
+    else byEntry.set(entryId, [msg]);
+  }
+
+  const groups = new Map<string, FileToolGroup>();
+  const memberIds = new Set<string>();
+  for (const calls of byEntry.values()) {
+    const first = calls[0];
+    groups.set(first.id, { id: first.id, calls });
+    for (const call of calls) memberIds.add(call.id);
+  }
+  return { groups, memberIds };
+}
+
+/** 解析 tool_args_json：返回格式化文本与对象形式（无法解析时 argsStr 为原始文本，parsedArgs 为 null） */
+export function parseToolArgsJson(raw: string | null | undefined): {
+  argsStr: string;
+  parsedArgs: Record<string, unknown> | null;
+} {
+  if (!raw) return { argsStr: '', parsedArgs: null };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const str = JSON.stringify(parsed, null, 2);
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { argsStr: str, parsedArgs: parsed as Record<string, unknown> };
+    }
+    return { argsStr: str, parsedArgs: null };
+  } catch {
+    return { argsStr: raw, parsedArgs: null };
+  }
+}
+
+/** read 内容展示上限：pi 单次最多读 2000 行，避免超长文件展开时渲染过多 DOM */
+export const READ_MAX_LINES = 500;
+
+/** pi 在结果末尾追加的续读/截断提示行（形如 `[Showing lines 1-501 of 900. ...]`），单独展示且不计入正文行数 */
+const READ_NOTICE_PATTERN = /^\[(?:Showing lines|Line \d+ is |\d+ more lines in file)/;
+
+/** 拆分 read 结果：正文与 pi 尾部提示（提示不参与行数统计与截断） */
+export function splitReadContent(content: string): { body: string; notice: string | null } {
+  const idx = content.lastIndexOf('\n\n[');
+  if (idx === -1) return { body: content, notice: null };
+  const candidate = content.slice(idx + 2);
+  if (READ_NOTICE_PATTERN.test(candidate)) {
+    return { body: content.slice(0, idx), notice: candidate.trim() };
+  }
+  return { body: content, notice: null };
+}

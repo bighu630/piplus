@@ -1,10 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import type { ChatMessageDTO } from '@piplus/shared';
 import {
+  buildFileToolGroups,
   findToolResultMessage,
   formatReadLineRange,
+  isFileToolCall,
+  parseToolArgsJson,
   parseWriteEditDiff,
   splitLineCount,
+  splitReadContent,
   summarizeWriteEdit,
 } from './tool-summary';
 
@@ -233,5 +237,104 @@ describe('findToolResultMessage', () => {
       msg({ id: 'result-1', role: 'tool', message_kind: 'tool', tool_name: 'read' }),
     ];
     expect(findToolResultMessage(messages, 'call-1', 'edit')).toBeNull();
+  });
+});
+
+describe('isFileToolCall', () => {
+  test('仅 write/edit/read 的 tool_call 为文件类', () => {
+    expect(isFileToolCall(msg({ id: 'c1', tool_name: 'write' }))).toBe(true);
+    expect(isFileToolCall(msg({ id: 'c2', tool_name: 'edit' }))).toBe(true);
+    expect(isFileToolCall(msg({ id: 'c3', tool_name: 'read' }))).toBe(true);
+    expect(isFileToolCall(msg({ id: 'c4', tool_name: 'bash' }))).toBe(false);
+    // 工具结果消息不算调用
+    expect(isFileToolCall(msg({ id: 'c5', role: 'tool', message_kind: 'tool', tool_name: 'read' }))).toBe(false);
+  });
+});
+
+describe('buildFileToolGroups', () => {
+  test('同一条 assistant 消息的多个文件调用聚合成一组', () => {
+    const messages = [
+      msg({ id: 'e1-tool-0', tool_name: 'write' }),
+      msg({ id: 'e1-tool-1', tool_name: 'read' }),
+      msg({ id: 'e1-tool-2', tool_name: 'edit' }),
+    ];
+    const { groups, memberIds } = buildFileToolGroups(messages);
+
+    expect(groups.size).toBe(1);
+    expect(groups.get('e1-tool-0')!.calls.map((c) => c.id)).toEqual(['e1-tool-0', 'e1-tool-1', 'e1-tool-2']);
+    expect([...memberIds].sort()).toEqual(['e1-tool-0', 'e1-tool-1', 'e1-tool-2']);
+  });
+
+  test('不同 assistant 消息分开成组，各自渲染锚点为组内首条', () => {
+    const messages = [
+      msg({ id: 'e1-tool-0', tool_name: 'write' }),
+      msg({ id: 'e2-tool-0', tool_name: 'write' }),
+      msg({ id: 'e2-tool-1', tool_name: 'edit' }),
+    ];
+    const { groups } = buildFileToolGroups(messages);
+
+    expect(groups.size).toBe(2);
+    expect(groups.get('e1-tool-0')!.calls).toHaveLength(1);
+    expect(groups.get('e2-tool-0')!.calls).toHaveLength(2);
+    expect(groups.has('e2-tool-1')).toBe(false);
+  });
+
+  test('非文件类调用与工具结果不参与分组', () => {
+    const messages = [
+      msg({ id: 'e1-tool-0', tool_name: 'write' }),
+      msg({ id: 'e2-tool-0', tool_name: 'bash' }),
+      msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'write' }),
+      msg({ id: 'e1-tool-1', tool_name: 'read' }),
+    ];
+    const { groups, memberIds } = buildFileToolGroups(messages);
+
+    expect(groups.size).toBe(1);
+    expect(groups.get('e1-tool-0')!.calls.map((c) => c.id)).toEqual(['e1-tool-0', 'e1-tool-1']);
+    expect(memberIds.has('e2-tool-0')).toBe(false);
+    expect(memberIds.has('r1')).toBe(false);
+  });
+
+  test('无文件类调用时返回空结果', () => {
+    const { groups, memberIds } = buildFileToolGroups([msg({ id: 'c1', tool_name: 'bash' })]);
+    expect(groups.size).toBe(0);
+    expect(memberIds.size).toBe(0);
+  });
+});
+
+describe('parseToolArgsJson', () => {
+  test('对象 args 返回格式化文本与对象', () => {
+    const { argsStr, parsedArgs } = parseToolArgsJson('{"a":1}');
+    expect(parsedArgs).toEqual({ a: 1 });
+    expect(argsStr).toContain('"a": 1');
+  });
+
+  test('非法 JSON 返回原始文本且 parsedArgs 为 null', () => {
+    const { argsStr, parsedArgs } = parseToolArgsJson('{oops');
+    expect(argsStr).toBe('{oops');
+    expect(parsedArgs).toBeNull();
+  });
+
+  test('数组 / 空值不视为对象 args', () => {
+    expect(parseToolArgsJson('[1,2]').parsedArgs).toBeNull();
+    expect(parseToolArgsJson(null).argsStr).toBe('');
+    expect(parseToolArgsJson('').parsedArgs).toBeNull();
+  });
+});
+
+describe('splitReadContent', () => {
+  test('剥离 pi 续读提示行', () => {
+    const { body, notice } = splitReadContent('l1\nl2\n\n[Showing lines 1-2 of 900. Use offset=3 to continue.]');
+    expect(body).toBe('l1\nl2');
+    expect(notice).toBe('[Showing lines 1-2 of 900. Use offset=3 to continue.]');
+  });
+
+  test('剥离 more lines / 超限提示', () => {
+    expect(splitReadContent('l1\n\n[10 more lines in file. Use offset=2 to continue.]').notice).toContain('more lines in file');
+    expect(splitReadContent('l1\n\n[Line 5 is 60.0KB, exceeds 50.0KB limit. Use bash: sed]').notice).toContain('exceeds');
+  });
+
+  test('普通内容（含非提示方括号）不拆分', () => {
+    const content = 'const a = [1, 2];\nconst b = [3];';
+    expect(splitReadContent(content)).toEqual({ body: content, notice: null });
   });
 });
