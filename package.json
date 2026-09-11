@@ -14,7 +14,9 @@
     "test": "cd apps/api && bun test && cd ../../packages/db && bun test",
     "test:api": "cd apps/api && bun test",
     "test:web": "cd apps/web && bun test",
-    "update-role-prompts": "bun run scripts/update-role-prompts.ts"
+    "update-role-prompts": "bun run scripts/update-role-prompts.ts",
+    "baseline": "bash scripts/baseline-check.sh",
+    "prepare": "bash scripts/setup-hooks.sh"
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.3",

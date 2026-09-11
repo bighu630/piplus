@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# pre-push：推送到 refs/heads/main 且基线未通过时阻止推送。
+#
+# 为什么需要它：pre-merge-commit 只在生成 merge commit 时触发，
+# fast-forward 与 --squash 合并都不触发，`git push origin main` 是最后一道本地闸。
+#
+# 应急绕过：git push --no-verify
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -x "$ROOT/scripts/baseline-check.sh" ] || exit 0
+
+ZERO="0000000000000000000000000000000000000000"
+MAIN_SHA=""
+
+# 必须先把 stdin 全部读完：git 在写 ref 列表时若我们提前退出会收到 SIGPIPE
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+  [ -n "${remote_ref:-}" ] || continue
+  [ "$remote_ref" = "refs/heads/main" ] || continue
+  # 删除远端 main 分支（local sha 全 0）不需要跑基线
+  [ "$local_sha" = "$ZERO" ] && continue
+  MAIN_SHA="$local_sha"
+done
+
+# 不是推 main 就直接放行
+[ -n "$MAIN_SHA" ] || exit 0
+
+HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$HEAD_SHA" ] && [ "$HEAD_SHA" != "$MAIN_SHA" ]; then
+  echo "⚠️  推送的 main（${MAIN_SHA:0:12}）不是当前 checkout（${HEAD_SHA:0:12}）"
+  echo "   基线针对当前工作区运行，结果仅供参考。"
+fi
+
+echo "▶ 推送到 main：运行基线检查（全量 typecheck + 逐包测试，约 2 分钟）"
+
+# 用被推送的树当缓存 key（而非当前 index），这样 pre-merge-commit 跑过就不必再跑
+BASELINE_TREE_KEY="$(git rev-parse "${MAIN_SHA}^{tree}" 2>/dev/null || true)"
+export BASELINE_TREE_KEY
+
+if bash "$ROOT/scripts/baseline-check.sh"; then
+  echo "✅ 基线通过，允许推送到 main"
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+
+✖ 基线检查失败，已阻止推送到 main。
+
+下一步：
+  修掉失败后重新 push。
+  如确需跳过：git push --no-verify
+EOF
+exit 1
