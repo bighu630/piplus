@@ -12,6 +12,37 @@ import { isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
  * - 例外（保持既有展示）：spawn_session / send_message_to_session 仍为 args 表格（结果走独立摘要卡片）；
  *   ask_question 仍为 JSON args（结果走 AskQuestionCard）
  */
+/** 卡片状态配色：成功绿 / 失败红 / 结果未回琥珀 */
+const SCHEMES = {
+  error: {
+    card: 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800',
+    accent: 'text-rose-600 dark:text-rose-400',
+    title: 'text-rose-800 dark:text-rose-300',
+    content: 'text-rose-900 dark:text-rose-200',
+    borderT: 'border-rose-200 dark:border-rose-800',
+    borderSoft: 'border-rose-100 dark:border-rose-800/50',
+    hover: 'hover:bg-rose-100/60 dark:hover:bg-rose-900/30',
+  },
+  pending: {
+    card: 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800',
+    accent: 'text-amber-600 dark:text-amber-400',
+    title: 'text-amber-800 dark:text-amber-300',
+    content: 'text-amber-900 dark:text-amber-200',
+    borderT: 'border-amber-200 dark:border-amber-800',
+    borderSoft: 'border-amber-100 dark:border-amber-800/50',
+    hover: 'hover:bg-amber-100/60 dark:hover:bg-amber-900/30',
+  },
+  ok: {
+    card: 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800',
+    accent: 'text-emerald-600 dark:text-emerald-400',
+    title: 'text-emerald-800 dark:text-emerald-300',
+    content: 'text-emerald-900 dark:text-emerald-200',
+    borderT: 'border-emerald-200 dark:border-emerald-800',
+    borderSoft: 'border-emerald-100 dark:border-emerald-800/50',
+    hover: 'hover:bg-emerald-100/60 dark:hover:bg-emerald-900/30',
+  },
+} as const;
+
 export interface ToolCallCardProps {
   msg: ChatMessageDTO;
   expanded: boolean;
@@ -65,6 +96,10 @@ function ToolCallCard({
 
   const hasResult = resultContent !== null;
   const resultIsError = hasResult && isToolErrorMessage(resultContent);
+  // 卡片状态着色（与文件聚合卡片同口径）：失败红 / 结果未回琥珀 / 成功绿；
+  // ask_question 是交互型工具（结果即用户答案），保持中性琥珀
+  const cardStatus: 'error' | 'pending' | 'ok' = resultIsError ? 'error' : !hasResult ? 'pending' : 'ok';
+  const scheme = toolName === 'ask_question' ? SCHEMES.pending : SCHEMES[cardStatus];
 
   const handleCopyResult = () => {
     if (resultContent == null) return;
@@ -86,19 +121,19 @@ function ToolCallCard({
     <div className="flex justify-start items-start w-full min-w-0">
       <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
         <div className="flex items-start min-w-0">
-          <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40">
+          <div className={`border rounded-xl overflow-hidden transition-colors ${scheme.card}`}>
             <div
               data-testid="tool-call-header"
               className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
               onClick={() => onToggle(msg.id)}
             >
               {expanded ? (
-                <ChevronDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                <ChevronDown className={`w-3.5 h-3.5 shrink-0 ${scheme.accent}`} />
               ) : (
-                <ChevronRight className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                <ChevronRight className={`w-3.5 h-3.5 shrink-0 ${scheme.accent}`} />
               )}
-              <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-              <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 font-mono">
+              <Wrench className={`w-3.5 h-3.5 shrink-0 ${scheme.accent}`} />
+              <span className={`text-xs font-semibold font-mono ${scheme.title}`}>
                 {toolName}
                 {roleSuffix ? ` (${roleSuffix})` : ''}
               </span>
@@ -113,7 +148,7 @@ function ToolCallCard({
             </div>
 
             {expanded && (
-              <div data-testid="tool-call-expanded" className="border-t border-amber-200 dark:border-amber-800">
+              <div data-testid="tool-call-expanded" className={`border-t ${scheme.borderT}`}>
                 {keepLegacyArgsOnly ? (
                   argsStr ? (
                     showArgsTable && parsedArgs ? (
@@ -121,11 +156,11 @@ function ToolCallCard({
                         <table className="w-full text-[11px] font-mono leading-relaxed">
                           <tbody>
                             {Object.entries(parsedArgs).map(([key, value]) => (
-                              <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
-                                <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
+                              <tr key={key} className={`border-b last:border-b-0 ${scheme.borderSoft}`}>
+                                <td className={`font-semibold pr-3 py-1 align-top whitespace-nowrap ${scheme.accent}`}>
                                   {key}
                                 </td>
-                                <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
+                                <td className={`py-1 break-words ${scheme.content}`}>
                                   {typeof value === 'object' && value !== null
                                     ? JSON.stringify(value)
                                     : String(value)}
@@ -137,7 +172,7 @@ function ToolCallCard({
                       </div>
                     ) : (
                       <div className="px-3 py-2">
-                        <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                        <pre className={`text-[11px] font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed ${scheme.content}`}>
                           {argsStr}
                         </pre>
                       </div>
@@ -153,21 +188,21 @@ function ToolCallCard({
                         type="button"
                         data-testid="tool-args-toggle"
                         onClick={() => setArgsOpen((v) => !v)}
-                        className="w-full px-3 py-1.5 flex items-center gap-2 text-left cursor-pointer select-none hover:bg-amber-100/60 dark:hover:bg-amber-900/30"
+                        className={`w-full px-3 py-1.5 flex items-center gap-2 text-left cursor-pointer select-none ${scheme.hover}`}
                       >
                         {argsOpen ? (
-                          <ChevronDown className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                          <ChevronDown className={`w-3 h-3 shrink-0 ${scheme.accent}`} />
                         ) : (
-                          <ChevronRight className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                          <ChevronRight className={`w-3 h-3 shrink-0 ${scheme.accent}`} />
                         )}
-                        <span className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                        <span className={`text-[11px] font-semibold ${scheme.title}`}>
                           执行参数
                         </span>
                       </button>
                       {argsOpen && (
                         <div data-testid="tool-args-content" className="px-3 pb-2 pl-6">
                           {argsStr ? (
-                            <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                            <pre className={`text-[11px] font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed ${scheme.content}`}>
                               {argsStr}
                             </pre>
                           ) : (
@@ -178,7 +213,7 @@ function ToolCallCard({
                     </div>
 
                     {/* 子项 2：结果（默认展开） */}
-                    <div className="border-t border-amber-100 dark:border-amber-800/50">
+                    <div className={`border-t ${scheme.borderSoft}`}>
                       {/* 标题行用 div 承载点击（内部含复制按钮，避免 button 嵌套） */}
                       <div
                         data-testid="tool-result-toggle"
@@ -191,14 +226,14 @@ function ToolCallCard({
                             setResultOpen((v) => !v);
                           }
                         }}
-                        className="w-full px-3 py-1.5 flex items-center gap-2 text-left cursor-pointer select-none hover:bg-amber-100/60 dark:hover:bg-amber-900/30"
+                        className={`w-full px-3 py-1.5 flex items-center gap-2 text-left cursor-pointer select-none ${scheme.hover}`}
                       >
                         {resultOpen ? (
-                          <ChevronDown className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                          <ChevronDown className={`w-3 h-3 shrink-0 ${scheme.accent}`} />
                         ) : (
-                          <ChevronRight className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                          <ChevronRight className={`w-3 h-3 shrink-0 ${scheme.accent}`} />
                         )}
-                        <span className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">结果</span>
+                        <span className={`text-[11px] font-semibold ${scheme.title}`}>结果</span>
                         {hasResult ? (
                           resultIsError ? (
                             <span

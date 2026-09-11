@@ -289,3 +289,49 @@ describe('ToolCallCard 失败可见性与例外边界', () => {
     expect(resultToggle()).toBeNull();
   });
 });
+
+describe('ToolCallCard 状态着色', () => {
+  test('成功：卡片绿色', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    expect(container!.querySelector('.bg-emerald-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-rose-50')).toBeNull();
+    expect(container!.querySelector('.bg-amber-50')).toBeNull();
+  });
+
+  test('失败：卡片红色', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
+    expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-emerald-50')).toBeNull();
+  });
+
+  test('结果未回（运行中）：保持琥珀色', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
+    expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-emerald-50')).toBeNull();
+    expect(container!.querySelector('.bg-rose-50')).toBeNull();
+  });
+
+  test('ask_question 保持中性琥珀（交互型工具，结果即用户答案）', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
+    expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-emerald-50')).toBeNull();
+  });
+
+  test('spawn_session 成功同样变绿（例外仅指结果展示位置）', () => {
+    render(
+      <Harness
+        msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })}
+        resultContent={'{"summary":"done"}'}
+      />,
+    );
+    expect(container!.querySelector('.bg-emerald-50')).not.toBeNull();
+  });
+
+  test('失败时头部与展开区同色系', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: x'} />);
+
+    click(header());
+    expect(expandedArea()!.className).toContain('border-rose-200');
+    expect(header()!.querySelector('svg')!.getAttribute('class')).toContain('text-rose-600');
+  });
+});
