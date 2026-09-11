@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, jest, test } from 'bun:test';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
@@ -35,6 +35,11 @@ afterAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = originalActEnv;
 });
 
+// 安全网：测试中途断言失败时也保证 root 被卸载，避免影响后续测试与后续文件。
+afterEach(() => {
+  cleanup();
+});
+
 function render(node: React.ReactElement) {
   container = (globalThis.document as Document).createElement('div');
   (globalThis.document as Document).body.appendChild(container);
@@ -65,6 +70,26 @@ function click(el: Element | null) {
   act(() => {
     (el as HTMLButtonElement).click();
   });
+}
+
+// 两道题的问卷夹具：第一题单选，第二题单选；用来验证「答完自动跳下一题」与卸载清理。
+function renderQuestionnaire() {
+  render(
+    <AskQuestionCard
+      mode="pending"
+      sessionId="sess1"
+      pending={{
+        questionId: 'q5',
+        sessionId: 'sess1',
+        questions: [
+          { question: '第一问', options: ['A1', 'B1'] },
+          { question: '第二问', options: ['A2', 'B2'] },
+        ],
+      }}
+      onSubmit={() => {}}
+      onCancel={() => {}}
+    />,
+  );
 }
 
 describe('AskQuestionCard 待回答表单', () => {
@@ -181,6 +206,47 @@ describe('AskQuestionCard 待回答表单', () => {
     expect(submitted?.questionId).toBe('q4');
     expect(submitted?.answers).toEqual(['A1', ['B2']]);
     cleanup();
+  });
+
+  // 回归 1（正向）：选了单选后 220ms 确实会自动跳到下一题。
+  test('问卷自动跳题：答完单选后 220ms 自动切换到下一题', () => {
+    jest.useFakeTimers();
+    try {
+      renderQuestionnaire();
+      expect(container!.textContent ?? '').toContain('A1');
+      click(container!.querySelectorAll('input[type="radio"]')[0] as unknown as HTMLButtonElement);
+      act(() => {
+        jest.advanceTimersByTime(220);
+      });
+      const text = container!.textContent ?? '';
+      expect(text).toContain('A2');
+      expect(text).not.toContain('A1');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // 回归 2（根因）：该定时器必须在卸载时被清理。否则它会在卸载后 setActive，
+  // 而测试进程里其它文件已把 globalThis.window 还原为 undefined —— React 的
+  // resolveUpdatePriority 读 window.event 会抛 TypeError，把此刻正在跑的其它测试
+  // 一并打挂（表现为 createThrottledFlusher 等无辜测试随机失败）。
+  test('问卷自动跳题定时器：卸载时被清理，不留 pending timer', () => {
+    jest.useFakeTimers();
+    try {
+      renderQuestionnaire();
+      const idle = jest.getTimerCount();
+
+      // 答第一题 → 排入自动跳题定时器
+      click(container!.querySelectorAll('input[type="radio"]')[0] as unknown as HTMLButtonElement);
+      const afterAnswer = jest.getTimerCount();
+      expect(afterAnswer).toBe(idle + 1);
+
+      // 卸载：定时器必须被清理（否则它会在卸载后 setState）
+      cleanup();
+      expect(jest.getTimerCount()).toBe(idle);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
