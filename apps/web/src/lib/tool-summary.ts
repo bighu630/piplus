@@ -302,17 +302,6 @@ export function splitReadContent(content: string): { body: string; notice: strin
   return { body: content, notice: null };
 }
 
-/**
- * write/edit/read 的结果（成功或失败）都整合进文件聚合卡片呈现，因此结果消息不再单独渲染：
- * - 成功：卡片/行呈绿色状态
- * - 失败：卡片/行呈红色状态，失败原因在对应行内默认展开
- */
-export function isFileToolResult(msg: ChatMessageDTO): boolean {
-  if (msg.message_kind !== 'tool' && msg.role !== 'tool') return false;
-  const toolName = msg.tool_name ?? '';
-  return toolName === 'write' || toolName === 'edit' || toolName === 'read';
-}
-
 /** result 文本以 Error 开头视为失败（pi-client 对 isError 结果加的前缀；全仓库统一口径） */
 export function isToolErrorMessage(text: string | null | undefined): boolean {
   return /^error/i.test((text ?? '').trim());

@@ -6,7 +6,6 @@ import {
   formatReadLineRange,
   isFileToolCall,
   collectCoveredFileToolResultIds,
-  isFileToolResult,
   isToolErrorMessage,
   parseToolArgsJson,
   parseWriteEditDiff,
@@ -339,20 +338,6 @@ describe('splitReadContent', () => {
   test('普通内容（含非提示方括号）不拆分', () => {
     const content = 'const a = [1, 2];\nconst b = [3];';
     expect(splitReadContent(content)).toEqual({ body: content, notice: null });
-  });
-});
-
-describe('isFileToolResult', () => {
-  test('write/edit/read 的结果（成功与失败）都由聚合卡片呈现', () => {
-    expect(isFileToolResult(msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'write', content_text: 'Successfully wrote to a.ts' }))).toBe(true);
-    expect(isFileToolResult(msg({ id: 'r2', role: 'tool', message_kind: 'tool', tool_name: 'edit', content_text: 'ok' }))).toBe(true);
-    expect(isFileToolResult(msg({ id: 'r3', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'file body' }))).toBe(true);
-    expect(isFileToolResult(msg({ id: 'r4', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'Error: ENOENT: no such file' }))).toBe(true);
-  });
-
-  test('其它工具的结果与调用消息不受影响', () => {
-    expect(isFileToolResult(msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'bash', content_text: 'ok' }))).toBe(false);
-    expect(isFileToolResult(msg({ id: 'c1', tool_name: 'write' }))).toBe(false);
   });
 });
 
