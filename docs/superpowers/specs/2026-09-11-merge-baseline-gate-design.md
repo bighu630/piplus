@@ -108,10 +108,7 @@ hook 最常见的失效方式是"静默不再触发"，没有自测就等于没�
 - `git merge --no-verify` 与 `git push --no-verify` 可绕过；`BASELINE_SKIP=1` 同理。纪律靠 AGENTS.md 约束。
 - 基线的 typecheck/测试针对**当前 checkout**：`pre-push` 推送与 checkout 不同的分支时结果仅供参考（hook 会打印警告）。
 - 双闸场景下同一棵树最多跑一次（缓存保证），但缓存被清时最坏会跑两遍（约 3.6 分钟）。
-- **基线本身目前不稳定（与本功能无关的既有问题）**：`apps/web` 有对 CPU 负载敏感的测试。实测数据：单独跑 12/12 通过；人为加 6 个满载进程后 4/4 失败；在基线脚本里（紧随 40s 的 typecheck 与 api 套件之后）4 次里失败 2 次。两种机制：
-  1. `createThrottledFlusher > 连续 push 只 flush 最后一次（合并节流）` 这类按墙钟阈值断言的节流测试；
-  2. React 在 DOM 拆卸后仍触发 `dispatchSetState`，报 `TypeError: undefined is not an object (evaluating 'window.event')`（`# Unhandled error between tests`），导致该文件测试数从 61 掉到 60/52。
-  后果：门禁会因这些无关抖动产生假拦截（false block）。修复属于独立任务，不在本设计范围内。
+- **基线本身曾经不稳定（既有问题，已修复）**：`apps/web` 曾出现随机失败（实测：单独跑 12/12 通过；人为加 6 个满载进程后 4/4 失败；在基线脚本内 4 次失败 2 次）。根因不是那些用例本身，而是 `AskQuestionCard` 问卷的 220ms「自动跳题」`setTimeout` 未在卸载时清理：定时器到点时前序 DOM 测试文件已在 `afterAll` 把 `globalThis.window` 还原为 `undefined`，React `dispatchSetState` 读 `window.event` 抛 TypeError，把当时正在跑的任意测试一并打挂（所以“背锅”的测试每次都不同）。已在独立任务修复：commit `20e1fff`（含假时钟化的节流测试与两条回归测试）。
 
 ## 验收标准与实际结果
 
@@ -124,3 +121,4 @@ hook 最常见的失效方式是"静默不再触发"，没有自测就等于没�
 | 5 | 同一棵树第二次运行走缓存并立即返回 0；失败时缓存不写入 | ✅ group A1–A4；双闸端到端见 group E2 |
 | 6 | `bash scripts/tests/baseline-gate.test.sh` 全部通过 | ✅ 69/69 |
 | 7 | CI workflow 跑同一个 `scripts/baseline-check.sh` | ✅ `.github/workflows/baseline.yml` |
+| 8 | 全量基线在本仓库真实跑通（含曾随机失败的 apps/web） | ✅ 修复 flaky 后重跑：7 步全绿，108s（tree `ce3bf4cd`） |
