@@ -95,6 +95,9 @@ git push origin vX.Y.Z
 ```
 
 - tag 打在 **release merge commit** 上（历史约定：`v0.2.21` → `9839eee` 就是那次 release merge）。
+- 也可以改用 **GitHub 界面创建 Release**（在界面里新建 tag），效果等价；但**前提是 `main` 已经 push** ——
+  否则界面上的 `main` 还是旧提交，tag 会打错位置，发布内容就不是本次的代码。
+  推送受阻时（网络/权限）先把推送解决掉，不要先发 Release。
 - `.github/workflows/build-release.yml` 监听 `v*` tag：会构建 Electron 三平台包 + Docker 镜像。
   **所以 tag 不要乱打**（打错并推送会真的跑一轮发布构建）。
 - 没有 push 权限时，tag 可以只在本地创建，或干脆跳过，等有权限时再补。
