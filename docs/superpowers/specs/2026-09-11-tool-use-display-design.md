@@ -7,7 +7,7 @@
 ## 需求（已与用户确认）
 
 1. **文件工具聚合卡片**：同一条 assistant 消息内的多个 write/edit/read 调用合并为一张卡片，头部为 `chevron + 工具名(× N)`；下方以**多行文件列表**展示每个文件（路径 + `+N` / `-N`，read 为路径 + 行号范围）。
-2. **两个交互**：① 每行可**独立展开**显示该文件的 diff 明细（read 显示读取内容，不带行号，行号只在行内范围里）；② 卡片级**只有一个**「展开全部 / 收起全部」总控（按钮 + 头部点击，两者同语义）。
+2. **两个交互**：① 每行可**独立展开**显示该文件的 diff 明细（read 显示读取内容，不带行号，行号只在行内范围里）；② 卡片级总控 = 头部点击（整组展开/收起）；**仅当组内有多个文件时**额外显示唯一的「展开全部 / 收起全部」按钮（单文件时点行/头部即可切换）。
 3. **状态着色（工具调用视为一个整体）**：整组全部成功 → 绿色卡片；有任一失败 → 红色卡片（失败行额外标红并显示「失败」）；仍在运行（结果未回）→ 保持琥珀色。
 4. **失败原因默认展开**在对应行内（点击该行仍可收起）；write/edit/read 的结果（成功与失败）均不再渲染独立结果卡片。
 5. **普通工具（bash/grep/find/ls 等）**：一条调用一张卡片，**卡片本身按执行结果着色**（成功绿 / 失败红 / 结果未回琥珀，与文件聚合卡片同口径）；头部点击展开后为两个可折叠子项——「执行参数」（默认收起）与「结果」（默认展开，成功/失败标识）；结果不再渲染独立卡片。`ask_question`（交互型工具，结果即用户答案）保持中性琥珀并与例外展示一致。
@@ -64,7 +64,7 @@ interface FileToolGroupCardProps {
 }
 ```
 
-- 头部：chevron（全展开态）+ 工具名列表（混合时如 `write + edit × 3`）+ 唯一的总控按钮「展开全部 / 收起全部」；头部点击与按钮同语义；整组有失败时头部附「失败」标识
+- 头部：chevron（全展开态）+ 工具名列表（混合时如 `write + edit × 3`）+ 总控按钮「展开全部 / 收起全部」（**仅 `calls.length > 1` 时渲染**）；头部点击与按钮同语义；整组有失败时头部附「失败」标识
 - 文件行（每行一个调用，整行可点击=独立展开）：chevron + `FileCode` + 路径（`truncate` + `title`）+ `+N`/`-N` 或行号 chip；失败行标红并显示「失败」
 - 行明细：失败 → 错误原因（rose `pre`，默认展开、点击可收起）；write/edit → `DiffViewer`；read → `ReadResultView`；无解析结果时回退 args JSON
 - 状态着色：全部成功 → 绿色卡片；有任一失败 → 红色卡片；存在运行中调用且无失败 → 琥珀色
@@ -138,7 +138,7 @@ interface ToolCallCardProps {
 - `apps/web/src/lib/tool-summary.test.ts`：write 行数（普通/空/末尾换行）、edit 的 details.diff 解析与 args 回退、行号范围 4 种情形、result 匹配（含 toolCallId 精确配对与序数回退）、`isFileToolCall` / `buildFileToolGroups` / `parseToolArgsJson` / `splitReadContent`
 - `apps/web/src/lib/diff.test.ts`：行级 diff 的末尾换行口径与 truncateDiff 截断边界
 - `apps/web/src/components/FileToolGroupCard.test.tsx`（happy-dom + React 19，参照 `AskQuestionCard.test.tsx`）：
-  1. 多行文件列表 + 卡片级**只有一个**总控按钮（计数断言）
+  1. 多行文件列表 + 卡片级**只有一个**总控按钮（计数断言）；单文件组不显示按钮、点行/头部仍可展开
   2. 默认收起不渲染明细；点击单行只展开该行；总控按钮/头部展开全部再收起
   3. 单文件组、混合工具组标签（`write + edit + read × 3`）、路径 `title`、running spinner
   4. 状态着色与失败展开：全部成功绿色卡片；结果未回琥珀色（pending，不宣称成功）；失败红色卡片（优先级高于运行中）+ 失败行默认展开错误原因 + 点击可收起；部分失败时仅失败行标红；全部收起/展开与失败行联动；失败的 edit/read 不渲染 diff 或 read 内容（只显示错误原因）

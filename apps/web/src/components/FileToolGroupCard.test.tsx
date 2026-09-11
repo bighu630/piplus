@@ -201,13 +201,20 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(details()).toHaveLength(0);
   });
 
-  test('单文件组也走同一结构（一行 + 一个总控）', () => {
+  test('单文件组：不显示总控按钮，点行/头部仍可展开', () => {
     render(<Harness calls={[fileCall('e1-tool-0', 'edit', { path: 'src/only.ts', edits: [{ oldText: 'x', newText: 'y' }] })]} />);
 
     expect(rows()).toHaveLength(1);
-    expect(container!.querySelectorAll('button')).toHaveLength(1);
+    expect(container!.querySelectorAll('button')).toHaveLength(0);
+    expect(allButton()).toBeNull();
     expect(header()!.textContent).toContain('edit');
     expect(header()!.textContent).not.toContain('×');
+
+    click(rows()[0]);
+    expect(details()).toHaveLength(1);
+
+    click(header());
+    expect(details()).toHaveLength(0);
   });
 
   test('混合工具组：标签合并显示工具名与数量', () => {
@@ -387,21 +394,30 @@ describe('FileToolGroupCard 状态着色与失败展开', () => {
     expect(details()[0].textContent).toContain('disk full');
   });
 
-  test('全部收起时失败行也收起，全部展开时恢复', () => {
+  test('多文件组：全部收起时失败行也收起，全部展开时恢复', () => {
     render(
       <Harness
-        calls={[okWrite]}
-        messages={[toolResult('r1', 'write', 'e1-tool-0', 'Error: EACCES')]}
+        calls={[okWrite, fileCall('e1-tool-1', 'write', { path: 'src/b.ts', content: 'y' })]}
+        messages={[
+          toolResult('r1', 'write', 'e1-tool-0', 'Error: EACCES'),
+          toolResult('r2', 'write', 'e1-tool-1', 'Successfully wrote to src/b.ts'),
+        ]}
       />,
     );
 
-    // 失败行默认展开 → 视为全展开，按钮为「收起全部」
+    // 失败行默认展开、成功行未展开 → 非全展开态，按钮为「展开全部」
+    expect(details()).toHaveLength(1);
+    expect(allButton()!.textContent!.trim()).toBe('展开全部');
+
+    click(allButton()); // 展开全部
+    expect(details()).toHaveLength(2);
     expect(allButton()!.textContent!.trim()).toBe('收起全部');
-    click(allButton());
+
+    click(allButton()); // 收起全部（失败行也一并收起）
     expect(details()).toHaveLength(0);
 
-    click(allButton());
-    expect(details()).toHaveLength(1);
+    click(allButton()); // 再次展开全部
+    expect(details()).toHaveLength(2);
     expect(details()[0].textContent).toContain('EACCES');
   });
 
