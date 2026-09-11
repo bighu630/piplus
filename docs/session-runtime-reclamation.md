@@ -92,7 +92,7 @@
 | `disposed_at` / `attempts` / `no_progress_ms` | 强杀时刻与 hook 信息（来自 pi-client） |
 | `last_run_at` | 判定所有权时读到的 run 认领时刻 |
 | `stranded_writebacks` | 窗口内扫到的被困回写条数；`null` = 未扫描（无 piClient / 无 lastRunAt / 被新 run 接管） |
-| `wake_result` | `started`（已投出）/ `skipped`（并发认领或 `session_not_found`）/ `failed`（拉起失败）/ `not_attempted`（无候选或不可拉起） |
+| `wake_result` | `pending`（两阶段写的第一阶段，补投递结束前）/ `started`（已投出）/ `skipped`（并发认领或 `session_not_found`）/ `failed`（拉起失败）/ `not_attempted`（无候选或不可拉起） |
 | `skip_reason` | `wake_result='skipped'` 时的原因：`session_not_idle`（整个预算内被并发 run 占用）/ `retries_exhausted`（尝试过但预算用尽仍未投出）/ `not_replayable`（会话不可补投：已归档或数据异常）/ `session_missing`；其余情况为 `null` |
 
 用途：强制回收此前只有 stdout 日志（线上日志未必落在文件里），现在可直接查：
@@ -117,12 +117,31 @@ FROM session_events WHERE type='runtime_forced_reclaim' ORDER BY created_at DESC
 
 回归测试：`packages/domain/src/session/runtime.test.ts` 的 `forced reclaim 补投递` 组（窗口内补投 / 强杀到收敛之间落库仍补投 / 收敛之后不补投 / 无回写不拉起 / 归档不拉起 / 拉起失败不外抛 / 已 idle 仍补投 L1 / 被新 run 接管不补投 / busy 重试成功 L3 / 重试耗尽记 skipped）、`apps/api/src/routes/sessions/runtime-reclaim.test.ts`（生产接线端到端：收敛 → 补投递 → 审计事件 + WS running/idle）、`apps/api/src/routes/sessions.test.ts`（vision 占位写 lastRunAt）。
 
+### 0.3 run 结束回扫未消费 writeback（L2 闭环：消费标记 + 回扫 + 索引）
+
+**动机（0.2 记的最后一条残余）**：`writebackToParent` 只在父 `idle` 时 auto-wake，父 `running` 时直接跳过；若此时**没有匹配的在途 wait 循环**（`wait=false` 子会话在父忙时 writeback、wait 循环已超时/退出后子才 writeback、父在跑别的 run），这条写回此后无人消费，永久搁置。
+
+**机制**（`packages/domain/src/session/runtime.ts`，由 `doCleanup` 在会话收敛为 idle 后调用）：
+
+1. **持久消费标记** `markWritebackConsumed`：往 `session_events` 写 `type='writeback_consumed'`（payload 含 `message_id` / `child_session_id` / `request_id` / `via`）。写入点：
+   - `via='wait_loop'`：`waitForChildWriteback` 匹配到 writeback 时（`role-manager-tools.ts`）——这是「已交给本轮 run」的标记，避免正常 `wait=true` 流程把同一条结果投递两次；
+   - `via='forced_reclaim_rescan'` / `via='run_end_rescan'`：补投递成功投出后。
+   - 语义边界：标记 = 「已交给某个 run」，**不**保证内容真的落进上下文——「匹配后被**强杀**的 agent 吞掉」由 0.2 的强杀补投递（窗口回扫、不看标记）兜底；而**用户停止 / safety timeout / 普通错误收尾**吞掉的内容没有回扫路径（属标记语义的固有边界，非回归）。
+2. **run 结束回扫** `replayUnconsumedWritebacks`：run 收敛 idle 后，扫窗口 `[runStartedAt, now]` 内发给本会话、且**没有消费标记**的 writeback，拼成带醒目标记的补投内容，用 `wakeSessionWithContent` 拉起会话消费。
+   - **与强杀补投递共用同一套「让位 + 有界重试」**（`deliverContentWithRetry`，同一 env 预算）：唤醒靠原子认领，除并发认领外，**紧接着结束的上一次 run** 还可能因 pi-client 的 `isStreaming` 守卫（agent 尚未收尾，safety timeout / abort 收尾期常见）抛 `session_busy`——只投一次就会把这批内容永久丢掉（独立审查用探针复现）。重试期间被并发 run 占用则让位，不抢。
+   - 幂等与循环安全：**只有投出成功才写标记**，因此补投 run 自己结束时（窗口内已无该批写回 + 已写标记）不会重复投递；预算用尽仍未投出则**不写标记**并写审计（`session_events(type='writeback_rescan')`，payload `{found, delivered, wake_result, skip_reason, window_from}`，仅 found>0 时写），供线上发现「找到但没投出」。
+   - **已知残余**：预算用尽仍未投出的批次，下一次 run 的回扫窗口 `[该 run 的 startedAt, now]` 按构造不含它（要结构性闭环需放宽窗口下界，**前提是给 auto-wake 路径也补 `via='auto_wake'` 标记**，否则会把每条正常 auto-wake 投递在 run 结束时重复投一次）——留给后续。
+   - 前端可见：透传 `onRuntimeStatusChange`，补投 run 会广播 running/idle。
+   - **worker 会话**：若回扫投出了补投 run，则跳过 run 结束时的「立即回收 runtime」（否则可能在补投 run 尚未进入 streaming 的 microtask 窗口里被 dispose → 已写标记的内容永久丢）；回收交给该 run 自己的 `doCleanup`。
+3. **索引**：`messages(session_id, message_kind, created_at)`（`packages/db/migrations/0008_messages_writeback_index.sql` 记录，`init.ts` 的 `ensureMessagesWritebackIndex` 每次启动无条件 `CREATE INDEX IF NOT EXISTS`，既有 DB 也会补齐）——强杀补投递与 run 结束回扫都按这三个条件过滤。
+
+回归测试：`packages/domain/src/session/runtime.test.ts` 的 `run 结束回扫未消费 writeback（L2 闭环）`（父忙期间到达→run 结束补投+标记+无重复；已标记→不重复投）、`packages/domain/src/extensions/role-manager-tools.test.ts`（wait 循环写 `via='wait_loop'` 标记）、`packages/db/src/init.test.ts`（既有 DB 上索引被补齐）。
+
 #### 已知残余缺口（未修，记录待后续）
 
-**「父会话 `running` 期间到达、且没有匹配的在途 wait 循环」的 writeback 无消费者**：`writebackToParent` 只在父 `idle` 时 auto-wake，否则跳过；此后也没有任何机制回头扫它（补投递的窗口下界是下一次被杀 run 的 `lastRunAt`，按构造排除更早的写回）。触发场景：`wait=false` 的子会话在父忙时 writeback、wait 超时后子才 writeback、补投递 run 运行期间到达的写回。
-**建议的闭环**：持久化「已消费」标记（wait 循环匹配时写 `session_events`），并在每次 run 结束（`doCleanup` → idle）时重扫未消费 writeback 补投；顺带给 `messages(session_id, message_kind, created_at)` 加索引。
-
 另一条同源残余：**`stopping` 状态下的强杀不补投**（补投递闸门要求 `idle`，尊重用户显式停止）。此时窗口内的 writeback 会永久搁置（同样被后续窗口下界排除），属已知取舍而非新 bug。
+
+**`cross_project_reply` 同类缺口（审查记录，未实现）**：写入点 `role-manager-tools.ts` 的 `cross_project_reply`（`messageKind='cross_project_reply'`），唯一消费者是 `waitForCrossProjectReply` 轮询；本节的回扫只匹配 `messageKind='writeback'`，且跨项目回复没有 auto-wake 路径 → 询问方无在途 wait 时同样无消费者。建议把回扫的 kind 过滤扩到 `['writeback','cross_project_reply']`（标记语义可复用，`buildReplayContent` 文案泛化），并在 `waitForCrossProjectReply` 命中时写 `via='wait_loop'` 标记。
 
 还有两条与「不丢」相关的待办（审查记录，未实现）：(a) **确定性错误与瞬态错误未区分**——`wakeSessionWithContent` 把 `session_not_found`（如 project/ownership 不匹配）也归入可重试的 `skipped`，会白耗一次重试预算后记 `retries_exhausted`，真实原因被掩盖；(b) **`notifyForcedRuntimeDispose` 串行 await handler**——一个 handler 的重试窗口（最长约 1 分钟）会拖住后续强杀通知的收敛，缓解办法是改并发派发（handler 内部已各自 try/catch）。
 

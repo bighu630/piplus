@@ -115,6 +115,16 @@ function ensureProjectTodosTable(sqlite: Database) {
   }
 }
 
+/**
+ * writeback 回扫索引：(session_id, message_kind, created_at)。
+ * 强杀补投递与「run 结束的未消费回写回扫」都按这三个条件过滤 messages。
+ * messages 表由迁移创建（可能已存在），因此这里**无条件**跑 IF NOT EXISTS，
+ * 不放在建表分支里——否则既有 DB 永远拿不到索引。
+ */
+function ensureMessagesWritebackIndex(sqlite: Database) {
+  sqlite.exec('CREATE INDEX IF NOT EXISTS idx_messages_session_kind_time ON messages(session_id, message_kind, created_at)');
+}
+
 function ensureSettingsTable(sqlite: Database) {
   const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'").all();
   if (tables.length === 0) {
@@ -334,6 +344,7 @@ export function createSeedDb(path: string) {
   ensureProjectPinnedAtColumn(sqlite);
   ensureProjectTodosTable(sqlite);
   ensureSettingsTable(sqlite);
+  ensureMessagesWritebackIndex(sqlite);
   ensureMessageInjectionsTable(sqlite);
   ensureBuiltinRows(sqlite);
   ensureModelFallbacksColumn(sqlite);

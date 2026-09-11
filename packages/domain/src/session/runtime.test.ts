@@ -5,8 +5,9 @@ import { createSeedDb } from '@piplus/db/init';
 import { messages, projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
-import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup, finalizeSessionStop, finalizeForcedRuntimeReclaim, markSessionIdleIfRunOwned } from './runtime';
+import { startSessionRun, clearIdleRuntimeCleanup, markWritebackConsumed, scheduleIdleRuntimeCleanup, finalizeSessionStop, finalizeForcedRuntimeReclaim, markSessionIdleIfRunOwned } from './runtime';
 import { ASK_QUESTION_SYSTEM_PROMPT } from '../extensions/ask-question';
+import { createRoleManagerService } from '../role-manager/service';
 import { setCrossProjectWait, clearCrossProjectWait, setWaitingOnChild, clearWaitingOnChild, isWaitingOnChild } from './request-context';
 
 function makeDbPath() {
@@ -200,6 +201,16 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs 
     await Bun.sleep(5);
   }
   return await predicate();
+}
+
+/** 有界轮询：预算内确认条件始终不成立（「不得发生」类断言，避免固定 sleep 的单点抽样）。 */
+async function confirmNever(predicate: () => boolean | Promise<boolean>, budgetMs = 200): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return false;
+    await Bun.sleep(10);
+  }
+  return !(await predicate());
 }
 
 type TestDb = Awaited<ReturnType<typeof setupSession>>['db'];
@@ -1900,16 +1911,6 @@ describe('forced reclaim 补投递（rescan stranded writebacks）', () => {
   const RUN_STARTED_AT = new Date('2026-01-01T00:00:00.000Z');
   const DISPOSED_AT = Date.parse('2026-01-01T00:10:00.000Z');
 
-  /** 有界轮询：预算内确认条件始终不成立（「不得发生」类断言，避免固定 sleep 的单点抽样）。 */
-  async function confirmNever(predicate: () => boolean | Promise<boolean>, budgetMs = 200): Promise<boolean> {
-    const deadline = Date.now() + budgetMs;
-    while (Date.now() < deadline) {
-      if (await predicate()) return false;
-      await Bun.sleep(10);
-    }
-    return !(await predicate());
-  }
-
   async function seedParent(options: {
     writebacks?: Array<{ summary: string; at: number; source?: string; blocks?: unknown }>;
     status?: string;
@@ -2378,3 +2379,365 @@ describe('forced reclaim 补投递（rescan stranded writebacks）', () => {
   });
 
 });
+
+/**
+ * L2 闭环：run 结束（收敛 idle）时回扫「本次 run 期间到达、却没有任何消费者」的 writeback 并补投。
+ * 覆盖：wait=false 子会话在父忙时 writeback、wait 循环已退出后子才 writeback 等
+ * ——旧实现里这些写回永久搁置（无 wait 循环匹配、auto-wake 因父非 idle 跳过、此后无人回看）。
+ */
+describe('run 结束回扫未消费 writeback（L2 闭环）', () => {
+  const PARENT = 'session_test_runtime';
+  const CHILD = 'session_child_l2';
+
+  async function seedChild(db: TestDb) {
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    await db.insert(sessions).values({
+      id: CHILD,
+      projectId: 'project_test_runtime',
+      parentSessionId: PARENT,
+      rootSessionId: PARENT,
+      depth: 1,
+      roleTemplateId: 'rt_blank',
+      piSessionId: 'pi_session_child_l2',
+      piSessionLocatorJson: stringifyLocator({ piSessionId: 'pi_session_child_l2', sessionFile: '/tmp/pi-child-l2.jsonl' }),
+      requestedByMessageId: null,
+      title: 'Child',
+      titleSource: 'default',
+      status: 'active',
+      runtimeStatus: 'idle',
+      currentModelProvider: null,
+      currentModelId: null,
+      lastActivityAt: now,
+      lastRunAt: null,
+      lastStopAt: null,
+      lastRuntimeError: null,
+      createdBy: 'user_seed',
+      archivedAt: null,
+      archivedBy: null,
+      createdAt: now,
+      updatedAt: now,
+      roleBasePromptSnapshot: 'base',
+      userSuppliedPrompt: '',
+      parentSuppliedPrompt: '',
+      compiledPrompt: 'compiled',
+    } as any);
+  }
+
+  async function readConsumedMarkers(db: TestDb) {
+    const rows = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, PARENT));
+    return rows
+      .filter((e) => e.type === 'writeback_consumed')
+      .map((e) => JSON.parse(e.payload) as { message_id: string; via: string });
+  }
+
+  test('父忙时到达的 writeback 在 run 结束时被补投 + 写消费标记（旧实现下永久搁置）', async () => {
+    const { db } = await setupSession();
+    await seedChild(db);
+    const { client, state } = makePiClient();
+    let injected = false;
+    const baseSend = client.sendMessage.bind(client);
+    client.sendMessage = async (sessionId: string, content: string, options?: Parameters<typeof baseSend>[2]) => {
+      // 第一次 sendMessage = 「本轮 run 自己」；在其执行期间模拟子会话 writeback 到达
+      // （走真实 writebackToParent：父非 idle → auto-wake 跳过 → 旧实现此后无人消费）
+      if (!injected) {
+        injected = true;
+        await createRoleManagerService(db, client).writebackToParent({
+          childSessionId: CHILD,
+          summary: 'L2：父忙期间到达的 writeback',
+        });
+      }
+      return baseSend(sessionId, content, options);
+    };
+
+    try {
+      await startSessionRun({
+        db,
+        piClient: client,
+        sessionId: PARENT,
+        userId: 'user_seed',
+        content: 'parent busy run',
+      });
+
+      // run 结束（doCleanup 收敛 idle）→ 回扫发现未被消费的 writeback → 补投
+      expect(await waitUntil(() => state.sent.length >= 2)).toBe(true);
+      const replay = state.sent[1];
+      expect(replay.sessionId).toBe(PARENT);
+      expect(replay.content).toContain('补投递');
+      expect(replay.content).toContain('L2：父忙期间到达的 writeback');
+      expect(replay.content).toContain(CHILD);
+
+      // 持久消费标记（via=run_end_rescan）
+      const markers = await readConsumedMarkers(db);
+      expect(markers).toHaveLength(1);
+      expect(markers[0].via).toBe('run_end_rescan');
+      const [wbRow] = await db.select().from(messages).where(eq(messages.sessionId, PARENT));
+      expect(markers[0].message_id).toBe(wbRow.id);
+
+      // 审计行（found>0 才写）：线上可查「找到但没投出」
+      const rescanEvents = (await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, PARENT)))
+        .filter((e) => e.type === 'writeback_rescan')
+        .map((e) => JSON.parse(e.payload) as Record<string, unknown>);
+      expect(rescanEvents).toHaveLength(1);
+      expect(rescanEvents[0]).toMatchObject({ found: 1, delivered: true, wake_result: 'started', skip_reason: null });
+
+      // 无循环：补投 run 自己结束时不会再投一次（已标记 + 窗口外）
+      expect(await confirmNever(() => state.sent.length > 2, 300)).toBe(true);
+    } finally {
+      clearIdleRuntimeCleanup(PARENT);
+      clearIdleRuntimeCleanup(CHILD);
+    }
+  });
+
+  test('已标记消费的 writeback 不会被回扫重复投递（正常 wait=true 流程不会出现两条结果）', async () => {
+    const { db } = await setupSession();
+    await seedChild(db);
+    const { client, state } = makePiClient();
+    let injected = false;
+    const baseSend = client.sendMessage.bind(client);
+    client.sendMessage = async (sessionId: string, content: string, options?: Parameters<typeof baseSend>[2]) => {
+      if (!injected) {
+        injected = true;
+        await createRoleManagerService(db, client).writebackToParent({
+          childSessionId: CHILD,
+          summary: '已被 wait 循环消费过的 writeback',
+        });
+        // 模拟 wait 循环已经把它交给本轮 run：写持久消费标记
+        const [row] = await db.select().from(messages).where(eq(messages.sessionId, PARENT));
+        await markWritebackConsumed(db, {
+          sessionId: PARENT,
+          messageId: row.id,
+          childSessionId: CHILD,
+          requestId: row.requestId,
+          via: 'wait_loop',
+        });
+      }
+      return baseSend(sessionId, content, options);
+    };
+
+    try {
+      await startSessionRun({
+        db,
+        piClient: client,
+        sessionId: PARENT,
+        userId: 'user_seed',
+        content: 'parent run with consumed writeback',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // 只有本轮 run 自己那一条 sendMessage：回扫因消费标记而跳过
+      expect(state.sent).toHaveLength(1);
+      const markers = await readConsumedMarkers(db);
+      expect(markers).toHaveLength(1);
+      expect(markers[0].via).toBe('wait_loop');
+    } finally {
+      clearIdleRuntimeCleanup(PARENT);
+      clearIdleRuntimeCleanup(CHILD);
+    }
+  });
+
+  // 审查发现（必须修）：回扫的 wake 若因瞬态原因（上一次 run 的 agent 尚未收尾 → isStreaming
+  // 守卫 session_busy）被跳过，旧实现既不重试也不标记、且下一轮 run 的窗口不含更早回写 → 永久搁置。
+  test('回扫投出被瞬态 session_busy 挤掉时会重试并成功（不再一次失败就永久搁置）', async () => {
+    const previousRetry = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+    const previousAttempts = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = '5';
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = '3';
+    const { db } = await setupSession();
+    await seedChild(db);
+    const { client, state } = makePiClient();
+    let injected = false;
+    let ensureCalls = 0;
+    const baseSend = client.sendMessage.bind(client);
+    const baseEnsure = client.ensureRuntime.bind(client);
+    client.ensureRuntime = async (sessionId: string, options: Parameters<typeof baseEnsure>[1]) => {
+      ensureCalls += 1;
+      // 第 2 次 = 回扫的补投 run：模拟「上一次 run 的 agent 尚未收尾」的 session_busy
+      if (ensureCalls === 2) throw new Error('session_busy');
+      return baseEnsure(sessionId, options);
+    };
+    client.sendMessage = async (sessionId: string, content: string, options?: Parameters<typeof baseSend>[2]) => {
+      if (!injected) {
+        injected = true;
+        await createRoleManagerService(db, client).writebackToParent({
+          childSessionId: CHILD,
+          summary: 'busy 之后仍应被回扫投出的 writeback',
+        });
+      }
+      return baseSend(sessionId, content, options);
+    };
+
+    try {
+      await startSessionRun({ db, piClient: client, sessionId: PARENT, userId: 'user_seed', content: 'run 1' });
+
+      // 重试命中：内容最终投出，并写了消费标记 + 审计 delivered=true
+      expect(await waitUntil(() => state.sent.length >= 2)).toBe(true);
+      expect(state.sent[1].content).toContain('busy 之后仍应被回扫投出的 writeback');
+      expect(ensureCalls).toBeGreaterThanOrEqual(3);
+      const markers = await readConsumedMarkers(db);
+      expect(markers).toHaveLength(1);
+      expect(markers[0].via).toBe('run_end_rescan');
+      const rescanEvents = (await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, PARENT)))
+        .filter((e) => e.type === 'writeback_rescan')
+        .map((e) => JSON.parse(e.payload) as Record<string, unknown>);
+      expect(rescanEvents.some((e) => e.delivered === true)).toBe(true);
+    } finally {
+      if (previousRetry === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = previousRetry;
+      if (previousAttempts === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = previousAttempts;
+      clearIdleRuntimeCleanup(PARENT);
+      clearIdleRuntimeCleanup(CHILD);
+    }
+  });
+
+  test('预算用尽仍未投出：写审计（delivered=false + skip_reason）且不写消费标记（留待结构性修法后的机制）', async () => {
+    const previousRetry = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+    const previousAttempts = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = '5';
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = '2';
+    const { db } = await setupSession();
+    await seedChild(db);
+    const { client, state } = makePiClient();
+    let injected = false;
+    let rescanEnsureCalls = 0;
+    const baseSend = client.sendMessage.bind(client);
+    client.ensureRuntime = async () => {
+      rescanEnsureCalls += 1;
+      // 第 1 次是 run1 自己的 ensureRuntime；其后（回扫的补投 run）始终 busy
+      if (rescanEnsureCalls > 1) throw new Error('session_busy');
+    };
+    client.sendMessage = async (sessionId: string, content: string, options?: Parameters<typeof baseSend>[2]) => {
+      if (!injected) {
+        injected = true;
+        await createRoleManagerService(db, client).writebackToParent({
+          childSessionId: CHILD,
+          summary: '始终投不出的 writeback',
+        });
+      }
+      return baseSend(sessionId, content, options);
+    };
+
+    try {
+      await startSessionRun({ db, piClient: client, sessionId: PARENT, userId: 'user_seed', content: 'run 1' });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      // 未投出：只有 run1 自己那一条 sendMessage；无消费标记
+      // （注意：下一次 run 的回扫窗口 [其 startedAt, now] 按构造不含这批回写，
+      //   结构性闭环需放宽窗口下界 + 给 auto-wake 补 via='auto_wake' 标记，见 docs 0.3 已知残余）
+      const rescanRow = () => db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, PARENT))
+        .then((rows) => rows.filter((e) => e.type === 'writeback_rescan'));
+      expect(await waitUntil(async () => (await rescanRow()).length === 1)).toBe(true);
+      expect(state.sent).toHaveLength(1);
+      expect(await readConsumedMarkers(db)).toHaveLength(0);
+
+      const rescanEvents = (await rescanRow())
+        .map((e) => JSON.parse(e.payload) as Record<string, unknown>);
+      expect(rescanEvents).toHaveLength(1);
+      expect(rescanEvents[0]).toMatchObject({ found: 1, delivered: false, wake_result: 'skipped', skip_reason: 'retries_exhausted' });
+    } finally {
+      if (previousRetry === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = previousRetry;
+      if (previousAttempts === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = previousAttempts;
+      clearIdleRuntimeCleanup(PARENT);
+      clearIdleRuntimeCleanup(CHILD);
+    }
+  });
+
+  test('worker 会话：回扫投出补投 run 时跳过立即回收（否则可能在 microtask 窗口 dispose 掉它）；未投出时照常回收', async () => {
+    const workerRoleTmplId = 'rt_worker_l2';
+    const parent = 'session_worker_l2';
+    const child = 'session_child_l2_worker';
+    const previousAttempts = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+    const previousRetry = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+
+    async function runWorkerCase(options: { rescanSucceeds: boolean }) {
+      const { db } = await setupSession({ sessionId: parent, roleTemplateId: workerRoleTmplId });
+      await db.insert(roleTemplates).values({
+        id: workerRoleTmplId,
+        key: 'worker',
+        version: '1',
+        name: 'Worker',
+        description: 'Worker role',
+        basePrompt: 'Do work.',
+        configJson: '{}',
+        createdBy: 'system',
+        ownerType: 'system',
+        visibility: 'public',
+        isBuiltin: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any);
+      await db.update(sessions).set({ roleTemplateId: workerRoleTmplId }).where(eq(sessions.id, parent));
+      const now = new Date();
+      await db.insert(sessions).values({
+        id: child, projectId: 'project_test_runtime', parentSessionId: parent, rootSessionId: parent,
+        depth: 1, roleTemplateId: 'rt_blank', piSessionId: 'pi_child_l2_worker',
+        piSessionLocatorJson: stringifyLocator({ piSessionId: 'pi_child_l2_worker', sessionFile: '/tmp/pi-child-l2-worker.jsonl' }),
+        requestedByMessageId: null, title: 'Child', titleSource: 'default', status: 'active', runtimeStatus: 'idle',
+        currentModelProvider: null, currentModelId: null, lastActivityAt: now, lastRunAt: null, lastStopAt: null,
+        lastRuntimeError: null, createdBy: 'user_seed', archivedAt: null, archivedBy: null, createdAt: now, updatedAt: now,
+        roleBasePromptSnapshot: 'base', userSuppliedPrompt: '', parentSuppliedPrompt: '', compiledPrompt: 'compiled',
+      } as any);
+
+      const { client, state } = makePiClient();
+      let injected = false;
+      let ensureCalls = 0;
+      let sendCalls = 0;
+      let releaseReplaySend: (() => void) | undefined;
+      const replaySendGate = new Promise<void>((resolve) => { releaseReplaySend = resolve; });
+      const baseSend = client.sendMessage.bind(client);
+      const baseEnsure = client.ensureRuntime.bind(client);
+      client.ensureRuntime = async (sessionId: string, opts: Parameters<typeof baseEnsure>[1]) => {
+        ensureCalls += 1;
+        // 第 1 次 = worker run 自己；其后（回扫的补投 run）按场景决定成功或始终 busy
+        if (!(options.rescanSucceeds) && ensureCalls > 1) throw new Error('session_busy');
+        if (options.rescanSucceeds && ensureCalls === 2) throw new Error('session_busy');
+        return baseEnsure(sessionId, opts);
+      };
+      client.sendMessage = async (sessionId: string, content: string, opts?: Parameters<typeof baseSend>[2]) => {
+        sendCalls += 1;
+        if (!injected) {
+          injected = true;
+          await createRoleManagerService(db, client).writebackToParent({ childSessionId: child, summary: 'worker 会话的 writeback' });
+        } else if (options.rescanSucceeds && sendCalls === 2) {
+          // 场景 A：把补投 run 挂起（模拟它正在跑），否则它自己的 doCleanup 也会调 closeRuntime，
+          // 无法区分「本次 cleanup 因回扫投出而跳过回收」与「补投 run 正常结束后的回收」。
+          await replaySendGate;
+        }
+        return baseSend(sessionId, content, opts);
+      };
+
+      await startSessionRun({ db, piClient: client, sessionId: parent, userId: 'user_seed', content: 'worker run' });
+      return { db, state, releaseReplaySend: () => releaseReplaySend?.() };
+    }
+
+    try {
+      process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = '3';
+      process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = '5';
+
+      const rescanAudit = (db: TestDb) => db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, parent))
+        .then((rows) => rows.filter((e) => e.type === 'writeback_rescan').map((e) => JSON.parse(e.payload) as Record<string, unknown>));
+
+      // 场景 A：回扫投出成功（补投 run 的 sendMessage 被挂起 → run 未结束）
+      // → 本次 cleanup 不得立即回收（交给该 run 自己的 doCleanup）
+      const a = await runWorkerCase({ rescanSucceeds: true });
+      expect(await waitUntil(async () => (await rescanAudit(a.db)).some((e) => e.delivered === true))).toBe(true);
+      expect(a.state.closeRuntimeCalls).not.toContain(parent);
+      a.releaseReplaySend();
+
+      // 场景 B：预算用尽未投出 → 照常立即回收（避免 worker runtime 泄漏）
+      const b = await runWorkerCase({ rescanSucceeds: false });
+      expect(await waitUntil(() => b.state.closeRuntimeCalls.includes(parent))).toBe(true);
+      b.releaseReplaySend();
+    } finally {
+      if (previousAttempts === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = previousAttempts;
+      if (previousRetry === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = previousRetry;
+      clearIdleRuntimeCleanup(parent);
+      clearIdleRuntimeCleanup(child);
+    }
+  });
+});
+

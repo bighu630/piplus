@@ -84,6 +84,31 @@ describe('ensureBuiltinRows 内置 upsert、用户行不动', () => {
     }
   }
 
+  test('messages writeback 回扫索引在既有 DB 上也会被补齐（0008）', () => {
+    // 既有 DB：先建库并删掉索引，模拟「升级前创建的库」，再跑一次 createSeedDb
+    const { dir, dbPath } = seedFreshDb();
+    try {
+      writeDb(dbPath, (sqlite) => {
+        sqlite.exec('DROP INDEX IF EXISTS idx_messages_session_kind_time');
+        const dropped = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_session_kind_time'").all();
+        expect(dropped).toHaveLength(0);
+      });
+
+      createSeedDb(dbPath);
+
+      writeDb(dbPath, (sqlite) => {
+        const rows = sqlite
+          .prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND name='idx_messages_session_kind_time'")
+          .all() as Array<{ name: string; sql: string }>;
+        expect(rows).toHaveLength(1);
+        // 列顺序即回扫查询的过滤条件顺序（findStrandedWritebacks / findUnconsumedWritebacks）
+        expect(rows[0].sql).toContain('messages(session_id, message_kind, created_at)');
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // 新逻辑无条件同步，不依赖开关：显式清空开关以证明这一点。
   function withoutForceFlag(fn: () => void) {
     const savedBun = Bun.env.PIPLUS_FORCE_ROLE_PROMPTS;

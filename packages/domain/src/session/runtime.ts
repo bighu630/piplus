@@ -214,6 +214,24 @@ async function persistForcedReclaimEvent(
  * 原子 idle→running 认领保证幂等：并发重复拉起抛 session_busy，这里吞掉即视为没拉起；
  * 其他错误只 warn 不抛 —— 调用方（writeback 落库 / 强杀善后）不得因拉起失败而失败。
  */
+/** run 结束回扫的轻量审计：只有「找到候选」时才写（避免污染 session_events），
+ *  用于线上发现「找到但没投出」（此前只有 stdout）。 */
+async function persistWritebackRescanEvent(db: RoleManagerDb, sessionId: string, payload: Record<string, unknown>) {
+  try {
+    await db.insert(sessionEvents).values({
+      id: `event_wb_rescan_${crypto.randomUUID().slice(0, 12)}`,
+      sessionId,
+      type: 'writeback_rescan',
+      payload: JSON.stringify(payload),
+      parentMessageId: null,
+      sequence: 1,
+      createdAt: new Date(),
+    } as any);
+  } catch (err) {
+    console.warn('[session-runtime] failed to persist writeback rescan audit event', { sessionId, err: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 export type WakeSessionWithContentInput = {
   db: RoleManagerDb;
   piClient: PiClient;
@@ -349,6 +367,92 @@ type ReplayOutcome = {
   skipReason: 'session_not_idle' | 'retries_exhausted' | 'not_replayable' | 'session_missing' | null;
 };
 
+type DeliverOutcome = {
+  wakeResult: 'started' | 'skipped' | 'failed' | 'not_attempted';
+  skipReason: 'session_not_idle' | 'retries_exhausted' | 'not_replayable' | 'session_missing' | null;
+};
+
+/**
+ * 带「让位 + 有界重试」的内容投递 —— 强杀补投递（0.2）与 run 结束回扫（L2/0.3）共用。
+ *
+ * 每轮尝试前确认会话空闲可用（idle + active）；被并发 run 占用时让位并继续重试；
+ * 成功投出后调用 `onDelivered`（写持久消费标记）。预算用尽以最后一次结果 + skip_reason 记账。
+ *
+ * 为什么必须有重试：唤醒靠原子 idle→running 认领，除并发认领外，**紧接着结束的上一次 run**
+ * 还可能因 pi-client 的 isStreaming 守卫（agent 尚未收尾，safety timeout / abort 收尾期常见）
+ * 抛 session_busy —— 只投一次就会把这批内容永久丢掉（独立审查用探针复现过）。
+ */
+async function deliverContentWithRetry(input: {
+  db: RoleManagerDb;
+  piClient: PiClient;
+  sessionId: string;
+  userId: string;
+  content: string;
+  requestIdPrefix: string;
+  reason: string;
+  onRuntimeStatusChange?: StartSessionRunInput['onRuntimeStatusChange'];
+  /** 投出成功后的副作用（写消费标记）；抛错由调用方兜底，不影响「已投出」的判定 */
+  onDelivered: () => Promise<void>;
+}): Promise<DeliverOutcome> {
+  const attempts = resolveReplayAttempts();
+  let lastWakeResult: 'skipped' | 'failed' = 'skipped';
+  // 最近一次尝试是否只是「让位」（会话被并发 run 占用）——预算用尽时据此区分
+  // session_not_idle（全程被占用，正常让位）与 retries_exhausted（尝试过但未投出/失败）。
+  let lastAttemptWasDefer = false;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, resolveReplayRetryMs()));
+
+    // 刻意**不**在循环里比 lastRunAt：上一次失败的尝试自身会写 lastRunAt = 自己的 startedAt
+    // （认领即写 run 身份），那会把「我们自己的失败」误判成「被更新的 run 接管」而放弃重试。
+    // 「通知是否仍然相关」由强杀补投递的调用方在进入之前判定一次；这里只保证不抢正在跑的 run。
+    const [row] = await input.db
+      .select({ runtimeStatus: sessions.runtimeStatus, status: sessions.status })
+      .from(sessions)
+      .where(eq(sessions.id, input.sessionId))
+      .limit(1);
+    if (!row) return { wakeResult: 'skipped', skipReason: 'session_missing' };
+    if (row.status !== 'active') return { wakeResult: 'skipped', skipReason: 'not_replayable' };
+    if (row.runtimeStatus !== 'idle') {
+      console.log('[session-runtime] replay deferred — session busy', {
+        sessionId: input.sessionId,
+        reason: input.reason,
+        attempt: attempt + 1,
+        attempts,
+      });
+      lastWakeResult = 'skipped';
+      lastAttemptWasDefer = true;
+      continue;
+    }
+
+    const wakeResult = await wakeSessionWithContent({
+      db: input.db,
+      piClient: input.piClient,
+      sessionId: input.sessionId,
+      userId: input.userId,
+      content: input.content,
+      requestId: `${input.requestIdPrefix}_${crypto.randomUUID().slice(0, 12)}`,
+      reason: input.reason,
+      onRuntimeStatusChange: input.onRuntimeStatusChange,
+    });
+    console.log('[session-runtime] replay attempt', {
+      sessionId: input.sessionId,
+      reason: input.reason,
+      attempt: attempt + 1,
+      result: wakeResult,
+    });
+    if (wakeResult === 'started') {
+      await input.onDelivered();
+      return { wakeResult, skipReason: null };
+    }
+    // 'skipped'（并发认领 / session_not_found）与 'failed'（含 SQLITE_BUSY、runtime 暂不可用、
+    // 模型绑定失败等瞬态错误；失败路径已把会话复位 idle，重试不会重复认领）都继续消耗重试预算。
+    lastWakeResult = wakeResult;
+    lastAttemptWasDefer = false;
+  }
+  return { wakeResult: lastWakeResult, skipReason: lastAttemptWasDefer ? 'session_not_idle' : 'retries_exhausted' };
+}
+
 /**
  * ① 补投递：重扫窗口 [lastRunAt, windowEnd] 内的 writeback 并补投给会话（内容带醒目标记）。
  *
@@ -374,68 +478,161 @@ async function replayStrandedWritebacks(input: {
   const stranded = await findStrandedWritebacks(input.db, input.sessionId, input.lastRunAt, input.windowEnd);
   if (stranded.length === 0) return { stranded: 0, wakeResult: 'not_attempted', skipReason: null };
 
-  const content = buildReplayContent(stranded);
-  const attempts = resolveReplayAttempts();
-  let lastWakeResult: 'skipped' | 'failed' = 'skipped';
-  // 最近一次尝试是否只是「让位」（会话被并发 run 占用）——预算用尽时据此区分
-  // session_not_idle（全程被占用，正常让位）与 retries_exhausted（尝试过但未投出/失败）。
-  let lastAttemptWasDefer = false;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, resolveReplayRetryMs()));
+  const outcome = await deliverContentWithRetry({
+    db: input.db,
+    piClient: input.piClient,
+    sessionId: input.sessionId,
+    userId: input.userId,
+    content: buildReplayContent(stranded),
+    requestIdPrefix: 'wbreplay',
+    reason: 'forced-reclaim-rescan',
+    onRuntimeStatusChange: input.onRuntimeStatusChange,
+    onDelivered: async () => {
+      // 投出成功即打持久消费标记：后续「run 结束回扫」不会再重复投这一批
+      for (const item of stranded) {
+        await markWritebackConsumed(input.db, {
+          sessionId: input.sessionId,
+          messageId: item.id,
+          childSessionId: item.sourceSessionId,
+          via: 'forced_reclaim_rescan',
+        });
+      }
+    },
+  });
+  return { stranded: stranded.length, wakeResult: outcome.wakeResult, skipReason: outcome.skipReason };
+}
 
-    // 每次尝试前重新确认「会话空闲可用」：仍 idle 且未归档。
-    // 刻意**不**在这里再比 lastRunAt 与 disposedAt：上一次失败的尝试自身会写
-    // lastRunAt = 自己的 startedAt（认领即写 run 身份），那会把「我们自己的失败」
-    // 误判成「被更新的 run 接管」而放弃重试。"通知是否仍然相关"（lastRunAt <= disposedAt）
-    // 由调用方在进入补投递之前判定一次；这里只保证不打断/不抢正在跑的 run。
-    const [row] = await input.db
-      .select({ runtimeStatus: sessions.runtimeStatus, status: sessions.status })
-      .from(sessions)
-      .where(eq(sessions.id, input.sessionId))
-      .limit(1);
-    if (!row) return { stranded: stranded.length, wakeResult: 'skipped', skipReason: 'session_missing' };
-    if (row.status !== 'active') return { stranded: stranded.length, wakeResult: 'skipped', skipReason: 'not_replayable' };
-    if (row.runtimeStatus !== 'idle') {
-      // 会话正被并发 run 占用：让位但**继续重试**（不抢在跑的 run，也不能一次 busy 就丢掉整包）。
-      // 常见触发：用户消息或其它 writeback 的 auto-wake 抢在重扫前认领。
-      console.log('[session-runtime] forced reclaim replay deferred — session busy', {
-        sessionId: input.sessionId,
-        attempt: attempt + 1,
-        attempts,
-        count: stranded.length,
-      });
-      lastWakeResult = 'skipped';
-      lastAttemptWasDefer = true;
-      continue;
-    }
-
-    const wakeResult = await wakeSessionWithContent({
-      db: input.db,
-      piClient: input.piClient,
+/**
+ * 记录「该 writeback 已被消费 / 已补投」的**持久**标记（session_events，type=writeback_consumed）。
+ *
+ * 为什么要持久标记：run 结束（doCleanup → idle）时会回扫「本轮 run 期间到达但没有任何消费者」
+ * 的 writeback 并补投（L2 闭环）。没有标记就无法区分
+ * 「已被 wait 循环交给本轮 run 消费」与「无人消费」——重复投递会把正常的 wait=true 流程
+ * （reviewer 写回等）变成每条结果都出现两次。
+ *
+ * 语义边界：标记表示「已交给某个 run」（wait 循环匹配 / 补投已投出），**不**保证内容真的
+ * 落进上下文——「匹配后被强杀的 agent 吞掉」由强杀补投递（marker-blind 窗口回扫）兜底。
+ * 写失败只 warn：标记缺失最坏只是多投一次（可接受的重复），不能反过来阻断投递。
+ */
+export async function markWritebackConsumed(
+  db: RoleManagerDb,
+  input: {
+    sessionId: string;
+    messageId: string;
+    childSessionId?: string | null;
+    requestId?: string | null;
+    via: 'wait_loop' | 'run_end_rescan' | 'forced_reclaim_rescan';
+  },
+): Promise<void> {
+  try {
+    await db.insert(sessionEvents).values({
+      id: `event_wb_consumed_${crypto.randomUUID().slice(0, 12)}`,
       sessionId: input.sessionId,
-      userId: input.userId,
-      content,
-      requestId: `wbreplay_${crypto.randomUUID().slice(0, 12)}`,
-      reason: 'forced-reclaim-rescan',
-      onRuntimeStatusChange: input.onRuntimeStatusChange,
-    });
-    console.log('[session-runtime] forced reclaim replay attempt', {
+      type: 'writeback_consumed',
+      payload: JSON.stringify({
+        message_id: input.messageId,
+        child_session_id: input.childSessionId ?? null,
+        request_id: input.requestId ?? null,
+        via: input.via,
+      }),
+      parentMessageId: null,
+      sequence: 1,
+      createdAt: new Date(),
+    } as any);
+  } catch (err) {
+    console.warn('[session-runtime] failed to persist writeback consumed marker', {
       sessionId: input.sessionId,
-      attempt: attempt + 1,
-      count: stranded.length,
-      result: wakeResult,
+      messageId: input.messageId,
+      err: err instanceof Error ? err.message : String(err),
     });
-    if (wakeResult === 'started') return { stranded: stranded.length, wakeResult, skipReason: null };
-    // 'skipped'（并发认领 / session_not_found）与 'failed'（含 SQLITE_BUSY、runtime 暂不可用、
-    // 模型绑定失败等瞬态错误；失败路径已把会话复位 idle，重试不会重复认领）都继续消耗重试预算，
-    // 预算用尽后以最后一次的结果 + skip_reason 记账。
-    lastWakeResult = wakeResult;
-    lastAttemptWasDefer = false;
   }
+}
+
+/** 窗口内「尚未被消费 / 补投」的 writeback（按 writeback_consumed 标记过滤）。 */
+async function findUnconsumedWritebacks(
+  db: RoleManagerDb,
+  sessionId: string,
+  from: Date,
+  to: Date,
+): Promise<StrandedWritebackRow[]> {
+  const candidates = await findStrandedWritebacks(db, sessionId, from, to);
+  if (candidates.length === 0) return [];
+  // 标记也按下界过滤：候选回写的 createdAt >= from，而它的消费标记必然在其之后写
+  // （createdAt >= from）→ 过滤不会漏标记，只避免长生命周期会话把全部历史标记加载进来。
+  const markers = await db
+    .select({ payload: sessionEvents.payload })
+    .from(sessionEvents)
+    .where(and(
+      eq(sessionEvents.sessionId, sessionId),
+      eq(sessionEvents.type, 'writeback_consumed'),
+      gte(sessionEvents.createdAt, from),
+    ));
+  const consumed = new Set<string>();
+  for (const marker of markers) {
+    try {
+      const parsed = JSON.parse(marker.payload) as { message_id?: unknown };
+      if (typeof parsed.message_id === 'string') consumed.add(parsed.message_id);
+    } catch {
+      /* 脏标记忽略：最坏多投一次 */
+    }
+  }
+  return candidates.filter((item) => !consumed.has(item.id));
+}
+
+/**
+ * L2 闭环：run 结束时（会话刚收敛为 idle）回扫「本次 run 期间到达、却没有任何消费者」的 writeback 并补投。
+ *
+ * 覆盖场景：`wait=false` 的子会话在父忙时 writeback、wait 循环已超时/退出后子才 writeback、
+ * 父在跑别的 run 时到达的写回——这些在旧实现里永久搁置（既没有 wait 循环匹配，
+ * auto-wake 又因父非 idle 跳过，此后再无任何机制回看）。
+ *
+ * 幂等与循环安全：只有**投出成功**才写 consumed 标记，因此
+ * - 补投 run 自己结束时回扫：这批 writeback 既已被标记、其 created_at 也在该 run 窗口之前 → 不再补投；
+ * - 投出失败走同一套有界重试（覆盖「上一次 run 的 agent 尚未收尾 → isStreaming 守卫 session_busy」）；
+ *   预算用尽仍未投出则**不写标记**并写审计，供线上发现。
+ *   注意残余：此时「下一次 run 的回扫窗口」[其 startedAt, now] 按构造不含这批回写
+ *   （结构性闭环需放宽窗口下界，前提是给 auto-wake 路径也补 via='auto_wake' 标记），详见
+ *   docs/session-runtime-reclamation.md 0.3「已知残余」。
+ */
+async function replayUnconsumedWritebacks(input: {
+  db: RoleManagerDb;
+  piClient: PiClient;
+  sessionId: string;
+  userId: string;
+  from: Date;
+  to: Date;
+  onRuntimeStatusChange?: StartSessionRunInput['onRuntimeStatusChange'];
+}): Promise<{ found: number; delivered: boolean; wakeResult: DeliverOutcome['wakeResult']; skipReason: DeliverOutcome['skipReason'] }> {
+  const unconsumed = await findUnconsumedWritebacks(input.db, input.sessionId, input.from, input.to);
+  if (unconsumed.length === 0) {
+    return { found: 0, delivered: false, wakeResult: 'not_attempted', skipReason: null };
+  }
+
+  const outcome = await deliverContentWithRetry({
+    db: input.db,
+    piClient: input.piClient,
+    sessionId: input.sessionId,
+    userId: input.userId,
+    content: buildReplayContent(unconsumed),
+    requestIdPrefix: 'wbrescan',
+    reason: 'run-end-rescan',
+    onRuntimeStatusChange: input.onRuntimeStatusChange,
+    onDelivered: async () => {
+      for (const item of unconsumed) {
+        await markWritebackConsumed(input.db, {
+          sessionId: input.sessionId,
+          messageId: item.id,
+          childSessionId: item.sourceSessionId,
+          via: 'run_end_rescan',
+        });
+      }
+    },
+  });
   return {
-    stranded: stranded.length,
-    wakeResult: lastWakeResult,
-    skipReason: lastAttemptWasDefer ? 'session_not_idle' : 'retries_exhausted',
+    found: unconsumed.length,
+    delivered: outcome.wakeResult === 'started',
+    wakeResult: outcome.wakeResult,
+    skipReason: outcome.skipReason,
   };
 }
 
@@ -894,6 +1091,8 @@ export async function startSessionRun(input: StartSessionRunInput) {
     // 会清掉新 run 的内存标记、closeRuntime 会回收新 run 的 runtime——都是同一个「连坐」问题。
     let convergedToIdle = false;
     let supersededByNewerRun = false;
+    // run 结束回扫是否真的投出了补投 run（决定 worker 是否跳过立即回收，见下）
+    let runEndRescanDelivered = false;
     // listener 生命周期到本判定结束：无论收敛结果如何都不再需要订阅，抛错也不得泄漏。
     try {
       convergedToIdle = await markSessionIdleIfRunOwned(input.db, input.sessionId, startedAt, new Date(), runtimeError);
@@ -936,6 +1135,43 @@ export async function startSessionRun(input: StartSessionRunInput) {
         runtimeStatus: 'idle',
         error: runtimeError,
       });
+
+      // L2 闭环：本次 run 期间到达、却没有任何消费者匹配的 writeback 在此补投
+      // （wait=false 子会话在父忙时写回 / wait 循环已退出后子才写回等）。幂等：投出成功才写
+      // 消费标记；投出失败由同一套有界重试兜底（覆盖「上一次 run 的 agent 尚未收尾 → isStreaming
+      // 守卫 session_busy」这类瞬态失败），预算用尽才放弃并留审计。失败绝不影响 run 收尾。
+      try {
+        const rescan = await replayUnconsumedWritebacks({
+          db: input.db,
+          piClient: input.piClient,
+          sessionId: input.sessionId,
+          userId: input.userId,
+          from: startedAt,
+          to: new Date(),
+          onRuntimeStatusChange: input.onRuntimeStatusChange,
+        });
+        if (rescan.found > 0) {
+          console.log('[session-runtime] run-end writeback rescan', {
+            sessionId: input.sessionId,
+            found: rescan.found,
+            delivered: rescan.delivered,
+            wakeResult: rescan.wakeResult,
+          });
+          await persistWritebackRescanEvent(input.db, input.sessionId, {
+            found: rescan.found,
+            delivered: rescan.delivered,
+            wake_result: rescan.wakeResult,
+            skip_reason: rescan.skipReason,
+            window_from: startedAt.toISOString(),
+          });
+        }
+        runEndRescanDelivered = rescan.delivered;
+      } catch (err) {
+        console.warn('[session-runtime] run-end writeback rescan failed', {
+          sessionId: input.sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
     } else {
       // 同一 run 但状态已非 running（用户 stop 后的 stopping / 已被停止收尾收敛 / 会话被删）：
       // idle 广播由停止收尾路径负责，这里不重复广播，但仍按原逻辑回收 runtime（避免泄漏）。
@@ -945,11 +1181,20 @@ export async function startSessionRun(input: StartSessionRunInput) {
     }
 
     if (roleKey === 'worker') {
-      // Worker: reclaim runtime immediately after completion
-      clearIdleRuntimeCleanup(input.sessionId);
-      input.piClient.closeRuntime(input.sessionId).catch((disposeErr) => {
-        console.error('[session-runtime] closeRuntime during cleanup failed', { sessionId: input.sessionId, disposeErr });
-      });
+      if (runEndRescanDelivered) {
+        // 回扫刚拉起了一个同会话 worker run：跳过立即回收（否则可能在补投 run 尚未 markStreaming
+        // 的 microtask 窗口里 dispose 掉它 → 已写消费标记的这批内容永久丢失）。
+        // 回收交给那个 run 自己的 doCleanup。
+        console.log('[session-runtime] skip immediate worker reclaim — run-end rescan started a run', {
+          sessionId: input.sessionId,
+        });
+      } else {
+        // Worker: reclaim runtime immediately after completion
+        clearIdleRuntimeCleanup(input.sessionId);
+        input.piClient.closeRuntime(input.sessionId).catch((disposeErr) => {
+          console.error('[session-runtime] closeRuntime during cleanup failed', { sessionId: input.sessionId, disposeErr });
+        });
+      }
     } else {
       // Non-worker: schedule runtime reclamation after idle period
       scheduleIdleRuntimeCleanup(input.piClient, input.sessionId);
