@@ -4,13 +4,25 @@ export interface DiffLine {
 }
 
 /**
+ * 按行切分用于 diff：空文本为 0 行；末尾换行不额外产生空行。
+ * 与头部 +/- 统计（tool-summary.splitLineCount）及 pi 的行数口径保持一致，
+ * 避免「头部 +2、展开明细 3 行」的内部分叉。
+ */
+function splitDiffLines(text: string): string[] {
+  if (text === '') return [];
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/**
  * Compute a simple line-by-line diff between oldText and newText.
  * Uses a longest-common-subsequence (LCS) approach on lines.
  * Returns an array of DiffLine entries preserving order.
  */
 export function computeLineDiff(oldText: string, newText: string): DiffLine[] {
-  const oldLines = oldText === '' ? [] : oldText.split('\n');
-  const newLines = newText === '' ? [] : newText.split('\n');
+  const oldLines = splitDiffLines(oldText);
+  const newLines = splitDiffLines(newText);
 
   // Fast path: identical
   if (oldText === newText) {
@@ -73,9 +85,7 @@ export function computeLineDiff(oldText: string, newText: string): DiffLine[] {
  * Specialized for `write` tool: shows everything as additions.
  */
 export function computeWriteDiff(newText: string): DiffLine[] {
-  if (!newText) return [];
-  const lines = newText.split('\n');
-  return lines.map((line) => ({ type: 'add' as const, text: line }));
+  return splitDiffLines(newText).map((line) => ({ type: 'add' as const, text: line }));
 }
 
 /**

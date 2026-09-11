@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { AskQuestionPendingItem, AskQuestionPendingPayload } from '@piplus/shared';
 import { Check, ChevronLeft, ChevronRight, CircleHelp, X } from 'lucide-react';
 
@@ -317,6 +317,15 @@ function PendingQuestionnaire({
   const [values, setValues] = useState<Array<string | null>>(() => questions.map(() => null));
   const [multiChecked, setMultiChecked] = useState<Array<Set<string>>>(() => questions.map(() => new Set<string>()));
   const [customs, setCustoms] = useState<string[]>(() => questions.map(() => ''));
+  // 「单选完成自动跳下一题」的定时器：必须持有并在卸载时清理，否则会在组件卸载后
+  // 触发 setState（定时器泄漏；在测试进程里会把后续测试打挂，见本文件回归测试说明）。
+  const autoAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (autoAdvanceTimerRef.current !== null) {
+      clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+  }, []);
 
   const allAnswered = questions.every((q, i) => {
     if (q.multiSelect === true) return multiChecked[i]!.size > 0 || Boolean(customs[i]!.trim());
@@ -408,9 +417,15 @@ function PendingQuestionnaire({
             custom={customs[active]!}
             onChange={(v) => {
               setValues((prev) => prev.map((p, i) => (i === active ? v : p)));
-              // 单选完成自动跳到下一题
+              // 单选完成自动跳到下一题（重答时先清掉上一个未触发的定时器，避免叠加）
               if (v !== null && active < questions.length - 1) {
-                setTimeout(() => setActive((a) => (a === active ? a + 1 : a)), 220);
+                if (autoAdvanceTimerRef.current !== null) {
+                  clearTimeout(autoAdvanceTimerRef.current);
+                }
+                autoAdvanceTimerRef.current = setTimeout(() => {
+                  autoAdvanceTimerRef.current = null;
+                  setActive((a) => (a === active ? a + 1 : a));
+                }, 220);
               }
             }}
             onCustomChange={(v) => setCustoms((prev) => prev.map((c, i) => (i === active ? v : c)))}

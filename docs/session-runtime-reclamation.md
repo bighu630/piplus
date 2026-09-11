@@ -19,6 +19,134 @@
 
 ---
 
+## 0. 补充修复：idle runtime 强杀误杀（无进展时长判据 + platform pin 豁免 + 强杀通知 hook）
+
+**事故**：父会话在并行 `spawn_session(wait=true)` 等待两个 worker 期间，`closeRuntime` 的卡死兜底按「连续重试次数 ≥ 40（≈20 分钟）」强制 `dispose()`，杀掉在途 turn → 子会话 writeback 结果永远进不了父会话上下文。根因：(1) 判据是「自第一次 tick 起的连续重试次数」而非「有没有进展」，ask-pending 暂停 tick 使预算起点任意；(2) client 不知道 domain 的合法长等待（父等子 writeback / 跨项目等待），domain 的 safety timeout 同刻豁免而 client 仍强杀。
+
+新判据与机制（`packages/pi-client/src`）：
+
+- **判据 = 连续无进展时长**：`ActiveSessionRuntime.lastStreamEventAt`（最近一次成功 mapped 的 stream 事件时间，`tool_execution_start → activity` 等工具活动同样算进展）与 `streamingSince`（观察窗口起点）决定 `noProgressMs`；只有 `noProgressMs >= 阈值` 才强杀。`closeRetries` 退化为尝试计数（仅日志/hook 用）。判据抽为纯函数 `decideStreamingReclaim`（client/session-lifecycle.ts）。
+- **platform 长等待 pin 豁免**：`@piplus/pi-client/runtime-pins` 提供 refcount pin（`pinSessionRuntime` / `unpinSessionRuntime` / `isSessionRuntimePinned` / `resetSessionRuntimePins`）。domain 在等待子会话 writeback、跨项目等待期间 pin、`finally` 解除；pin 期间 `closeRuntime` 完全跳过（不累计尝试、不强杀、不 dispose）。
+- **强杀通知 hook**：`@piplus/pi-client/runtime-lifecycle-hooks` 的 `registerForcedRuntimeDisposeHandler` / `notifyForcedRuntimeDispose`，强杀后串行通知 `{ sessionId, disposedAt, attempts, noProgressMs }`；单个 handler 抛错只 `console.error`，不影响 dispose、不影响其它 handler，也不向外抛。
+- ask-pending 豁免语义不变（顺序：pin 检查 → ask-pending 检查 → 流式无进展检查）。
+
+环境变量（调用时读取，非法/<=0 回落默认）：
+
+| 环境变量 | 含义 | 默认 |
+|---|---|---|
+| `PIPLUS_CLOSE_RUNTIME_RETRY_MS` | 流式 / pin / ask-pending 跳过后的重新检查间隔 | `30_000` |
+| `PIPLUS_FORCED_RECLAIM_NO_PROGRESS_MS` | 流式 runtime 连续无进展多久后强杀（僵尸兜底） | `1_800_000`（30 分钟） |
+
+回归测试：`packages/pi-client/src/client/session-reclaim.test.ts`（有进展不强杀 / 无进展到阈值才强杀 / pin 完全豁免 / unpin 恢复 / hook 错误隔离 / ask-pending 不回归 / pin 豁免时长不计入无进展窗口）、`packages/domain/src/session/runtime.test.ts`（认领窗口所有权回归）、`packages/domain/src/session/request-context.test.ts`（等待标记 ↔ pin 配对）。
+
+### 0.1 pin 生命周期无界（已知取舍，独立审查 R1 记录）
+
+`getSubagentTimeoutMs()` 默认 `0` = 永不超时（`packages/domain/src/settings/service.ts:29`），父会话等待子会话 writeback / 跨项目回复期间**没有时长上限**，因此：
+
+- 父会话的 pin（`setWaitingOnChild` / `setCrossProjectWait` → `pinSessionRuntime`）在等待期间**无界**（等待多久就豁免多久）；
+- 期间 **pi-client 的卡死兜底强杀（`PIPLUS_FORCED_RECLAIM_NO_PROGRESS_MS`，默认 30 分钟）与 domain 的 safety timeout（`PIPLUS_SESSION_TIMEOUT_MS`，默认 10 分钟）双双永久豁免**（豁免 1/3 = 内存等待标记 + pin 两层同时生效）。
+
+**取舍：本次刻意不加时长上限。** 加任何上限都会在「长等待末端」重现本机制要修的事故——上限到时点在 writeback 到达前一刻解除豁免 → 强杀在途 turn → 子会话结果永远进不了父会话上下文（线上事故的原始形态）；而且任何固定上限都必须与子会话的真实完成时间赛跑，本质不可靠。宁可把「无需上限」定义成：合法等待由子会话的完成事件显式终结。
+
+**pin 的唯一出口**（解除豁免、恢复正常回收判据的路径，全部都有终结信号，不依赖计时器）：
+
+| 出口 | 触发者 | 行为 |
+|---|---|---|
+| 子 writeback 到达 | 子会话 `writeback_to_parent` / 跨项目回复 | wait 循环退出 → `clearWaitingOnChild(parent, child)` / `clearCrossProjectWait(parent)` → refcount 归零 → 下个 tick 起恢复正常「连续无进展」判据 |
+| 父 missing | 子会话写回时找不到父（父被删/归档） | 同上：等待循环退出并清理自己那条标记 |
+| stopping | 用户点停止 / 停止收尾 | `finalizeSessionStop` 把会话收敛回 idle（`stopping→idle` 条件更新）→ 新 run 可重新认领 |
+| idle 检测 | domain `doCleanup`（父自身 run 结束，含 safety timeout / 错误出口） | `clearRequestContext` / `clearCrossProjectWait` / `clearWaitingOnChild(sessionId)`（不带 child = 清全部条目并逐条 unpin） |
+| 进程重启 | `recoverStuckSessions`（启动时） | 内存 pin 随进程消失；DB 中非 idle 会话复位 idle（`lastRuntimeError='recovered_after_restart'`） |
+
+风险与监控建议（**未实现**）：pin 的生命周期无界意味着「子会话永不 writeback 且不退出」时父会话会一直保持豁免（不回收 runtime，占用内存与上下文）。比硬上限更安全的做法是把 pin 时长/refcount 做可观测告警：pin 超过阈值（如数小时）时记日志/打点，由人判断子会话是否真死，而不是让代码猜一个会误杀的时限。
+
+代码内的指引：`packages/pi-client/src/runtime-pins.ts`、`packages/domain/src/session/request-context.ts` 的 `setWaitingOnChild` / `setCrossProjectWait`、`packages/pi-client/src/client/session-lifecycle.ts` 的 pin 分支均注明「pin 生命周期取舍见本文件 0.1」。
+
+---
+
+### 0.2 强杀善后：补投递 + 审计事件 + vision 占位认领（残余加固，独立审查 R1 记录）
+
+#### ① 强杀补投递（`finalizeForcedRuntimeReclaim`）
+
+**动机（事故里丢的那条）**：Worker A 的 writeback 在 13:58:34 落库，父会话当时仍 `running`（它的消费者＝当时在跑的那次 wait 循环），父会话 13:59:36 被强杀 → 该条此后**没有任何消费者**：
+「收敛之后到达」的 writeback 有 87b60ef 的 auto-wake 兜底，而「强杀前已落库」的那条没有。
+
+**机制**：强杀收敛（或会话已 idle）时重扫 `messages` 中窗口内的 `message_kind='writeback'` 行，拼成一段**带醒目标记**（【平台补投递】…可能已被消费过，若重复请忽略）的内容，用 `wakeSessionWithContent` 拉起会话消费（与 writeback auto-wake 共用实现，原子 idle→running 认领保证幂等）。
+
+- **窗口 = `[lastRunAt, 收敛落库后的当前时刻]`**（`lastRunAt` 可靠：run 认领即写，见 `markSessionIdleIfRunOwned` JSDoc）。上界刻意取「收敛之后」而不是 `disposedAt`：强杀（`disposedAt`）到真正收敛落库之间有时间差（hook 是 fire-and-forget），这段间隙内落库的 writeback 的 auto-wake 会读到 DB 仍 `running` 而跳过，用 `disposedAt` 作上界仍会丢。
+- **不变式**：「收敛之后落库的写回，其 auto-wake 必然看到 idle → 由它负责；收敛之前的，一律补投」。两条路径即使竞争，也由 `startSessionRun` 的原子 `idle→running` 认领保证只投一次（输的一方 `session_busy`）。
+- **两个调用点**：收敛路径（状态由本函数落为 idle）；**会话已被旧 run 的 `doCleanup` 抢先收敛为 idle**（hook 慢到）——否则「谁先落 idle」会静默决定补投递是否发生（审查发现 L1）。该路径用 `lastRunAt <= disposedAt` 护栏保证没有被更新的 run 接管。
+- **有界重试（含「让位」语义）**：唤醒被并发认领（用户消息 / 其它 writeback 的 auto-wake）时会 `session_busy`，不重试会把这**整包**被困回写一并丢掉（审查发现 L3）。因此：
+  - 每轮尝试前只确认「会话可用」：`!row` / 已归档 → 终止（记 `skip_reason`）；`runtimeStatus !== 'idle'`（正被并发 run 占用）→ **让位并继续重试**（不抢在跑的 run，但也不会一次 busy 就丢弃整包）；会话释放后下一轮直接投出。
+  - `wake_result='failed'`（如 SQLITE_BUSY、`pi_session_runtime_unavailable`、模型绑定失败）同样消耗重试预算——失败路径已把会话复位 idle，重试不会重复认领，而瞬态错误值得重试。
+  - 预算是有限的：预算用尽后记 `wake_result` + `skip_reason='retries_exhausted'`（可从 `session_events` 发现，不静默丢失）。尝试次数与间隔见下表 env。
+- **取舍（用户确认）**：DB 侧没有「该 writeback 已被消费」的持久标记（「wait 循环匹配到」≠「内容真的落进上下文」），因此策略是**一律补投 + 醒目标记**：宁可偶发重复摘要，也不让结果永久丢失。
+
+#### ② 强杀审计事件
+
+`finalizeForcedRuntimeReclaim` 每次调用都往 `session_events` 落一条 `type='runtime_forced_reclaim'`。**两阶段写**：收敛/判定后立刻落一行 `wake_result='pending'`，补投递（含重试预算，最长约 1 分钟）结束后更新**同一行**为最终结果——进程在重试窗口内重启也不会丢掉「何时强杀过」的证据。payload：
+
+| 字段 | 含义 |
+|---|---|
+| `result` | `converged` / `skipped_not_running` / `skipped_newer_run` / `session_missing` |
+| `disposed_at` / `attempts` / `no_progress_ms` | 强杀时刻与 hook 信息（来自 pi-client） |
+| `last_run_at` | 判定所有权时读到的 run 认领时刻 |
+| `stranded_writebacks` | 窗口内扫到的被困回写条数；`null` = 未扫描（无 piClient / 无 lastRunAt / 被新 run 接管） |
+| `wake_result` | `pending`（两阶段写的第一阶段，补投递结束前）/ `started`（已投出）/ `skipped`（并发认领或 `session_not_found`）/ `failed`（拉起失败）/ `not_attempted`（无候选或不可拉起） |
+| `skip_reason` | `wake_result='skipped'` 时的原因：`session_not_idle`（整个预算内被并发 run 占用）/ `retries_exhausted`（尝试过但预算用尽仍未投出）/ `not_replayable`（会话不可补投：已归档或数据异常）/ `session_missing`；其余情况为 `null` |
+
+用途：强制回收此前只有 stdout 日志（线上日志未必落在文件里），现在可直接查：
+
+```sql
+SELECT created_at, session_id, json_extract(payload,'$.result') AS result,
+       json_extract(payload,'$.stranded_writebacks') AS stranded,
+       json_extract(payload,'$.wake_result') AS wake_result
+FROM session_events WHERE type='runtime_forced_reclaim' ORDER BY created_at DESC;
+```
+
+#### ③ vision 中转占位认领写 `lastRunAt`
+
+`apps/api/src/routes/sessions/routes/chat.ts` 的图片识别占位认领（把会话临时置 `running`）现在同时写 `lastRunAt`；否则旧 run 的迟到 cleanup 会因 `lastRunAt` 仍是旧值而把它误判为自己所有（多广播一次 idle）。`finally` 复位 idle 时保留 `lastRunAt`——随后的 `startSessionRun` 认领会覆盖成自己的 startedAt。
+
+环境变量（调用时读取，非法回落默认）：
+
+| 环境变量 | 含义 | 默认 |
+|---|---|---|
+| `PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS` | 补投递最大尝试次数（正整数） | `3` |
+| `PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS` | 补投递重试间隔（ms，>=0；默认取 30s 是为覆盖「并发 run 占着会话」的典型时长） | `30_000` |
+
+回归测试：`packages/domain/src/session/runtime.test.ts` 的 `forced reclaim 补投递` 组（窗口内补投 / 强杀到收敛之间落库仍补投 / 收敛之后不补投 / 无回写不拉起 / 归档不拉起 / 拉起失败不外抛 / 已 idle 仍补投 L1 / 被新 run 接管不补投 / busy 重试成功 L3 / 重试耗尽记 skipped）、`apps/api/src/routes/sessions/runtime-reclaim.test.ts`（生产接线端到端：收敛 → 补投递 → 审计事件 + WS running/idle）、`apps/api/src/routes/sessions.test.ts`（vision 占位写 lastRunAt）。
+
+### 0.3 run 结束回扫未消费 writeback（L2 闭环：消费标记 + 回扫 + 索引）
+
+**动机（0.2 记的最后一条残余）**：`writebackToParent` 只在父 `idle` 时 auto-wake，父 `running` 时直接跳过；若此时**没有匹配的在途 wait 循环**（`wait=false` 子会话在父忙时 writeback、wait 循环已超时/退出后子才 writeback、父在跑别的 run），这条写回此后无人消费，永久搁置。
+
+**机制**（`packages/domain/src/session/runtime.ts`，由 `doCleanup` 在会话收敛为 idle 后调用）：
+
+1. **持久消费标记** `markWritebackConsumed`：往 `session_events` 写 `type='writeback_consumed'`（payload 含 `message_id` / `child_session_id` / `request_id` / `via`）。写入点：
+   - `via='wait_loop'`：`waitForChildWriteback` 匹配到 writeback 时（`role-manager-tools.ts`）——这是「已交给本轮 run」的标记，避免正常 `wait=true` 流程把同一条结果投递两次；
+   - `via='forced_reclaim_rescan'` / `via='run_end_rescan'`：补投递成功投出后。
+   - 语义边界：标记 = 「已交给某个 run」，**不**保证内容真的落进上下文——「匹配后被**强杀**的 agent 吞掉」由 0.2 的强杀补投递（窗口回扫、不看标记）兜底；而**用户停止 / safety timeout / 普通错误收尾**吞掉的内容没有回扫路径（属标记语义的固有边界，非回归）。
+2. **run 结束回扫** `replayUnconsumedWritebacks`：run 收敛 idle 后，扫窗口 `[runStartedAt, now]` 内发给本会话、且**没有消费标记**的 writeback，拼成带醒目标记的补投内容，用 `wakeSessionWithContent` 拉起会话消费。
+   - **与强杀补投递共用同一套「让位 + 有界重试」**（`deliverContentWithRetry`，同一 env 预算）：唤醒靠原子认领，除并发认领外，**紧接着结束的上一次 run** 还可能因 pi-client 的 `isStreaming` 守卫（agent 尚未收尾，safety timeout / abort 收尾期常见）抛 `session_busy`——只投一次就会把这批内容永久丢掉（独立审查用探针复现）。重试期间被并发 run 占用则让位，不抢。
+   - 幂等与循环安全：**只有投出成功才写标记**，因此补投 run 自己结束时（窗口内已无该批写回 + 已写标记）不会重复投递；预算用尽仍未投出则**不写标记**并写审计（`session_events(type='writeback_rescan')`，payload `{found, delivered, wake_result, skip_reason, window_from}`，仅 found>0 时写），供线上发现「找到但没投出」。
+   - **已知残余**：预算用尽仍未投出的批次，下一次 run 的回扫窗口 `[该 run 的 startedAt, now]` 按构造不含它（要结构性闭环需放宽窗口下界，**前提是给 auto-wake 路径也补 `via='auto_wake'` 标记**，否则会把每条正常 auto-wake 投递在 run 结束时重复投一次）——留给后续。
+   - 前端可见：透传 `onRuntimeStatusChange`，补投 run 会广播 running/idle。
+   - **worker 会话**：若回扫投出了补投 run，则跳过 run 结束时的「立即回收 runtime」（否则可能在补投 run 尚未进入 streaming 的 microtask 窗口里被 dispose → 已写标记的内容永久丢）；回收交给该 run 自己的 `doCleanup`。
+3. **索引**：`messages(session_id, message_kind, created_at)`（`packages/db/migrations/0008_messages_writeback_index.sql` 记录，`init.ts` 的 `ensureMessagesWritebackIndex` 每次启动无条件 `CREATE INDEX IF NOT EXISTS`，既有 DB 也会补齐）——强杀补投递与 run 结束回扫都按这三个条件过滤。
+
+回归测试：`packages/domain/src/session/runtime.test.ts` 的 `run 结束回扫未消费 writeback（L2 闭环）`（父忙期间到达→run 结束补投+标记+无重复；已标记→不重复投）、`packages/domain/src/extensions/role-manager-tools.test.ts`（wait 循环写 `via='wait_loop'` 标记）、`packages/db/src/init.test.ts`（既有 DB 上索引被补齐）。
+
+#### 已知残余缺口（未修，记录待后续）
+
+另一条同源残余：**`stopping` 状态下的强杀不补投**（补投递闸门要求 `idle`，尊重用户显式停止）。此时窗口内的 writeback 会永久搁置（同样被后续窗口下界排除），属已知取舍而非新 bug。
+
+**`cross_project_reply` 同类缺口（审查记录，未实现）**：写入点 `role-manager-tools.ts` 的 `cross_project_reply`（`messageKind='cross_project_reply'`），唯一消费者是 `waitForCrossProjectReply` 轮询；本节的回扫只匹配 `messageKind='writeback'`，且跨项目回复没有 auto-wake 路径 → 询问方无在途 wait 时同样无消费者。建议把回扫的 kind 过滤扩到 `['writeback','cross_project_reply']`（标记语义可复用，`buildReplayContent` 文案泛化），并在 `waitForCrossProjectReply` 命中时写 `via='wait_loop'` 标记。
+
+还有两条与「不丢」相关的待办（审查记录，未实现）：(a) **确定性错误与瞬态错误未区分**——`wakeSessionWithContent` 把 `session_not_found`（如 project/ownership 不匹配）也归入可重试的 `skipped`，会白耗一次重试预算后记 `retries_exhausted`，真实原因被掩盖；(b) **`notifyForcedRuntimeDispose` 串行 await handler**——一个 handler 的重试窗口（最长约 1 分钟）会拖住后续强杀通知的收敛，缓解办法是改并发派发（handler 内部已各自 try/catch）。
+
+---
+
 ## 1. 架构总览：两套"定时器 + 状态"
 
 runtime 生命周期由 **两个层级的 30 分钟定时器** 共同管理，外加 DB 中的 `sessions.runtimeStatus`（`idle`/`running`/`stopping`，schema.ts:62）作为状态机。

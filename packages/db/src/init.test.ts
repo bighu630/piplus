@@ -84,6 +84,31 @@ describe('ensureBuiltinRows 内置 upsert、用户行不动', () => {
     }
   }
 
+  test('messages writeback 回扫索引在既有 DB 上也会被补齐（0008）', () => {
+    // 既有 DB：先建库并删掉索引，模拟「升级前创建的库」，再跑一次 createSeedDb
+    const { dir, dbPath } = seedFreshDb();
+    try {
+      writeDb(dbPath, (sqlite) => {
+        sqlite.exec('DROP INDEX IF EXISTS idx_messages_session_kind_time');
+        const dropped = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_session_kind_time'").all();
+        expect(dropped).toHaveLength(0);
+      });
+
+      createSeedDb(dbPath);
+
+      writeDb(dbPath, (sqlite) => {
+        const rows = sqlite
+          .prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND name='idx_messages_session_kind_time'")
+          .all() as Array<{ name: string; sql: string }>;
+        expect(rows).toHaveLength(1);
+        // 列顺序即回扫查询的过滤条件顺序（findStrandedWritebacks / findUnconsumedWritebacks）
+        expect(rows[0].sql).toContain('messages(session_id, message_kind, created_at)');
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // 新逻辑无条件同步，不依赖开关：显式清空开关以证明这一点。
   function withoutForceFlag(fn: () => void) {
     const savedBun = Bun.env.PIPLUS_FORCE_ROLE_PROMPTS;
@@ -173,6 +198,41 @@ describe('ensureBuiltinRows 内置 upsert、用户行不动', () => {
       // 内容无变化时不产生写入：全表逐行完全一致（含 updated_at）
       expect(second).toEqual(first);
       expect(third).toEqual(first);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('(d) feature_lead 与 bugfix_lead 的 worker 派发纪律表述一致、不再鼓励派发', () => {
+    const { dir, dbPath } = seedFreshDb();
+    try {
+      const rows = readRoles(dbPath);
+      const promptOf = (id: string) => String(rows.find((r) => r.id === id)!.base_prompt);
+      const feature = promptOf('role_feature_lead');
+      const bugfix = promptOf('role_bugfix_lead');
+      const disciplineLines = (prompt: string) => prompt.split('\n').filter((line) => line.startsWith('- 子会话使用纪律'));
+
+      // 两份提示词引用同一段纪律文字，避免表述漂移/自相矛盾
+      const featureDiscipline = disciplineLines(feature);
+      const bugfixDiscipline = disciplineLines(bugfix);
+      expect(featureDiscipline).toHaveLength(1);
+      expect(bugfixDiscipline).toHaveLength(1);
+      expect(featureDiscipline[0]).toBe(bugfixDiscipline[0]);
+
+      // 纪律要点：只用于并行提速、串行/简单任务自己做、拿不准自己做
+      expect(featureDiscipline[0]).toContain('worker 只用于并行提速');
+      expect(featureDiscipline[0]).toContain('串行/顺序执行的步骤、简单任务');
+      expect(featureDiscipline[0]).toContain('拿不准是否值得并行');
+
+      for (const prompt of [feature, bugfix]) {
+        // 删除鼓励派发的旧表述
+        expect(prompt).not.toContain('最大化并行性');
+        expect(prompt).not.toContain('创建 worker（`wait=true`）');
+        // 保留必要信息：objective/scope/task 三件套、用户对齐不委派
+        expect(prompt).toContain('objective/scope/task');
+        expect(prompt).toContain('不委派给 worker');
+        expect(prompt).toContain('派发 worker');
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

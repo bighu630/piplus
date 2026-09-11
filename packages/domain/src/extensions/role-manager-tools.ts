@@ -6,7 +6,7 @@ import type { RoleManagerDb } from '../role-manager/service';
 import { messages, projects, sessions } from '@piplus/db/schema';
 import { and, eq, like } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
-import { startSessionRun } from '../session/runtime';
+import { markWritebackConsumed, startSessionRun } from '../session/runtime';
 import { setRequestContext, getRequestContext, setCrossProjectWait, clearCrossProjectWait, setWaitingOnChild, clearWaitingOnChild } from '../session/request-context';
 import { getSubagentTimeoutMs } from '../settings/service';
 
@@ -567,7 +567,7 @@ async function waitForChildWriteback(
       }
 
       const [writeback] = await ctx.db
-        .select({ summary: messages.contentText, blocksJson: messages.contentBlocksJson })
+        .select({ id: messages.id, summary: messages.contentText, blocksJson: messages.contentBlocksJson })
         .from(messages)
         .where(
           and(
@@ -590,6 +590,15 @@ async function waitForChildWriteback(
         console.log('[role-manager-tools] waitForChildWriteback matched', {
           childSessionId,
           requestId,
+        });
+        // 持久消费标记：run 结束时的「未消费回扫」据此去重，避免把已交给本轮 run 的结果再投一次
+        // （语义边界：标记=已交给 run；「匹配后被强杀的 agent 吞掉」由强杀补投递兜底）。
+        await markWritebackConsumed(ctx.db, {
+          sessionId: ctx.sessionId,
+          messageId: writeback.id,
+          childSessionId,
+          requestId,
+          via: 'wait_loop',
         });
         return {
           status: 'completed',
@@ -784,8 +793,10 @@ async function waitForChildWriteback(
       message: '子会话超时未返回结果',
     };
   } finally {
-    // wait 循环退出（含 deadline 超时）必须清除标记，否则父会话永久豁免、超时永不触发
-    clearWaitingOnChild(ctx.sessionId);
+    // wait 循环退出（含 deadline 超时）必须清除标记，否则父会话永久豁免、超时永不触发。
+    // 只清自己这个子会话（多条目精确清理）：父并行 wait 多个子会话时，先退出者不得
+    // 连带清掉其他仍在进行的等待标记（否则父失去豁免 1 被强杀）。
+    clearWaitingOnChild(ctx.sessionId, childSessionId);
   }
 }
 

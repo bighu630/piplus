@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# pre-merge-commit：在 main 上执行非 FF 合并（git merge）且基线未通过时阻止合并提交。
+#
+# 注意：本 hook 对任何分支上的非 FF 合并都会触发（把 main 合进 feature 分支是常规操作），
+# 所以必须自己做"当前分支 == main"的守卫。FF 合并、squash 合并不会触发本 hook，
+# 那两条路径由 pre-push 覆盖。
+#
+# 应急绕过：git merge --no-verify
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -x "$ROOT/scripts/baseline-check.sh" ] || exit 0
+
+BRANCH="$(git symbolic-ref --short -q HEAD || true)"
+[ "$BRANCH" = "main" ] || exit 0
+
+# 不要用 MERGE_HEAD 做守卫：实测 hook 触发时 git 还没写 MERGE_HEAD
+# （触发时机 = 合并结果已进 index、即将生成 merge commit 之前），
+# 加了它会让整个 hook 静默失效。本 hook 只在生成 merge commit 时触发，
+# 无需额外判断"这是不是合并"。
+
+echo "▶ 合并到 main：运行基线检查（全量 typecheck + 逐包测试，约 2 分钟）"
+
+if bash "$ROOT/scripts/baseline-check.sh"; then
+  echo "✅ 基线通过，允许合并到 main"
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+
+✖ 基线检查失败，已阻止本次合并提交。
+
+下一步：
+  git merge --abort               # 放弃这次合并，回到合并前状态（推荐）
+  git status                      # 或先看看到底哪里坏了
+
+合并内容已进入 index，但 merge commit 没有生成 —— 除了 --abort，也可以用
+`git commit` 手动完成这次合并（后果自负）。
+如确需跳过基线：git merge --no-verify
+EOF
+exit 1

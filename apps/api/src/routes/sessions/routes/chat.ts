@@ -435,9 +435,12 @@ export function registerChatRoutes(app: Hono, piClient: PiClient) {
       if (primaryRef) {
         const fallbackRef = parseModelRef(await getSetting(db, 'vision_fallback_model'));
         // 原子认领 running：两个并发 POST 可能同时通过上方 busy 检查，
-        // 这里用条件更新保证只有一个请求进入 describe（最长 90s），防止双 describe / 双 run
+        // 这里用条件更新保证只有一个请求进入 describe（最长 90s），防止双 describe / 双 run。
+        // 占位认领也写 lastRunAt：否则「旧 run 的迟到 cleanup」会因 lastRunAt 仍是旧值而把本占位
+        // 误判为自己所有（详见 markSessionIdleIfRunOwned 的 run 所有权不变量：认领即写 lastRunAt）。
+        const visionClaimedAt = new Date();
         const claimed = await db.update(sessions)
-          .set({ runtimeStatus: 'running', updatedAt: new Date() })
+          .set({ runtimeStatus: 'running', lastRunAt: visionClaimedAt, updatedAt: visionClaimedAt })
           .where(and(eq(sessions.id, sessionId), eq(sessions.runtimeStatus, 'idle')))
           .returning({ id: sessions.id });
         if (claimed.length === 0) {

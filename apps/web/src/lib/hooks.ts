@@ -33,9 +33,11 @@ import {
   gitCommit,
   addGitignore,
   getGitBranches,
+  getGitTags,
   getGitCommits,
   getGitShow,
   gitCheckout,
+  type GitRefType,
   testModelProvider,
   createModelProvider,
   getModelProviders,
@@ -508,13 +510,24 @@ export function useGitBranches(sessionId: string | null) {
   });
 }
 
+export function useGitTags(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'git-tags', sessionId],
+    queryFn: () => getGitTags(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
 export function useGitCheckoutMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ sessionId, branch }: { sessionId: string; branch: string }) => gitCheckout(sessionId, branch),
+    mutationFn: ({ sessionId, ref, type }: { sessionId: string; ref: string; type?: GitRefType }) =>
+      gitCheckout(sessionId, ref, type ?? 'branch'),
     onSuccess: (_data, { sessionId }) => {
       // Invalidate both branches list and git diff since checkout may change working tree
       queryClient.invalidateQueries({ queryKey: ['session', 'git-branches', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-tags', sessionId] });
       queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
       queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', sessionId] });
     },
