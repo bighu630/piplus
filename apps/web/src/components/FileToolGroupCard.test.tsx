@@ -483,3 +483,24 @@ describe('FileToolGroupCard 状态边界', () => {
     expect(details()[0].textContent).toContain('permission denied');
   });
 });
+
+describe('FileToolGroupCard pending 行配色', () => {
+  test('pending 行使用琥珀色而非绿色（不宣称成功）', () => {
+    render(<Harness calls={[fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'x' })]} />);
+
+    const pathSpan = rows()[0].querySelector('span[title]')!;
+    expect(pathSpan.className).toContain('text-amber-800');
+    expect(pathSpan.className).not.toContain('text-emerald-800');
+  });
+
+  test('成功行的路径与图标为绿色系', () => {
+    render(
+      <Harness
+        calls={[fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'x' })]}
+        messages={[toolResult('r1', 'write', 'e1-tool-0', 'Successfully wrote')]}
+      />,
+    );
+    const pathSpan = rows()[0].querySelector('span[title]')!;
+    expect(pathSpan.className).toContain('text-emerald-800');
+  });
+});

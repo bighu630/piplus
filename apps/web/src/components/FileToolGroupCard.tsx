@@ -37,8 +37,6 @@ export interface FileToolGroupCardProps {
   runningIds: Set<string>;
 }
 
-/** result 文本以 Error 开头视为失败（口径见 tool-summary.isToolErrorMessage） */
-
 const FileRow = React.memo(function FileRow({
   call,
   result,
@@ -77,19 +75,28 @@ const FileRow = React.memo(function FileRow({
   const readContent = toolName === 'read' && !isError ? result?.content_text ?? null : null;
 
   const path = writeEditSummary?.path ?? readPath ?? null;
-  const tone = isError ? 'text-rose-700 dark:text-rose-400' : 'text-emerald-800 dark:text-emerald-300';
-  const iconTone = isError ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400';
+  const tone = status === 'error'
+    ? 'text-rose-700 dark:text-rose-400'
+    : status === 'pending'
+      ? 'text-amber-800 dark:text-amber-300'
+      : 'text-emerald-800 dark:text-emerald-300';
+  const iconTone = status === 'error'
+    ? 'text-rose-600 dark:text-rose-400'
+    : status === 'pending'
+      ? 'text-amber-600 dark:text-amber-400'
+      : 'text-emerald-600 dark:text-emerald-400';
+  const hoverTone = status === 'error'
+    ? 'hover:bg-rose-100/60 dark:hover:bg-rose-900/30'
+    : status === 'pending'
+      ? 'hover:bg-amber-100/60 dark:hover:bg-amber-900/30'
+      : 'hover:bg-emerald-100/60 dark:hover:bg-emerald-900/30';
 
   return (
     <div>
       <div
         data-testid="tool-file-row"
         data-status={status}
-        className={`px-3 py-1.5 flex items-center gap-2 min-w-0 cursor-pointer ${
-          isError
-            ? 'hover:bg-rose-100/60 dark:hover:bg-rose-900/30'
-            : 'hover:bg-emerald-100/60 dark:hover:bg-emerald-900/30'
-        }`}
+        className={`px-3 py-1.5 flex items-center gap-2 min-w-0 cursor-pointer ${hoverTone}`}
         onClick={() => onToggle(call.id, status)}
       >
         {expanded ? (

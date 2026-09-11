@@ -5,8 +5,8 @@ import {
   findToolResultMessage,
   formatReadLineRange,
   isFileToolCall,
+  collectCoveredFileToolResultIds,
   isFileToolResult,
-  isFileToolResultCovered,
   isToolErrorMessage,
   parseToolArgsJson,
   parseWriteEditDiff,
@@ -367,27 +367,36 @@ describe('isToolErrorMessage', () => {
   });
 });
 
-describe('isFileToolResultCovered', () => {
-  const fileResult = msg({
-    id: 'r1',
-    role: 'tool',
-    message_kind: 'tool',
-    tool_name: 'write',
-    content_text: 'Error: x',
+describe('collectCoveredFileToolResultIds', () => {
+  test('只收集视图内调用所绑定的结果（toolCallId 精确配对）', () => {
+    const messages = [
+      msg({ id: 't1-tool-8', tool_name: 'write', tool_call_id: 't1-8' }),
+      msg({ id: 'r8', role: 'tool', message_kind: 'tool', tool_name: 'write', tool_call_id: 't1-8' }),
+      // 孤立结果：对应调用已被分页切走，虽同名但不应被收集
+      msg({ id: 'r9', role: 'tool', message_kind: 'tool', tool_name: 'write', tool_call_id: 't1-9' }),
+    ];
+    const covered = collectCoveredFileToolResultIds(messages);
+    expect(covered.has('r8')).toBe(true);
+    expect(covered.has('r9')).toBe(false);
   });
 
-  test('当前视图内存在同名文件类调用 → 由聚合卡片承载（隐藏结果卡片）', () => {
-    expect(isFileToolResultCovered(fileResult, [msg({ id: 'c1', tool_name: 'write' })])).toBe(true);
+  test('序数回退配对（无 toolCallId 的旧数据）也能收集', () => {
+    const messages = [
+      msg({ id: 'c1', tool_name: 'read' }),
+      msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'read' }),
+    ];
+    expect(collectCoveredFileToolResultIds(messages).has('r1')).toBe(true);
   });
 
-  test('分页边界下调用不在视图内 → 不隐藏（降级渲染结果卡片，保留失败反馈）', () => {
-    expect(isFileToolResultCovered(fileResult, [msg({ id: 'c2', tool_name: 'bash' })])).toBe(false);
-    expect(isFileToolResultCovered(fileResult, [])).toBe(false);
+  test('调用无对应结果时不收集', () => {
+    expect(collectCoveredFileToolResultIds([msg({ id: 'c1', tool_name: 'write', tool_call_id: 't1-1' })]).size).toBe(0);
   });
 
-  test('非文件类结果与调用消息一律返回 false', () => {
-    const bashResult = msg({ id: 'r2', role: 'tool', message_kind: 'tool', tool_name: 'bash', content_text: 'ok' });
-    expect(isFileToolResultCovered(bashResult, [msg({ id: 'c3', tool_name: 'bash' })])).toBe(false);
-    expect(isFileToolResultCovered(msg({ id: 'c4', tool_name: 'write' }), [msg({ id: 'c5', tool_name: 'write' })])).toBe(false);
+  test('非文件类调用与其结果不进入集合', () => {
+    const messages = [
+      msg({ id: 'c1', tool_name: 'bash' }),
+      msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'bash' }),
+    ];
+    expect(collectCoveredFileToolResultIds(messages).size).toBe(0);
   });
 });

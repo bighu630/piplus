@@ -319,15 +319,23 @@ export function isToolErrorMessage(text: string | null | undefined): boolean {
 }
 
 /**
- * 文件类结果是否已由聚合卡片承载（当前视图内存在同名文件类调用）。
- * 分页边界可能让调用与结果分处两页：此时返回 false，调用方应降级渲染原结果卡片，
- * 避免孤立的失败结果因聚合卡片缺失而彻底不可见。
+ * 收集「已由聚合卡片承载」的文件类结果消息 id。
+ *
+ * 对当前视图内每个文件类调用，用与 findToolResultMessage 相同的配对口径（toolCallId 精确优先、
+ * 序数回退）反查其绑定结果；只有这些结果才应隐藏独立结果卡片。
+ * 分页边界下调用不在视图内的孤立结果不会进入集合，调用方应降级渲染原结果卡片，避免失败反馈丢失。
  */
-export function isFileToolResultCovered(
-  msg: ChatMessageDTO,
-  visibleMessages: ChatMessageDTO[],
-): boolean {
-  if (!isFileToolResult(msg)) return false;
-  const toolName = msg.tool_name ?? '';
-  return visibleMessages.some((m) => isFileToolCall(m) && m.tool_name === toolName);
+export function collectCoveredFileToolResultIds(visibleMessages: ChatMessageDTO[]): Set<string> {
+  const covered = new Set<string>();
+  for (const msg of visibleMessages) {
+    if (!isFileToolCall(msg)) continue;
+    const result = findToolResultMessage(
+      visibleMessages,
+      msg.id,
+      msg.tool_name || 'unknown',
+      msg.tool_call_id,
+    );
+    if (result) covered.add(result.id);
+  }
+  return covered;
 }

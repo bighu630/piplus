@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { READ_MAX_LINES, splitLineCount, splitReadContent } from '../lib/tool-summary';
+import { isToolErrorMessage, READ_MAX_LINES, splitLineCount, splitReadContent } from '../lib/tool-summary';
 
 /**
  * read 工具结果的展开内容：正文（超长截断、外层滚动）+ pi 续读提示（单独一行）+ 失败文本样式。
@@ -17,7 +17,7 @@ function ReadResultView({ content }: { content: string }) {
       truncated,
       totalLines,
       notice,
-      isError: /^error/i.test(body.trim()),
+      isError: isToolErrorMessage(body),
     };
   }, [content]);
 
