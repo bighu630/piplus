@@ -130,7 +130,8 @@ interface ToolCallCardProps {
 - 独立结果卡片与工具卡片的失败配色统一为 rose（TabChat 原 red 已对齐）；`ToolResultView` 截断提示边框用中性 slate，避免绿/红卡内出现琥珀线
 - 状态徽标（失败/成功标签）统一 700 档（rose-700 / emerald-700），图标保持 600 档
 - 已知技术债（未在本轮处理）：状态调色板在 `ToolCallCard` / `FileToolGroupCard` / `TabChat` 各有一份（已统一色值，后续可抽 `lib/toolStatusScheme`）；`hasResult` 口径在文件卡片（结果消息存在）与工具卡片（`content_text` 非 null）略有差异
-- 失败行默认展开；点「收起全部」会把失败行一并收起，再点「展开全部」恢复
+- 失败行默认展开；点「收起全部」（或单文件组的头部）会把失败行一并收起，再点「展开全部」恢复
+- 键盘可达性：文件行与头部均带 `role="button"` + `tabIndex=0`，支持 Enter/Space 切换（单文件组无按钮时同样可用）
 - 已知启发式限制：pi 的 `isError` 在 pi-client 侧被转为 `Error: ` 前缀，前端据此判定；若成功 read 的文件正文以 `Error` 开头会被误判为失败（罕见），彻底修复需在 pi-client/shared 透传 `is_error`
 
 ## 测试

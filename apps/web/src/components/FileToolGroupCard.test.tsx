@@ -64,6 +64,12 @@ function click(el: Element | null) {
   });
 }
 
+function pressKey(el: Element | null, key: string) {
+  act(() => {
+    el!.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true }));
+  });
+}
+
 function fileCall(id: string, toolName: string, args: Record<string, unknown>): ChatMessageDTO {
   return {
     id,
@@ -518,5 +524,32 @@ describe('FileToolGroupCard pending 行配色', () => {
     );
     const pathSpan = rows()[0].querySelector('span[title]')!;
     expect(pathSpan.className).toContain('text-emerald-800');
+  });
+});
+
+describe('FileToolGroupCard 键盘可达性', () => {
+  const twoCalls = () => [
+    fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'a' }),
+    fileCall('e1-tool-1', 'write', { path: 'src/b.ts', content: 'b' }),
+  ];
+
+  test('单文件组（无总控按钮）可用 Enter/Space 展开收起', () => {
+    render(<Harness calls={[fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'a' })]} />);
+
+    pressKey(rows()[0], 'Enter');
+    expect(details()).toHaveLength(1);
+
+    pressKey(rows()[0], ' ');
+    expect(details()).toHaveLength(0);
+
+    pressKey(header(), 'Enter');
+    expect(details()).toHaveLength(1);
+  });
+
+  test('多文件组头部可用键盘整组展开', () => {
+    render(<Harness calls={twoCalls()} />);
+
+    pressKey(header(), 'Enter');
+    expect(details()).toHaveLength(2);
   });
 });

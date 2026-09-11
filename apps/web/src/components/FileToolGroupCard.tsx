@@ -96,8 +96,16 @@ const FileRow = React.memo(function FileRow({
       <div
         data-testid="tool-file-row"
         data-status={status}
-        className={`px-3 py-1.5 flex items-center gap-2 min-w-0 cursor-pointer ${hoverTone}`}
+        role="button"
+        tabIndex={0}
         onClick={() => onToggle(call.id, status)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onToggle(call.id, status);
+          }
+        }}
+        className={`px-3 py-1.5 flex items-center gap-2 min-w-0 cursor-pointer ${hoverTone}`}
       >
         {expanded ? (
           <ChevronDown className={`w-3 h-3 shrink-0 ${iconTone}`} />
@@ -259,8 +267,16 @@ function FileToolGroupCard({
           >
             <div
               data-testid="tool-group-header"
-              className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
+              role="button"
+              tabIndex={0}
               onClick={() => toggleAll(!allExpanded)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggleAll(!allExpanded);
+                }
+              }}
+              className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
             >
               {allExpanded ? (
                 <ChevronDown className={`w-3.5 h-3.5 shrink-0 ${scheme.accent}`} />
@@ -276,13 +292,13 @@ function FileToolGroupCard({
               )}
               {/* 总控按钮仅在有多个文件时显示（单文件时点头部/行即可切换） */}
               {calls.length > 1 && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  // 头部整行可点击，避免按钮冒泡后双重切换
-                  e.stopPropagation();
-                  toggleAll(!allExpanded);
-                }}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    // 头部整行可点击，避免按钮冒泡后双重切换
+                    e.stopPropagation();
+                    toggleAll(!allExpanded);
+                  }}
                 className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer shrink-0 ${
                   cardStatus === 'error'
                     ? 'text-rose-700 dark:text-rose-300 bg-rose-100/70 dark:bg-rose-900/40 hover:bg-rose-200/70 dark:hover:bg-rose-800/50'
@@ -291,8 +307,8 @@ function FileToolGroupCard({
                       : 'text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/40 hover:bg-emerald-200/70 dark:hover:bg-emerald-800/50'
                 }`}
               >
-                {allExpanded ? '收起全部' : '展开全部'}
-              </button>
+                  {allExpanded ? '收起全部' : '展开全部'}
+                </button>
               )}
             </div>
 
