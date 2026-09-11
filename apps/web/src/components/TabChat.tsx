@@ -16,7 +16,7 @@ import {
   Archive,
   GitMerge,
 } from 'lucide-react';
-import DiffViewer from './DiffViewer';
+import ToolCallCard from './ToolCallCard';
 import MarkdownRenderer from './MarkdownRenderer';
 import ContextUsageRing from './ContextUsageRing';
 import Lightbox from 'yet-another-react-lightbox';
@@ -25,6 +25,7 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
+import { findToolResultMessage } from '../lib/tool-summary';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -196,88 +197,6 @@ function sanitizeStreamingContent(content: string): string {
     return content.slice(0, lastFenceIdx).trimEnd();
   }
   return content;
-}
-
-/** Extract file path and edit content from write/edit tool call args */
-function parseWriteEditArgs(
-  toolName: string,
-  parsedArgs: Record<string, unknown>,
-): { path?: string; oldText?: string; newText: string } | null {
-  if (toolName === 'write') {
-    const path = typeof parsedArgs.path === 'string' ? parsedArgs.path : undefined;
-    const content = typeof parsedArgs.content === 'string' ? parsedArgs.content : '';
-    return { path, newText: content };
-  }
-
-  if (toolName === 'edit') {
-    const path = typeof parsedArgs.path === 'string' ? parsedArgs.path : undefined;
-    const edits = parsedArgs.edits;
-    if (Array.isArray(edits) && edits.length > 0) {
-      // Combine all edits into one diff view
-      const oldParts: string[] = [];
-      const newParts: string[] = [];
-      for (const edit of edits) {
-        if (edit && typeof edit === 'object') {
-          const e = edit as Record<string, unknown>;
-          if (typeof e.oldText === 'string') oldParts.push(e.oldText);
-          if (typeof e.newText === 'string') newParts.push(e.newText);
-        }
-      }
-      if (newParts.length > 0) {
-        return {
-          path,
-          oldText: oldParts.join('\n'),
-          newText: newParts.join('\n'),
-        };
-      }
-    }
-    // Fallback: direct oldText/newText in args
-    if (typeof parsedArgs.oldText === 'string' && typeof parsedArgs.newText === 'string') {
-      return {
-        path,
-        oldText: parsedArgs.oldText,
-        newText: parsedArgs.newText,
-      };
-    }
-    return null;
-  }
-
-  return null;
-}
-
-/** Inline component for write/edit diff view inside tool call cards */
-function DiffViewerInline({
-  toolName,
-  parsedArgs,
-  argsStr,
-}: {
-  toolName: string;
-  parsedArgs: Record<string, unknown>;
-  argsStr: string;
-}) {
-  const parsed = React.useMemo(
-    () => parseWriteEditArgs(toolName, parsedArgs),
-    [toolName, parsedArgs],
-  );
-
-  if (!parsed) {
-    return (
-      <div className="px-3 py-2">
-        <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-          {argsStr}
-        </pre>
-      </div>
-    );
-  }
-
-  return (
-    <DiffViewer
-      oldText={parsed.oldText}
-      newText={parsed.newText}
-      filename={parsed.path}
-      viewType={toolName === 'write' ? 'write' : 'edit'}
-    />
-  );
 }
 
 function TabChat({
@@ -774,31 +693,21 @@ function TabChat({
           // Tool call message: collapsible card
           if (isToolCall) {
             const toolName = msg.tool_name || 'unknown';
-            const isExpanded = expandedToolIds.has(msg.id);
-            const toggleExpand = () => {
-              setExpandedToolIds((prev) => {
-                const next = new Set(prev);
-                if (next.has(msg.id)) next.delete(msg.id);
-                else next.add(msg.id);
-                return next;
-              });
-            };
 
             const msgIndex = messages.findIndex((m) => m.id === msg.id);
             const isInCurrentRun = currentRunStartIdxRef.current !== null && msgIndex >= currentRunStartIdxRef.current;
             const isThisToolRunning = (isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages)) || trailingToolCallIds.has(msg.id);
 
-            let argsStr = '';
+            // ask_question 待回答匹配与 spawn_session 角色后缀仍需解析后的 args；卡片展示交由 ToolCallCard
             let parsedArgs: Record<string, unknown> | null = null;
             if (msg.tool_args_json) {
               try {
                 const parsed: unknown = JSON.parse(msg.tool_args_json);
-                argsStr = JSON.stringify(parsed, null, 2);
                 if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
                   parsedArgs = parsed as Record<string, unknown>;
                 }
               } catch {
-                argsStr = msg.tool_args_json;
+                // 解析失败：ToolCallCard 降级展示原始 args 文本
               }
             }
             const spawnSessionRole = toolName === 'spawn_session' && typeof parsedArgs?.role === 'string'
@@ -850,74 +759,22 @@ function TabChat({
             }
 
             return (
-              <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
-                <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                  <div className="flex items-start min-w-0">
-                    <div
-                      className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
-                    >
-                    <div className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none" onClick={toggleExpand}>
-                      {isExpanded ? (
-                        <ChevronDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                      ) : (
-                        <ChevronRight className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                      )}
-                      <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                      <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 font-mono">
-                        {toolName}
-                        {spawnSessionRole ? ` (${spawnSessionRole})` : ''}
-                      </span>
-                    </div>
-                    {isExpanded && argsStr && (
-                      <div className="border-t border-amber-200 dark:border-amber-800">
-                        {(toolName === 'write' || toolName === 'edit') && parsedArgs ? (
-                          <DiffViewerInline
-                            toolName={toolName}
-                            parsedArgs={parsedArgs}
-                            argsStr={argsStr}
-                          />
-                        ) : (toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs ? (
-                          <div className="px-3 py-2">
-                            <table className="w-full text-[11px] font-mono leading-relaxed">
-                              <tbody>
-                                {Object.entries(parsedArgs).map(([key, value]) => (
-                                  <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
-                                    <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
-                                      {key}
-                                    </td>
-                                    <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
-                                      {typeof value === 'object' && value !== null
-                                        ? JSON.stringify(value)
-                                        : String(value)}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        ) : (
-                          <div className="px-3 py-2">
-                            <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-                              {argsStr}
-                            </pre>
-                          </div>
-                        )
-                      }
-                    </div>
-                  )
-                  }
-                    </div>
-                    {isThisToolRunning && (
-                      <div className="ml-2 pt-2 shrink-0">
-                        <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
-                      </div>
-                    )}
-                  </div>
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
-                </div>
-              </div>
+              <ToolCallCard
+                key={msg.id}
+                msg={msg}
+                expanded={expandedToolIds.has(msg.id)}
+                onToggle={() => {
+                  setExpandedToolIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(msg.id)) next.delete(msg.id);
+                    else next.add(msg.id);
+                    return next;
+                  });
+                }}
+                running={isThisToolRunning}
+                roleSuffix={spawnSessionRole}
+                resultDetails={findToolResultMessage(messages, msg.id, toolName)?.details ?? null}
+              />
             );
           }
 
