@@ -164,13 +164,38 @@ describe('formatReadLineRange', () => {
 });
 
 describe('findToolResultMessage', () => {
-  test('返回 tool_call 之后第一条同名工具结果', () => {
+  test('优先按 toolCallId 精确匹配（同轮多次同名调用不错配）', () => {
     const messages = [
-      msg({ id: 'call-1', tool_name: 'edit', tool_args_json: '{}' }),
-      msg({ id: 'result-1', role: 'tool', message_kind: 'tool', tool_name: 'edit', details: { diff: '+1 a' } }),
-      msg({ id: 'result-2', role: 'tool', message_kind: 'tool', tool_name: 'edit' }),
+      msg({ id: 'call-1', tool_name: 'read', tool_args_json: '{}', tool_call_id: 'tc-1' }),
+      msg({ id: 'call-2', tool_name: 'read', tool_args_json: '{}', tool_call_id: 'tc-2' }),
+      msg({ id: 'result-1', role: 'tool', message_kind: 'tool', tool_name: 'read', tool_call_id: 'tc-1', content_text: 'file A' }),
+      msg({ id: 'result-2', role: 'tool', message_kind: 'tool', tool_name: 'read', tool_call_id: 'tc-2', content_text: 'file B' }),
     ];
-    expect(findToolResultMessage(messages, 'call-1', 'edit')?.id).toBe('result-1');
+
+    expect(findToolResultMessage(messages, 'call-1', 'read', 'tc-1')?.content_text).toBe('file A');
+    expect(findToolResultMessage(messages, 'call-2', 'read', 'tc-2')?.content_text).toBe('file B');
+  });
+
+  test('无 toolCallId 时回退序数配对：第 k 个同名调用 ↔ 第 k 个同名结果', () => {
+    const messages = [
+      msg({ id: 'call-1', tool_name: 'read' }),
+      msg({ id: 'call-2', tool_name: 'read' }),
+      msg({ id: 'result-1', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'file A' }),
+      msg({ id: 'result-2', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'file B' }),
+    ];
+
+    expect(findToolResultMessage(messages, 'call-1', 'read')?.content_text).toBe('file A');
+    expect(findToolResultMessage(messages, 'call-2', 'read')?.content_text).toBe('file B');
+  });
+
+  test('序数回退：结果数量不足时返回 null（调用方降级 args）', () => {
+    const messages = [
+      msg({ id: 'call-1', tool_name: 'read' }),
+      msg({ id: 'call-2', tool_name: 'read' }),
+      msg({ id: 'result-1', role: 'tool', message_kind: 'tool', tool_name: 'read' }),
+    ];
+
+    expect(findToolResultMessage(messages, 'call-2', 'read')).toBeNull();
   });
 
   test('无对应结果返回 null', () => {

@@ -768,7 +768,7 @@ function TabChat({
             }
 
             // write/edit 取 details（精确 diff），read 取结果文本（展开时展示读取内容）
-            const toolResult = findToolResultMessage(messages, msg.id, toolName);
+            const toolResult = findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id);
 
             return (
               <ToolCallCard

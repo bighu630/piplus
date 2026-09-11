@@ -47,7 +47,7 @@ interface ToolCallCardProps {
   msg: ChatMessageDTO;
   expanded: boolean;
   onToggle: (id: string) => void;
-  running: boolean;
+  running?: boolean;
   roleSuffix?: string | null;    // spawn_session 等角色后缀
   resultDetails?: unknown;       // 对应 tool result 的 details（edit 精确 diff）
   resultContent?: string | null; // 对应 tool result 文本（read 展开内容）
@@ -59,7 +59,7 @@ interface ToolCallCardProps {
   - write/edit：`FileCode` 图标 + 路径（`truncate`，`title` 全路径）+ `+N`（emerald）/ `-N`（rose）
   - read：`FileCode` 图标 + 路径 + 行号范围（amber chip）
   - 行尾「展开全部 / 收起全部」按钮
-- 展开区：write/edit 渲染 `DiffViewer` 明细；read 渲染读取内容（等宽字体、`max-h-96` 滚动、超过 500 行截断并提示）；其它工具保持 TabChat 现状（spawn_session 表格 / JSON args）
+- 展开区：write/edit 渲染 `DiffViewer` 明细；read 渲染读取内容（等宽字体 `whitespace-pre`、`max-h-96` 滚动、超过 500 行时在滚动容器外提示、pi 尾部续读提示单独一行展示且不计入行数、失败文本用 rose 样式）；其它工具保持 TabChat 现状（spawn_session 表格 / JSON args）
 - 运行中 spinner 与时间戳沿用现有样式
 
 ### 3. 改造 `apps/web/src/components/DiffViewer.tsx`

@@ -7,6 +7,19 @@ import { formatReadLineRange, parseWriteEditDiff, summarizeWriteEdit } from '../
 /** read 内容展示上限：pi 单次最多读 2000 行，避免超长文件展开时渲染过多 DOM */
 const READ_MAX_LINES = 500;
 
+/** pi 在结果末尾追加的续读/截断提示行（形如 `[Showing lines 1-501 of 900. ...]`），单独展示且不计入行数 */
+const READ_NOTICE_PATTERN = /^\[(?:Showing lines|Line \d+ is |\d+ more lines in file)/;
+
+function splitReadContent(content: string): { body: string; notice: string | null } {
+  const idx = content.lastIndexOf('\n\n[');
+  if (idx === -1) return { body: content, notice: null };
+  const candidate = content.slice(idx + 2);
+  if (READ_NOTICE_PATTERN.test(candidate)) {
+    return { body: content.slice(0, idx), notice: candidate.trim() };
+  }
+  return { body: content, notice: null };
+}
+
 /**
  * tool call 卡片。
  * - 头部：chevron + 工具名，点击展开/收起（保持既有交互）
@@ -71,14 +84,16 @@ function ToolCallCard({
 
   const readContent = useMemo(() => {
     if (toolName !== 'read' || resultContent == null) return null;
-    const lines = resultContent.split('\n');
-    if (lines.length <= READ_MAX_LINES) {
-      return { text: resultContent, truncated: false, totalLines: lines.length };
-    }
+    const { body, notice } = splitReadContent(resultContent);
+    const lines = body === '' ? [] : body.split('\n');
+    const totalLines = lines.length;
+    const truncated = totalLines > READ_MAX_LINES;
     return {
-      text: lines.slice(0, READ_MAX_LINES).join('\n'),
-      truncated: true,
-      totalLines: lines.length,
+      text: truncated ? lines.slice(0, READ_MAX_LINES).join('\n') : body,
+      truncated,
+      totalLines,
+      notice,
+      isError: /^error/i.test(body.trim()),
     };
   }, [toolName, resultContent]);
 
@@ -92,6 +107,7 @@ function ToolCallCard({
         <div className="flex items-start min-w-0">
           <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40">
             <div
+              data-testid="tool-call-header"
               className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
               onClick={() => onToggle(msg.id)}
             >
@@ -109,12 +125,11 @@ function ToolCallCard({
 
             {/* write/edit/read：文件摘要行（常显，点击行或按钮切换明细） */}
             {hasMetaRow && (
-              <div className="px-3 pb-2 flex items-center gap-2 min-w-0">
-                <span
-                  className="flex items-center gap-1.5 min-w-0 cursor-pointer"
-                  data-testid="tool-call-meta"
-                  onClick={() => onToggle(msg.id)}
-                >
+              <div
+                className="px-3 pb-2 flex items-center gap-2 min-w-0 cursor-pointer"
+                onClick={() => onToggle(msg.id)}
+              >
+                <span className="flex items-center gap-1.5 min-w-0" data-testid="tool-call-meta">
                   <FileCode className="w-3.5 h-3.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
                   {writeEditSummary ? (
                     <>
@@ -157,6 +172,7 @@ function ToolCallCard({
                 <button
                   type="button"
                   onClick={(e) => {
+                    // 摘要行整行可点击，避免按钮冒泡后双重切换
                     e.stopPropagation();
                     onToggle(msg.id);
                   }}
@@ -176,17 +192,34 @@ function ToolCallCard({
                     viewType={toolName === 'write' ? 'write' : 'edit'}
                   />
                 ) : readContent ? (
-                  <div className="border-t border-amber-200 dark:border-amber-800 max-h-96 overflow-y-auto px-3 py-2">
-                    {readContent.text === '' ? (
-                      <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">（空内容）</div>
-                    ) : (
-                      <pre className="text-[11px] font-mono text-amber-900 dark:text-amber-200 whitespace-pre-wrap break-all leading-relaxed">
-                        {readContent.text}
-                      </pre>
-                    )}
+                  <div
+                    className={`border-t border-amber-200 dark:border-amber-800${
+                      readContent.isError ? ' bg-rose-50/60 dark:bg-rose-950/20' : ''
+                    }`}
+                  >
                     {readContent.truncated && (
-                      <div className="mt-1 text-[10px] text-slate-400 dark:text-slate-500 italic">
+                      <div className="px-3 py-1 text-[10px] italic text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-slate-800/30 border-b border-amber-100 dark:border-amber-800/30">
                         仅显示前 {READ_MAX_LINES} 行（共 {readContent.totalLines} 行）
+                      </div>
+                    )}
+                    <div className="max-h-96 overflow-auto px-3 py-2">
+                      {readContent.text.trim() === '' ? (
+                        <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">（空内容）</div>
+                      ) : (
+                        <pre
+                          className={`text-[11px] font-mono whitespace-pre leading-relaxed ${
+                            readContent.isError
+                              ? 'text-rose-700 dark:text-rose-400'
+                              : 'text-amber-900 dark:text-amber-200'
+                          }`}
+                        >
+                          {readContent.text}
+                        </pre>
+                      )}
+                    </div>
+                    {readContent.notice && (
+                      <div className="px-3 py-1 text-[10px] font-mono text-amber-600 dark:text-amber-400 border-t border-amber-100 dark:border-amber-800/50">
+                        {readContent.notice}
                       </div>
                     )}
                   </div>

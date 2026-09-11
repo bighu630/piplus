@@ -109,7 +109,7 @@ function Harness({
   );
 }
 
-const header = () => container!.querySelector('.cursor-pointer.select-none');
+const header = () => container!.querySelector('[data-testid="tool-call-header"]');
 const meta = () => container!.querySelector('[data-testid="tool-call-meta"]');
 const expandedArea = () => container!.querySelector('[data-testid="tool-call-expanded"]');
 const diffLines = () => [...container!.querySelectorAll('[data-testid="diff-line"]')];
@@ -162,6 +162,11 @@ describe('ToolCallCard write 卡片', () => {
 
     expect(expandedArea()).not.toBeNull();
     expect(findButton('收起全部')).not.toBeNull();
+
+    click(findButton('收起全部'));
+
+    expect(expandedArea()).toBeNull();
+    expect(findButton('展开全部')).not.toBeNull();
   });
 
   test('空内容显示 +0', () => {
@@ -270,10 +275,37 @@ describe('ToolCallCard read 卡片', () => {
     click(meta());
 
     expect(expandedArea()).not.toBeNull();
-    expect(expandedArea()!.textContent).toContain('const a = 1;');
-    expect(expandedArea()!.textContent).toContain('const b = 2;');
-    // 内容区不带行号前缀，行号只出现在摘要 range
-    expect(expandedArea()!.textContent).not.toContain('100');
+    const pre = expandedArea()!.querySelector('pre')!;
+    // 严格相等：内容原样（无行号前缀、无额外行）
+    expect(pre.textContent).toBe('const a = 1;\nconst b = 2;');
+    // 行号只出现在摘要 range
+    expect(container!.querySelector('[data-testid="tool-call-line-range"]')!.textContent).toBe('100-101');
+  });
+
+  test('read 无 args 但有结果内容时仍可展开显示', () => {
+    render(<Harness msg={toolCallMsg('read', '')} resultContent={'only content'} />);
+
+    expect(meta()).toBeNull();
+    click(header());
+    expect(expandedArea()!.textContent).toContain('only content');
+  });
+
+  test('空内容显示占位', () => {
+    render(<Harness msg={toolCallMsg('read', { path: 'src/empty.ts' })} resultContent={''} />);
+    click(meta());
+    expect(expandedArea()!.textContent).toContain('（空内容）');
+    expect(expandedArea()!.querySelector('pre')).toBeNull();
+  });
+
+  test('read 失败文本用错误样式', () => {
+    render(
+      <Harness
+        msg={toolCallMsg('read', { path: 'src/missing.ts' })}
+        resultContent={'Error: ENOENT: no such file or directory'}
+      />,
+    );
+    click(meta());
+    expect(expandedArea()!.querySelector('pre')!.className).toContain('text-rose-700');
   });
 
   test('无结果内容时回退展示 args', () => {
@@ -293,6 +325,31 @@ describe('ToolCallCard read 卡片', () => {
     const pre = expandedArea()!.querySelector('pre')!;
     expect(pre.textContent!.split('\n')).toHaveLength(500);
     expect(expandedArea()!.textContent).toContain('仅显示前 500 行（共 620 行）');
+    // 截断提示在滚动容器之外，无需滚到底部即可看到
+    const scroller = expandedArea()!.querySelector('.max-h-96')!;
+    expect(scroller.textContent).not.toContain('仅显示前');
+  });
+
+  test('pi 续读提示行单独展示且不计入正文行数', () => {
+    const content = 'l1\nl2\n\n[Showing lines 1-2 of 900. Use offset=3 to continue.]';
+    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts' })} resultContent={content} />);
+
+    click(meta());
+
+    expect(expandedArea()!.querySelector('pre')!.textContent).toBe('l1\nl2');
+    expect(expandedArea()!.textContent).toContain('[Showing lines 1-2 of 900. Use offset=3 to continue.]');
+    expect(expandedArea()!.textContent).not.toContain('仅显示前');
+  });
+
+  test('正文 501 行 + 续读提示：只按正文计数且保留 pi 提示', () => {
+    const body = Array.from({ length: 501 }, (_, i) => `line ${i}`).join('\n');
+    const content = `${body}\n\n[Showing lines 1-501 of 900. Use offset=502 to continue.]`;
+    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts' })} resultContent={content} />);
+
+    click(meta());
+
+    expect(expandedArea()!.textContent).toContain('仅显示前 500 行（共 501 行）');
+    expect(expandedArea()!.textContent).toContain('Use offset=502 to continue.');
   });
 });
 

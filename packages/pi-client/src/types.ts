@@ -86,6 +86,11 @@ export type PiHistoryMessage = {
   messageKind?: 'normal' | 'tool_call' | 'tool';
   toolName?: string;
   toolArgs?: Record<string, unknown>;
+  /**
+   * pi 工具调用 id：tool_call 消息为调用 id，tool 结果消息为对应的调用 id。
+   * 供前端把调用与结果精确配对（同轮多次同名调用时避免错配）。
+   */
+  toolCallId?: string;
   /** 工具返回的结构化结果（如 ask_question 的 details），工具结果消息上存在。 */
   details?: unknown;
 };
