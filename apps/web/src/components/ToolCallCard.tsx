@@ -182,7 +182,15 @@ function ToolCallCard({
                       {/* 标题行用 div 承载点击（内部含复制按钮，避免 button 嵌套） */}
                       <div
                         data-testid="tool-result-toggle"
+                        role="button"
+                        tabIndex={0}
                         onClick={() => setResultOpen((v) => !v)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setResultOpen((v) => !v);
+                          }
+                        }}
                         className="w-full px-3 py-1.5 flex items-center gap-2 text-left cursor-pointer select-none hover:bg-amber-100/60 dark:hover:bg-amber-900/30"
                       >
                         {resultOpen ? (

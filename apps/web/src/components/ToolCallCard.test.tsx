@@ -257,8 +257,10 @@ describe('ToolCallCard 失败可见性与例外边界', () => {
     expect(copyBtn.textContent).toBe('复制');
 
     click(copyBtn);
-    // 剪贴板不可用时静默忽略，按钮仍在
-    expect(container!.querySelector('[data-testid="tool-result-copy"]')).not.toBeNull();
+
+    // 点击后显示「已复制」（剪贴板不可用时也复位 UI 状态）；且结果子项未被误收起
+    expect(container!.querySelector('[data-testid="tool-result-copy"]')!.textContent).toBe('已复制');
+    expect(resultContent()).not.toBeNull();
   });
 
   test('例外工具 args 为空：显示「（无参数）」且不出现两个子项', () => {
