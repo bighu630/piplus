@@ -6,10 +6,11 @@
 
 ## 需求（已与用户确认）
 
-1. **write / edit 卡片**：头部只有 chevron + 工具名；头部下方常显文件摘要行（文件路径 + `+N` / `-N`），多条卡片自然形成多行文件列表。默认收起，展开后显示 diff 明细。
-2. **read 卡片**：同样结构，摘要行显示文件路径 + 行号范围（如 `100-149`）；展开后显示读取到的文件内容（不带行号，行号只在摘要范围里）。无行号参数时不显示行号部分。
-3. **交互**：点击头部、摘要行、「展开全部 / 收起全部」按钮三处均可切换该卡片；按钮仅 write/edit/read 卡片拥有。其它工具保持原交互（头部点击展开 args，无摘要行、无按钮）；不做全局总控。
+1. **文件工具聚合卡片**：同一条 assistant 消息内的多个 write/edit/read 调用合并为一张卡片，头部为 `chevron + 工具名(× N)`；下方以**多行文件列表**展示每个文件（路径 + `+N` / `-N`，read 为路径 + 行号范围）。
+2. **两个交互**：① 每行可**独立展开**显示该文件的 diff 明细（read 显示读取内容，不带行号，行号只在行内范围里）；② 卡片级**只有一个**「展开全部 / 收起全部」总控（按钮 + 头部点击，两者同语义）。
+3. 其它工具（bash/grep/spawn 等）保持原交互：一条调用一张卡片，头部点击展开 args，无摘要行、无按钮；不做全局总控。
 4. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
+5. 文件路径保持单行截断，鼠标悬停（`title`）看完整。
 
 ## 数据来源（已核实代码事实）
 
@@ -35,12 +36,36 @@
   - 仅 `limit`：`1-50`
   - 都没有：`null`
 - `splitLineCount(text)`：行数统计（空文本 0；末尾换行不额外计一行）
+- `isFileToolCall(msg)` / `assistantEntryId(msgId)`：识别文件类调用；从 `${entryId}-tool-${i}` 还原所属 assistant 消息
+- `buildFileToolGroups(messages) => { groups: Map<首条id, {id, calls}>, memberIds }`：把同一条 assistant 消息内的 write/edit/read 调用聚合为组（组渲染在首条位置，其余成员跳过渲染）
+- `parseToolArgsJson(raw)`：args JSON 解析（格式化文本 + 对象形式，失败时降级原始文本）
+- `splitReadContent(content) => { body, notice }`：剥离 pi 尾部续读/截断提示行（不参与行数统计与截断）
 
 从 TabChat 迁移 `parseWriteEditArgs` 的解析职责到本模块（`parseWriteEditDiff`：返回 `{ path, oldText?, newText }`），供 `DiffViewer` 与 `summarizeWriteEdit` 共用。
 
 ### 2. `apps/web/src/components/ToolCallCard.tsx`
 
-从 TabChat 抽出 tool_call 卡片渲染，props：
+从 TabChat 抽出两类卡片：
+
+**`FileToolGroupCard.tsx`（文件工具聚合卡片，本轮新增）**
+
+```ts
+interface FileToolGroupCardProps {
+  calls: ChatMessageDTO[];       // 同一 assistant 消息内的 write/edit/read 调用
+  messages: ChatMessageDTO[];    // 为每行查 result（edit 精确 diff / read 内容）
+  expandedIds: Set<string>;      // 已独立展开的调用 id
+  onToggleOne: (id: string) => void;
+  onToggleAll: (ids: string[], expand: boolean) => void;
+  runningIds: Set<string>;
+}
+```
+
+- 头部：chevron（全展开态）+ 工具名列表（混合时如 `write + edit × 3`）+ 唯一的总控按钮「展开全部 / 收起全部」；头部点击与按钮同语义
+- 文件行（每行一个调用，整行可点击=独立展开）：chevron + `FileCode` + 路径（`truncate` + `title`）+ `+N`/`-N` 或行号 chip
+- 行明细：write/edit → `DiffViewer`；read → `ReadResultView`；无解析结果时回退 args JSON
+- 任一调用运行中时头部卡片右侧显示 spinner
+
+**`ToolCallCard.tsx`（非文件类单卡片）**
 
 ```ts
 interface ToolCallCardProps {
@@ -49,18 +74,13 @@ interface ToolCallCardProps {
   onToggle: (id: string) => void;
   running?: boolean;
   roleSuffix?: string | null;    // spawn_session 等角色后缀
-  resultDetails?: unknown;       // 对应 tool result 的 details（edit 精确 diff）
-  resultContent?: string | null; // 对应 tool result 文本（read 展开内容）
 }
 ```
 
-- 头部（整行可点击）：chevron + 工具名（含 spawn_session 角色后缀）
-- 摘要行（仅 write/edit/read，头部下方常显，整行可点击）：
-  - write/edit：`FileCode` 图标 + 路径（`truncate`，`title` 全路径）+ `+N`（emerald）/ `-N`（rose）
-  - read：`FileCode` 图标 + 路径 + 行号范围（amber chip）
-  - 行尾「展开全部 / 收起全部」按钮
-- 展开区：write/edit 渲染 `DiffViewer` 明细；read 渲染读取内容（等宽字体 `whitespace-pre`、`max-h-96` 滚动、超过 500 行时在滚动容器外提示、pi 尾部续读提示单独一行展示且不计入行数、失败文本用 rose 样式）；其它工具保持 TabChat 现状（spawn_session 表格 / JSON args）
-- 运行中 spinner 与时间戳沿用现有样式
+- 头部：chevron + 工具名，点击展开/收起
+- 展开区：spawn_session / send_message_to_session → args 表格；其它 → JSON args
+
+**`ReadResultView.tsx`**：read 展开内容（等宽字体 `whitespace-pre`、`max-h-96` 滚动、超 500 行在滚动容器外提示、pi 尾部续读提示单独一行、失败文本 rose 样式、空内容占位）。
 
 ### 3. 改造 `apps/web/src/components/DiffViewer.tsx`
 
@@ -68,7 +88,9 @@ interface ToolCallCardProps {
 
 ### 4. 改造 `apps/web/src/components/TabChat.tsx`
 
-tool_call 分支替换为 `<ToolCallCard …>`；`expandedToolIds` 状态与 `isToolCallPending` 匹配逻辑保留；`DiffViewerInline`、`parseWriteEditArgs` 移除（迁移至新模块）。
+- 渲染前调用 `buildFileToolGroups(displayMessages)`：命中 `memberIds` 的消息交由 `FileToolGroupCard` 渲染（仅组内首条位置），其余走原有分支（非文件类 tool_call → `ToolCallCard`）
+- `expandedToolIds` 语义：已展开的调用 id（文件行独立展开与单卡片展开共用）；新增 `toggleAllToolFiles(ids, expand)` 供聚合卡片总控
+- 预先计算 `runningToolIds`（聚合卡片与单卡片共用同一判定），避免逐卡片重算
 
 ## 边界与降级
 
@@ -76,25 +98,27 @@ tool_call 分支替换为 `<ToolCallCard …>`；`expandedToolIds` 状态与 `is
 - 缺少 path：摘要行显示 `(未提供路径)`，增减行数照常展示
 - edit 的 details 缺失（旧会话、未落盘）：回退 args 行级 diff 计算
 - write 的 `-N` 不显示（数据不存在）
-- read 结果未落盘（流式中/被中断）：展开区回退展示 args JSON
+- read 结果未落盘（流式中/被中断）：该行展开区回退展示 args JSON
 - read 内容超长：截断到 500 行并提示「仅显示前 500 行（共 N 行）」，容器 `max-h-96` 可滚动
 - read 行号是请求范围而非实际内容范围（offset 超出文件尾时会偏大），与已确认决策一致
 - 超长路径：单行 `truncate`，hover 显示完整路径
+- 消息 id 不含 `-tool-N` 后缀（非 pi 历史来源）时每条自成一组，行为与单文件卡片一致
+- 分页边界：同一条 assistant 消息的调用被页边界切开时，仅对当前已加载页内的调用聚合
 
 ## 测试
 
-- `apps/web/src/lib/tool-summary.test.ts`：write 行数（普通/空/末尾换行）、edit 的 details.diff 解析与 args 回退、行号范围 4 种情形、result 匹配
+- `apps/web/src/lib/tool-summary.test.ts`：write 行数（普通/空/末尾换行）、edit 的 details.diff 解析与 args 回退、行号范围 4 种情形、result 匹配（含 toolCallId 精确配对与序数回退）、`isFileToolCall` / `buildFileToolGroups` / `parseToolArgsJson` / `splitReadContent`
 - `apps/web/src/lib/diff.test.ts`：行级 diff 的末尾换行口径与 truncateDiff 截断边界
-- `apps/web/src/components/ToolCallCard.test.tsx`（happy-dom + React 19，参照 `AskQuestionCard.test.tsx`）：
-  1. write 卡片默认收起：头部只有工具名，下方摘要行显示路径与 `+N`，不渲染 diff 明细
-  2. 点击头部 / 摘要行 / 「展开全部」按钮三处均可切换，按钮文案随状态变化
-  3. read 卡片摘要行显示路径与 `100-149`；无 offset/limit 不显示行号
-  4. read 展开显示读取内容（不带行号）；无结果时回退 args；超长内容截断提示
-  5. 其它工具（bash/spawn）：无摘要行、无按钮，头部点击展开；JSON 非法降级；running spinner
+- `apps/web/src/components/FileToolGroupCard.test.tsx`（happy-dom + React 19，参照 `AskQuestionCard.test.tsx`）：
+  1. 多行文件列表 + 卡片级**只有一个**总控按钮（计数断言）
+  2. 默认收起不渲染明细；点击单行只展开该行；总控按钮/头部展开全部再收起
+  3. 单文件组、混合工具组标签（`write + edit + read × 3`）、路径 `title`、running spinner
+  4. read 行：行号范围 chip、独立展开内容、无结果回退 args；edit 行：details.diff 精确 ±、diff 明细渲染
+- `apps/web/src/components/ToolCallCard.test.tsx`：非文件类（bash/spawn_session）：无摘要无按钮、头部点击切换、args 表格、JSON 非法降级、spinner
 - `apps/web/src/components/DiffViewer.test.tsx`：write/edit 明细渲染、>150 行截断提示、无折叠控件
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（124 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（137 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
 
 注：基线存在偶发 flaky（happy-dom 全局在并发测试文件间互踩，表现为 `createThrottledFlusher` 失败或 ws-provider 的 `window.event` 报错）；`test:web` 已改用 `bun test --isolate`（每个文件独立全局对象），实测 8/8 稳定通过且耗时无退化。
