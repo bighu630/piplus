@@ -234,3 +234,56 @@ describe('ToolCallCard 例外工具保持现状', () => {
     expect(container!.querySelector('.animate-spin')).not.toBeNull();
   });
 });
+
+describe('ToolCallCard 失败可见性与例外边界', () => {
+  test('折叠态即可看到「失败」徽标', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
+
+    // 未展开也应可见
+    expect(expandedArea()).toBeNull();
+    expect(container!.querySelector('[data-testid="tool-call-error-badge"]')!.textContent).toBe('失败');
+  });
+
+  test('成功结果不显示头部失败徽标', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'true' })} resultContent={'ok'} />);
+    expect(container!.querySelector('[data-testid="tool-call-error-badge"]')).toBeNull();
+  });
+
+  test('结果子项提供复制按钮且点击不崩溃', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+
+    const copyBtn = container!.querySelector('[data-testid="tool-result-copy"]')!;
+    expect(copyBtn.textContent).toBe('复制');
+
+    click(copyBtn);
+    // 剪贴板不可用时静默忽略，按钮仍在
+    expect(container!.querySelector('[data-testid="tool-result-copy"]')).not.toBeNull();
+  });
+
+  test('例外工具 args 为空：显示「（无参数）」且不出现两个子项', () => {
+    render(<Harness msg={toolCallMsg('ask_question', '')} resultContent={'{"answer":"x"}'} />);
+    click(header());
+
+    expect(expandedArea()!.textContent).toContain('（无参数）');
+    expect(argsToggle()).toBeNull();
+    expect(resultToggle()).toBeNull();
+  });
+
+  test('例外工具 args 非法：回退原始文本且不出现两个子项', () => {
+    render(<Harness msg={toolCallMsg('spawn_session', '{broken')} />);
+    click(header());
+
+    expect(expandedArea()!.textContent).toContain('{broken');
+    expect(argsToggle()).toBeNull();
+    expect(resultToggle()).toBeNull();
+  });
+
+  test('ask_question 携带 resultContent 也不显示结果子项（结果走专用卡片）', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
+    click(header());
+
+    expect(expandedArea()!.textContent).toContain('"question"');
+    expect(resultToggle()).toBeNull();
+  });
+});

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, LoaderCircle, Wrench } from 'lucide-react';
 import ToolResultView from './ToolResultView';
@@ -7,9 +7,9 @@ import { isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
 /**
  * 单个工具调用卡片（非文件类）。
  *
- * - 头部：chevron + 工具名，点击展开/收起
- * - 展开后：两个可折叠子项 —— 「执行参数」（默认收起）与「结果」（默认展开，成功/失败标识）
- * - 例外（保持既有展示）：spawn_session / send_message_to_session 仍为 args 表格（结果走独立紫色摘要卡片）；
+ * - 头部：chevron + 工具名（失败时附「失败」标识，折叠态可见），点击展开/收起
+ * - 展开后：两个可折叠子项 —— 「执行参数」（默认收起）与「结果」（默认展开，成功/失败标识，可复制）
+ * - 例外（保持既有展示）：spawn_session / send_message_to_session 仍为 args 表格（结果走独立摘要卡片）；
  *   ask_question 仍为 JSON args（结果走 AskQuestionCard）
  */
 export interface ToolCallCardProps {
@@ -41,8 +41,15 @@ function ToolCallCard({
   // 子项折叠态（组件内展示态）：执行参数默认收起、结果默认展开
   const [argsOpen, setArgsOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(true);
-  // 每次重新展开卡片时恢复默认（参数收起 / 结果展开）
-  useEffect(() => {
+  const [copiedResult, setCopiedResult] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 卸载时清理「已复制」复位定时器：避免组件卸载后 setState（也会污染测试的全局环境）
+  useEffect(() => () => {
+    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+  }, []);
+  // 每次重新展开卡片时恢复默认（参数收起 / 结果展开）：
+  // 用 useLayoutEffect 在绘制前完成，避免快速收起再展开时闪现上一次的子项状态
+  useLayoutEffect(() => {
     if (expanded) {
       setArgsOpen(false);
       setResultOpen(true);
@@ -52,12 +59,28 @@ function ToolCallCard({
   const showArgsTable =
     (toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs !== null;
   // spawn/send_message 与 ask_question 保持既有展示（args 表格 / JSON args），不显示「结果」子项
-  // （其结果由独立卡片承载）；注意不依赖 parsedArgs，args 非法时同样保持表格/JSON 布局
+  // （其结果由独立卡片承载）；不依赖 argsStr，args 为空/非法时同样保持该布局
   const keepLegacyArgsOnly =
     toolName === 'spawn_session' || toolName === 'send_message_to_session' || toolName === 'ask_question';
 
   const hasResult = resultContent !== null;
   const resultIsError = hasResult && isToolErrorMessage(resultContent);
+
+  const handleCopyResult = () => {
+    if (resultContent == null) return;
+    try {
+      // 剪贴板不可用（权限/非安全上下文/测试环境）时静默忽略
+      void navigator.clipboard?.writeText(resultContent).catch(() => {});
+    } catch {
+      // navigator.clipboard 不存在时同步抛错
+    }
+    setCopiedResult(true);
+    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => {
+      setCopiedResult(false);
+      copyTimerRef.current = null;
+    }, 1500);
+  };
 
   return (
     <div className="flex justify-start items-start w-full min-w-0">
@@ -79,36 +102,48 @@ function ToolCallCard({
                 {toolName}
                 {roleSuffix ? ` (${roleSuffix})` : ''}
               </span>
+              {resultIsError && (
+                <span
+                  data-testid="tool-call-error-badge"
+                  className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0"
+                >
+                  失败
+                </span>
+              )}
             </div>
 
             {expanded && (
               <div data-testid="tool-call-expanded" className="border-t border-amber-200 dark:border-amber-800">
-                {keepLegacyArgsOnly && argsStr ? (
-                  showArgsTable && parsedArgs ? (
-                    <div className="px-3 py-2">
-                      <table className="w-full text-[11px] font-mono leading-relaxed">
-                        <tbody>
-                          {Object.entries(parsedArgs).map(([key, value]) => (
-                            <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
-                              <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
-                                {key}
-                              </td>
-                              <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
-                                {typeof value === 'object' && value !== null
-                                  ? JSON.stringify(value)
-                                  : String(value)}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                {keepLegacyArgsOnly ? (
+                  argsStr ? (
+                    showArgsTable && parsedArgs ? (
+                      <div className="px-3 py-2">
+                        <table className="w-full text-[11px] font-mono leading-relaxed">
+                          <tbody>
+                            {Object.entries(parsedArgs).map(([key, value]) => (
+                              <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
+                                <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
+                                  {key}
+                                </td>
+                                <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
+                                  {typeof value === 'object' && value !== null
+                                    ? JSON.stringify(value)
+                                    : String(value)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="px-3 py-2">
+                        <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                          {argsStr}
+                        </pre>
+                      </div>
+                    )
                   ) : (
-                    <div className="px-3 py-2">
-                      <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-                        {argsStr}
-                      </pre>
-                    </div>
+                    <div className="px-3 py-2 text-[10px] text-slate-400 dark:text-slate-500 italic">（无参数）</div>
                   )
                 ) : (
                   <>
@@ -144,8 +179,8 @@ function ToolCallCard({
 
                     {/* 子项 2：结果（默认展开） */}
                     <div className="border-t border-amber-100 dark:border-amber-800/50">
-                      <button
-                        type="button"
+                      {/* 标题行用 div 承载点击（内部含复制按钮，避免 button 嵌套） */}
+                      <div
                         data-testid="tool-result-toggle"
                         onClick={() => setResultOpen((v) => !v)}
                         className="w-full px-3 py-1.5 flex items-center gap-2 text-left cursor-pointer select-none hover:bg-amber-100/60 dark:hover:bg-amber-900/30"
@@ -180,7 +215,21 @@ function ToolCallCard({
                             运行中
                           </span>
                         )}
-                      </button>
+                        {hasResult && (
+                          <button
+                            type="button"
+                            data-testid="tool-result-copy"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCopyResult();
+                            }}
+                            className="ml-auto text-[10px] font-mono text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer shrink-0"
+                            title="复制结果"
+                          >
+                            {copiedResult ? '已复制' : '复制'}
+                          </button>
+                        )}
+                      </div>
                       {resultOpen && (
                         <div data-testid="tool-result-content">
                           {hasResult ? (

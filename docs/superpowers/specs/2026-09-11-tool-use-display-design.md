@@ -11,7 +11,7 @@
 3. **状态着色（工具调用视为一个整体）**：整组全部成功 → 绿色卡片；有任一失败 → 红色卡片（失败行额外标红并显示「失败」）；仍在运行（结果未回）→ 保持琥珀色。
 4. **失败原因默认展开**在对应行内（点击该行仍可收起）；write/edit/read 的结果（成功与失败）均不再渲染独立结果卡片。
 5. **普通工具（bash/grep/find/ls 等）**：一条调用一张卡片，头部点击展开后为两个可折叠子项——「执行参数」（默认收起）与「结果」（默认展开，成功/失败标识）；结果不再渲染独立卡片。
-6. **独立结果卡片仅保留两类**：`ask_question` 的结构化答案卡片、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（这两类工具卡片本身也保持既有展示）。
+6. **独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片、`spawn_session` / `send_message_to_session` 的紫色摘要卡片，以及**调用不在当前视图内的孤立结果**降级卡片（分页边界，避免信息丢失）。前两类工具卡片本身也保持既有展示。
 7. 工具结果统一截断标准：**200 行**（read 内容与普通工具结果同一口径），容器内滚动，截断提示在滚动容器外。
 8. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
 9. 文件路径保持单行截断，鼠标悬停（`title`）看完整。
@@ -94,7 +94,11 @@ interface ToolCallCardProps {
 
 **`ToolResultView.tsx`**：通用工具结果文本（统一截断 200 行 + 滚动、截断提示在滚动容器外、失败 rose / 成功中性色、空输出占位）。
 
-**独立结果卡片仅保留两类**：`ask_question` 的结构化答案卡片（AskQuestionCard）、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（Markdown 渲染）。
+**独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片（AskQuestionCard）、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（Markdown 渲染）、以及孤立结果（调用不在当前视图内）的降级结果卡片。
+
+**结果承载判定**：`collectCoveredToolResultIds(displayMessages)` 收集「已由工具卡片承载」的结果 id（文件类 → 聚合卡片；普通工具 → 「结果」子项），排除 `STANDALONE_RESULT_TOOLS`（ask_question / spawn_session / send_message_to_session）；命中集合的结果不再渲染独立卡片，未命中（孤立结果 / 例外工具）继续走独立卡片。
+
+**「结果」子项细节**：头部在失败时附「失败」徽标（折叠态可见）；子项标题提供复制按钮（`navigator.clipboard`，剪贴板不可用时静默忽略，卸载时清理复位定时器）。
 
 **`ReadResultView.tsx`**：read 展开内容（等宽字体 `whitespace-pre`、`max-h-96` 滚动、超 200 行在滚动容器外提示、pi 尾部续读提示单独一行、失败文本 rose 样式、空内容占位）。
 
@@ -119,7 +123,7 @@ interface ToolCallCardProps {
 - read 行号是请求范围而非实际内容范围（offset 超出文件尾时会偏大），与已确认决策一致
 - 超长路径：单行 `truncate`，hover 显示完整路径
 - 消息 id 不含 `-tool-N` 后缀（非 pi 历史来源）时每条自成一组，行为与单文件卡片一致
-- 分页边界：同一条 assistant 消息的调用被页边界切开时，仅对当前已加载页内的调用聚合；若结果所在页没有对应调用（孤立结果），则**降级渲染原结果卡片**（`isFileToolResultCovered`），避免失败反馈彻底不可见
+- 分页边界：同一条 assistant 消息的调用被页边界切开时，仅对当前已加载页内的调用聚合；若结果所在页没有对应调用（孤立结果，文件类或普通工具均适用），则不进入 `collectCoveredToolResultIds`，**降级渲染原结果卡片**，避免失败反馈彻底不可见
 - 失败判定：result 文本以 `Error` 开头（大小写不敏感，统一用 `isToolErrorMessage`）；结果未回（运行中/被中断/未落盘）归为 **pending**（琥珀色），不宣称为成功
 - 部分失败：同组内可能部分成功部分失败（并行调用），整卡按“有任一失败即红色”（失败优先于 pending）着色，失败行单独标红
 - 失败行默认展开；点「收起全部」会把失败行一并收起，再点「展开全部」恢复
@@ -135,14 +139,14 @@ interface ToolCallCardProps {
   3. 单文件组、混合工具组标签（`write + edit + read × 3`）、路径 `title`、running spinner
   4. 状态着色与失败展开：全部成功绿色卡片；结果未回琥珀色（pending，不宣称成功）；失败红色卡片（优先级高于运行中）+ 失败行默认展开错误原因 + 点击可收起；部分失败时仅失败行标红；全部收起/展开与失败行联动；失败的 edit/read 不渲染 diff 或 read 内容（只显示错误原因）
   5. read 行：行号范围 chip、独立展开内容、无结果回退 args；edit 行：details.diff 精确 ±、diff 明细渲染
-- `apps/web/src/components/ToolCallCard.test.tsx`：普通工具两个子项（执行参数默认收起 / 结果默认展开、成功/失败/运行中标识、子项可收起、重新展开恢复默认）、args 非法与无参数降级；例外保持（spawn 表格 + 角色后缀、ask_question JSON args）、spinner
+- `apps/web/src/components/ToolCallCard.test.tsx`：普通工具两个子项（执行参数默认收起 / 结果默认展开、成功/失败/运行中标识、子项可收起、重新展开恢复默认）、args 非法与无参数降级、折叠态失败徽标、复制按钮；例外保持（spawn 表格 + 角色后缀、ask_question JSON args、args 为空/非法时不出现子项）、spinner
 - `apps/web/src/components/ToolResultView.test.tsx`：内容渲染、空输出占位、失败样式、200 行截断（提示位置）、恰好 200 行不截断
 - `apps/web/src/components/ReadResultView.test.tsx`：正文渲染、空内容、失败样式、pi 续读提示口径、200 行截断
 - `apps/web/src/components/DiffViewer.test.tsx`：write/edit 明细渲染、>150 行截断提示、无折叠控件
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（208 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（214 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
 
 注：`ReadResultView` 仍保留 `isError` 样式分支（防御层）；当前生产路径下失败 read 由 `FileRow` 的错误分支直接渲染错误原因，不会传入 `ReadResultView`。
 
