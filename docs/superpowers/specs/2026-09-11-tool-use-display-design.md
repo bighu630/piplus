@@ -84,7 +84,7 @@ interface ToolCallCardProps {
 }
 ```
 
-- 卡片容器：按状态着色（error → rose / pending → amber / ok → emerald；`ask_question` 恒为 amber），展开区边框、图标、标题与子项 hover 随色系
+- 卡片容器：按状态着色（error → rose / pending → amber / ok → emerald），带 `data-testid="tool-call-card"` + `data-status`；展开区边框、图标、标题、args 内容、子项 hover 与卡片悬停反馈随色系（正文/表格键名用 700/800 档保证对比度，图标/徽标用 600 档）；`ask_question` 成功态恒为 amber，**失败态仍按红色**
 - 头部：chevron + 工具名，点击展开/收起（运行中时卡片右侧 spinner）；失败时附折叠态可见的「失败」徽标
 - 展开区（普通工具）：两个可折叠子项
   - 「执行参数」：默认收起，展开显示 args（JSON；非法 JSON 显示原文；无参数显示「（无参数）」）
@@ -127,6 +127,8 @@ interface ToolCallCardProps {
 - 分页边界：同一条 assistant 消息的调用被页边界切开时，仅对当前已加载页内的调用聚合；若结果所在页没有对应调用（孤立结果，文件类或普通工具均适用），则不进入 `collectCoveredToolResultIds`，**降级渲染原结果卡片**，避免失败反馈彻底不可见
 - 失败判定：result 文本以 `Error` 开头（大小写不敏感，统一用 `isToolErrorMessage`）；结果未回（运行中/被中断/未落盘）归为 **pending**（琥珀色），不宣称为成功
 - 部分失败：同组内可能部分成功部分失败（并行调用），整卡按“有任一失败即红色”（失败优先于 pending）着色，失败行单独标红
+- 独立结果卡片与工具卡片的失败配色统一为 rose（TabChat 原 red 已对齐）；`ToolResultView` 截断提示边框用中性 slate，避免绿/红卡内出现琥珀线
+- 已知技术债（未在本轮处理）：状态调色板在 `ToolCallCard` / `FileToolGroupCard` / `TabChat` 各有一份（已统一色值，后续可抽 `lib/toolStatusScheme`）；`hasResult` 口径在文件卡片（结果消息存在）与工具卡片（`content_text` 非 null）略有差异
 - 失败行默认展开；点「收起全部」会把失败行一并收起，再点「展开全部」恢复
 - 已知启发式限制：pi 的 `isError` 在 pi-client 侧被转为 `Error: ` 前缀，前端据此判定；若成功 read 的文件正文以 `Error` 开头会被误判为失败（罕见），彻底修复需在 pi-client/shared 透传 `is_error`
 

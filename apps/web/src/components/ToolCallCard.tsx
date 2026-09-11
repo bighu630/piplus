@@ -16,7 +16,9 @@ import { isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
 const SCHEMES = {
   error: {
     card: 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800',
+    cardHover: 'hover:bg-rose-100/40 dark:hover:bg-rose-900/20',
     accent: 'text-rose-600 dark:text-rose-400',
+    key: 'text-rose-700 dark:text-rose-300',
     title: 'text-rose-800 dark:text-rose-300',
     content: 'text-rose-900 dark:text-rose-200',
     borderT: 'border-rose-200 dark:border-rose-800',
@@ -25,7 +27,9 @@ const SCHEMES = {
   },
   pending: {
     card: 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800',
+    cardHover: 'hover:bg-amber-100/40 dark:hover:bg-amber-900/20',
     accent: 'text-amber-600 dark:text-amber-400',
+    key: 'text-amber-700 dark:text-amber-300',
     title: 'text-amber-800 dark:text-amber-300',
     content: 'text-amber-900 dark:text-amber-200',
     borderT: 'border-amber-200 dark:border-amber-800',
@@ -34,7 +38,9 @@ const SCHEMES = {
   },
   ok: {
     card: 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800',
+    cardHover: 'hover:bg-emerald-100/40 dark:hover:bg-emerald-900/20',
     accent: 'text-emerald-600 dark:text-emerald-400',
+    key: 'text-emerald-700 dark:text-emerald-300',
     title: 'text-emerald-800 dark:text-emerald-300',
     content: 'text-emerald-900 dark:text-emerald-200',
     borderT: 'border-emerald-200 dark:border-emerald-800',
@@ -97,9 +103,11 @@ function ToolCallCard({
   const hasResult = resultContent !== null;
   const resultIsError = hasResult && isToolErrorMessage(resultContent);
   // 卡片状态着色（与文件聚合卡片同口径）：失败红 / 结果未回琥珀 / 成功绿；
-  // ask_question 是交互型工具（结果即用户答案），保持中性琥珀
+  // ask_question 是交互型工具（结果即用户答案），成功态保持中性琥珀，但失败仍按红色处理
   const cardStatus: 'error' | 'pending' | 'ok' = resultIsError ? 'error' : !hasResult ? 'pending' : 'ok';
-  const scheme = toolName === 'ask_question' ? SCHEMES.pending : SCHEMES[cardStatus];
+  const status: 'error' | 'pending' | 'ok' =
+    toolName === 'ask_question' && !resultIsError ? 'pending' : cardStatus;
+  const scheme = SCHEMES[status];
 
   const handleCopyResult = () => {
     if (resultContent == null) return;
@@ -121,7 +129,11 @@ function ToolCallCard({
     <div className="flex justify-start items-start w-full min-w-0">
       <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
         <div className="flex items-start min-w-0">
-          <div className={`border rounded-xl overflow-hidden transition-colors ${scheme.card}`}>
+          <div
+            data-testid="tool-call-card"
+            data-status={status}
+            className={`border rounded-xl overflow-hidden transition-colors ${scheme.card} ${scheme.cardHover}`}
+          >
             <div
               data-testid="tool-call-header"
               className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
@@ -157,7 +169,7 @@ function ToolCallCard({
                           <tbody>
                             {Object.entries(parsedArgs).map(([key, value]) => (
                               <tr key={key} className={`border-b last:border-b-0 ${scheme.borderSoft}`}>
-                                <td className={`font-semibold pr-3 py-1 align-top whitespace-nowrap ${scheme.accent}`}>
+                                <td className={`font-semibold pr-3 py-1 align-top whitespace-nowrap ${scheme.key}`}>
                                   {key}
                                 </td>
                                 <td className={`py-1 break-words ${scheme.content}`}>
@@ -253,7 +265,7 @@ function ToolCallCard({
                         ) : (
                           <span
                             data-testid="tool-result-status"
-                            className="text-[10px] font-mono text-slate-400 dark:text-slate-500"
+                            className={`text-[10px] font-mono ${scheme.title}`}
                           >
                             运行中
                           </span>

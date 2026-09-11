@@ -22,7 +22,7 @@ function ToolResultView({ content }: { content: string }) {
   return (
     <div>
       {parsed.truncated && (
-        <div className="px-3 py-1 text-[10px] italic text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-slate-800/30 border-b border-amber-100 dark:border-amber-800/30">
+        <div className="px-3 py-1 text-[10px] italic text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-slate-800/30 border-b border-slate-200 dark:border-slate-700/50">
           仅显示前 {TOOL_RESULT_MAX_LINES} 行（共 {parsed.totalLines} 行）
         </div>
       )}

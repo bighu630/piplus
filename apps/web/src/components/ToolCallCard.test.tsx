@@ -335,3 +335,59 @@ describe('ToolCallCard 状态着色', () => {
     expect(header()!.querySelector('svg')!.getAttribute('class')).toContain('text-rose-600');
   });
 });
+
+describe('ToolCallCard 状态着色边界', () => {
+  test('ask_question 错误态：红色卡片 + 失败徽标（不因交互型而保持琥珀）', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'Error: 参数非法'} />);
+
+    expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="tool-call-error-badge"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="tool-call-card"]')!.getAttribute('data-status')).toBe('error');
+  });
+
+  test('ask_question 成功态：保持琥珀，data-status=pending', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
+
+    expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="tool-call-card"]')!.getAttribute('data-status')).toBe('pending');
+  });
+
+  test('spawn_session 失败：红色卡片', () => {
+    render(
+      <Harness msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })} resultContent={'Error: spawn failed'} />,
+    );
+    expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
+  });
+
+  test('卡片带 data-status 与 dark token', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    const card = container!.querySelector('[data-testid="tool-call-card"]')!;
+    expect(card.getAttribute('data-status')).toBe('ok');
+    expect(card.className).toContain('dark:bg-emerald-950/30');
+  });
+
+  test('展开后的参数内容与卡片同色系', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+    click(argsToggle());
+    expect(argsContent()!.querySelector('pre')!.className).toContain('text-emerald-900');
+  });
+
+  test('失败卡展开后参数内容为 rose 深色', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: x'} />);
+    click(header());
+    click(argsToggle());
+    expect(argsContent()!.querySelector('pre')!.className).toContain('text-rose-900');
+  });
+
+  test('spawn 表格键名用 key 档（700，保证对比度）', () => {
+    render(
+      <Harness
+        msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })}
+        resultContent={'{"summary":"done"}'}
+      />,
+    );
+    click(header());
+    expect(expandedArea()!.querySelector('td')!.className).toContain('text-emerald-700');
+  });
+});

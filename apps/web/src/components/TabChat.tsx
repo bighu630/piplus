@@ -867,13 +867,13 @@ function TabChat({
 
             const colorScheme = isError
               ? {
-                  bg: 'bg-red-50 dark:bg-red-950/30',
-                  border: 'border-red-200 dark:border-red-800',
-                  borderT: 'border-red-200 dark:border-red-800',
-                  icon: 'text-red-600 dark:text-red-400',
-                  label: 'text-red-800 dark:text-red-300',
-                  text: 'text-red-900 dark:text-red-200',
-                  suffix: 'text-red-600/60 dark:text-red-400/60',
+                  bg: 'bg-rose-50 dark:bg-rose-950/30',
+                  border: 'border-rose-200 dark:border-rose-800',
+                  borderT: 'border-rose-200 dark:border-rose-800',
+                  icon: 'text-rose-600 dark:text-rose-400',
+                  label: 'text-rose-800 dark:text-rose-300',
+                  text: 'text-rose-900 dark:text-rose-200',
+                  suffix: 'text-rose-600/60 dark:text-rose-400/60',
                 }
               : spawnSummary
                 ? {
