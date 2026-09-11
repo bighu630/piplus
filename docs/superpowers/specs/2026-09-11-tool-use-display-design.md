@@ -64,7 +64,7 @@ interface ToolCallCardProps {
 
 ### 3. 改造 `apps/web/src/components/DiffViewer.tsx`
 
-移除内部摘要栏与折叠按钮（摘要上移到卡片头部），保留 diff 行渲染与截断提示；`viewType` 与 `+N/-N` 统计逻辑保留（截断提示仍需要 raw 行数）。
+移除内部摘要栏与折叠按钮（摘要下移到卡片头部下方的摘要行），保留 diff 行渲染与截断提示；`viewType` 与 `+N/-N` 统计逻辑保留（截断提示仍需要 raw 行数）。
 
 ### 4. 改造 `apps/web/src/components/TabChat.tsx`
 

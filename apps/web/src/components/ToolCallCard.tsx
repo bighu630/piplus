@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, FileCode, LoaderCircle, Wrench } from 'lucide-react';
 import DiffViewer from './DiffViewer';
-import { formatReadLineRange, parseWriteEditDiff, summarizeWriteEdit } from '../lib/tool-summary';
+import { formatReadLineRange, parseWriteEditDiff, splitLineCount, summarizeWriteEdit } from '../lib/tool-summary';
 
 /** read 内容展示上限：pi 单次最多读 2000 行，避免超长文件展开时渲染过多 DOM */
 const READ_MAX_LINES = 500;
@@ -85,9 +85,10 @@ function ToolCallCard({
   const readContent = useMemo(() => {
     if (toolName !== 'read' || resultContent == null) return null;
     const { body, notice } = splitReadContent(resultContent);
-    const lines = body === '' ? [] : body.split('\n');
-    const totalLines = lines.length;
+    // 用 splitLineCount 计数（与摘要 +N 口径一致）：末尾换行不多算一行
+    const totalLines = splitLineCount(body);
     const truncated = totalLines > READ_MAX_LINES;
+    const lines = body === '' ? [] : body.split('\n');
     return {
       text: truncated ? lines.slice(0, READ_MAX_LINES).join('\n') : body,
       truncated,

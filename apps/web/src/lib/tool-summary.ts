@@ -192,20 +192,27 @@ export function findToolResultMessage(
   const isSameToolResult = (m: ChatMessageDTO) =>
     (m.message_kind === 'tool' || m.role === 'tool') && m.tool_name === toolName;
 
+  // 优先按 toolCallId 精确匹配（pi 历史的 call/result 都带 id）；未命中（结果侧缺 id 等）继续序数回退
   if (toolCallId) {
-    return messages.find((m) => isSameToolResult(m) && m.tool_call_id === toolCallId) ?? null;
+    const matched = messages.find((m) => isSameToolResult(m) && m.tool_call_id === toolCallId);
+    if (matched) return matched;
   }
 
   const msgIndex = messages.findIndex((m) => m.id === msgId);
   if (msgIndex === -1) return null;
 
+  // 该调用是同名调用中的第几个（全局名次）
   let callOrdinal = 0;
   for (let i = 0; i <= msgIndex; i++) {
     const m = messages[i];
     if (m.message_kind === 'tool_call' && m.tool_name === toolName) callOrdinal++;
   }
 
+  // 从数组头累计已出现的同名结果，使「第 k 个调用 ↔ 第 k 个结果」在交错顺序（c1,r1,c2,r2）下也成立
   let seenResults = 0;
+  for (let i = 0; i < msgIndex; i++) {
+    if (isSameToolResult(messages[i])) seenResults++;
+  }
   for (let i = msgIndex + 1; i < messages.length; i++) {
     const m = messages[i];
     if (!isSameToolResult(m)) continue;

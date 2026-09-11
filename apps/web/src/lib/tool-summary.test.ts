@@ -188,6 +188,30 @@ describe('findToolResultMessage', () => {
     expect(findToolResultMessage(messages, 'call-2', 'read')?.content_text).toBe('file B');
   });
 
+  test('序数回退：交错顺序（c1,r1,c2,r2,c3,r3）也正确', () => {
+    const messages = [
+      msg({ id: 'c1', tool_name: 'read' }),
+      msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'A' }),
+      msg({ id: 'c2', tool_name: 'read' }),
+      msg({ id: 'r2', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'B' }),
+      msg({ id: 'c3', tool_name: 'read' }),
+      msg({ id: 'r3', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'C' }),
+    ];
+
+    expect(findToolResultMessage(messages, 'c1', 'read')?.content_text).toBe('A');
+    expect(findToolResultMessage(messages, 'c2', 'read')?.content_text).toBe('B');
+    expect(findToolResultMessage(messages, 'c3', 'read')?.content_text).toBe('C');
+  });
+
+  test('调用侧带 id 但结果侧缺 id 时回退序数配对', () => {
+    const messages = [
+      msg({ id: 'c1', tool_name: 'read', tool_call_id: 'tc-1' }),
+      msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'A' }),
+    ];
+
+    expect(findToolResultMessage(messages, 'c1', 'read', 'tc-1')?.content_text).toBe('A');
+  });
+
   test('序数回退：结果数量不足时返回 null（调用方降级 args）', () => {
     const messages = [
       msg({ id: 'call-1', tool_name: 'read' }),
