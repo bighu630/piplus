@@ -78,17 +78,20 @@ tool_call 分支替换为 `<ToolCallCard …>`；`expandedToolIds` 状态与 `is
 
 ## 测试
 
-- `apps/web/src/lib/tool-summary.test.ts`：write 行数（普通/空/末尾换行）、edit 的 details.diff 解析与 args 回退、行号范围 4 种情形
+- `apps/web/src/lib/tool-summary.test.ts`：write 行数（普通/空/末尾换行）、edit 的 details.diff 解析与 args 回退、行号范围 4 种情形、result 匹配
+- `apps/web/src/lib/diff.test.ts`：行级 diff 的末尾换行口径与 truncateDiff 截断边界
 - `apps/web/src/components/ToolCallCard.test.tsx`（happy-dom + React 19，参照 `AskQuestionCard.test.tsx`）：
   1. write 卡片默认收起：显示路径与 `+N`，不渲染 diff 明细
   2. 点击头部展开：渲染 diff 明细，按钮文案变「收起全部」；再点击收起
-  3. read 卡片显示路径与 `100-150`
+  3. read 卡片显示路径与 `100-149`
   4. read 无 offset/limit：不显示行号
+  5. 迁移分支：spawn args 表格与角色后缀、JSON 非法降级、running spinner、edit/read 默认收起
+- `apps/web/src/components/DiffViewer.test.tsx`：write/edit 明细渲染、>150 行截断提示、无折叠控件
 
 ## 验证
 
-- `bun run test`（api + db）
-- `bun run test:web`
+- `bun run test`（api 208 + db 9）
+- `bun run test:web`（118 用例，含 `--isolate`）
 - `bun run typecheck`
 
-注：基线存在偶发 flaky 用例 `createThrottledFlusher > immediate 打断 pending`（全量并发跑时出现，重跑即过），与本改动无关。
+注：基线存在偶发 flaky（happy-dom 全局在并发测试文件间互踩，表现为 `createThrottledFlusher` 失败或 ws-provider 的 `window.event` 报错）；`test:web` 已改用 `bun test --isolate`（每个文件独立全局对象），实测 8/8 稳定通过且耗时无退化。
