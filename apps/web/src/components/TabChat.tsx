@@ -767,6 +767,9 @@ function TabChat({
               );
             }
 
+            // write/edit 取 details（精确 diff），read 取结果文本（展开时展示读取内容）
+            const toolResult = findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id);
+
             return (
               <ToolCallCard
                 key={msg.id}
@@ -775,7 +778,8 @@ function TabChat({
                 onToggle={toggleToolExpanded}
                 running={isThisToolRunning}
                 roleSuffix={spawnSessionRole}
-                resultDetails={findToolResultMessage(messages, msg.id, toolName)?.details ?? null}
+                resultDetails={toolResult?.details ?? null}
+                resultContent={toolResult?.content_text ?? null}
               />
             );
           }

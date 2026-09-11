@@ -2,11 +2,29 @@ import React, { useMemo } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, FileCode, LoaderCircle, Wrench } from 'lucide-react';
 import DiffViewer from './DiffViewer';
-import { formatReadLineRange, parseWriteEditDiff, summarizeWriteEdit } from '../lib/tool-summary';
+import { formatReadLineRange, parseWriteEditDiff, splitLineCount, summarizeWriteEdit } from '../lib/tool-summary';
+
+/** read 内容展示上限：pi 单次最多读 2000 行，避免超长文件展开时渲染过多 DOM */
+const READ_MAX_LINES = 500;
+
+/** pi 在结果末尾追加的续读/截断提示行（形如 `[Showing lines 1-501 of 900. ...]`），单独展示且不计入行数 */
+const READ_NOTICE_PATTERN = /^\[(?:Showing lines|Line \d+ is |\d+ more lines in file)/;
+
+function splitReadContent(content: string): { body: string; notice: string | null } {
+  const idx = content.lastIndexOf('\n\n[');
+  if (idx === -1) return { body: content, notice: null };
+  const candidate = content.slice(idx + 2);
+  if (READ_NOTICE_PATTERN.test(candidate)) {
+    return { body: content.slice(0, idx), notice: candidate.trim() };
+  }
+  return { body: content, notice: null };
+}
 
 /**
- * tool call 卡片：头部常显工具名与文件摘要（write/edit 路径 + 增删行数，read 路径 + 行号范围），
- * 明细默认收起，点击头部或「展开全部/收起全部」按钮切换。
+ * tool call 卡片。
+ * - 头部：chevron + 工具名，点击展开/收起（保持既有交互）
+ * - write/edit/read：头部下方常显文件摘要行（文件 + 增删行数 / 行号范围），行内与「展开全部/收起全部」按钮均可切换明细
+ * - 其它工具：头部点击展开 args，与改动前一致
  */
 export interface ToolCallCardProps {
   msg: ChatMessageDTO;
@@ -18,6 +36,8 @@ export interface ToolCallCardProps {
   roleSuffix?: string | null;
   /** 对应 tool result 消息的 details（edit 的精确 diff 统计来源） */
   resultDetails?: unknown;
+  /** 对应 tool result 消息的文本（read 展开时展示的读取内容） */
+  resultContent?: string | null;
 }
 
 function ToolCallCard({
@@ -27,6 +47,7 @@ function ToolCallCard({
   running = false,
   roleSuffix = null,
   resultDetails = null,
+  resultContent = null,
 }: ToolCallCardProps) {
   const toolName = msg.tool_name || 'unknown';
 
@@ -61,6 +82,23 @@ function ToolCallCard({
     ? formatReadLineRange(parsedArgs)
     : null;
 
+  const readContent = useMemo(() => {
+    if (toolName !== 'read' || resultContent == null) return null;
+    const { body, notice } = splitReadContent(resultContent);
+    // 用 splitLineCount 计数（与摘要 +N 口径一致）：末尾换行不多算一行
+    const totalLines = splitLineCount(body);
+    const truncated = totalLines > READ_MAX_LINES;
+    const lines = body === '' ? [] : body.split('\n');
+    return {
+      text: truncated ? lines.slice(0, READ_MAX_LINES).join('\n') : body,
+      truncated,
+      totalLines,
+      notice,
+      isError: /^error/i.test(body.trim()),
+    };
+  }, [toolName, resultContent]);
+
+  const hasMetaRow = writeEditSummary !== null || readPath !== null;
   const showArgsTable =
     (toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs !== null;
 
@@ -70,6 +108,7 @@ function ToolCallCard({
         <div className="flex items-start min-w-0">
           <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40">
             <div
+              data-testid="tool-call-header"
               className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
               onClick={() => onToggle(msg.id)}
             >
@@ -83,66 +122,69 @@ function ToolCallCard({
                 {toolName}
                 {roleSuffix ? ` (${roleSuffix})` : ''}
               </span>
-
-              {/* write/edit：文件路径 + 增删行数 */}
-              {writeEditSummary && (
-                <span className="flex items-center gap-1.5 min-w-0" data-testid="tool-call-meta">
-                  <span className="w-px h-3 bg-amber-200 dark:bg-amber-800 shrink-0" aria-hidden />
-                  <FileCode className="w-3.5 h-3.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
-                  <span
-                    className="text-[11px] font-mono text-amber-800 dark:text-amber-300 truncate max-w-[300px]"
-                    title={writeEditSummary.path ?? undefined}
-                  >
-                    {writeEditSummary.path ?? '(未提供路径)'}
-                  </span>
-                  {(writeEditSummary.added > 0 || writeEditSummary.removed === 0) && (
-                    <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
-                      +{writeEditSummary.added}
-                    </span>
-                  )}
-                  {writeEditSummary.removed > 0 && (
-                    <span className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0">
-                      -{writeEditSummary.removed}
-                    </span>
-                  )}
-                </span>
-              )}
-
-              {/* read：文件路径 + 行号范围（无行号参数时不显示行号） */}
-              {readPath && (
-                <span className="flex items-center gap-1.5 min-w-0" data-testid="tool-call-meta">
-                  <span className="w-px h-3 bg-amber-200 dark:bg-amber-800 shrink-0" aria-hidden />
-                  <FileCode className="w-3.5 h-3.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
-                  <span
-                    className="text-[11px] font-mono text-amber-800 dark:text-amber-300 truncate max-w-[300px]"
-                    title={readPath}
-                  >
-                    {readPath}
-                  </span>
-                  {readLineRange && (
-                    <span
-                      data-testid="tool-call-line-range"
-                      className="text-[10px] font-mono font-bold text-amber-700 dark:text-amber-300 bg-amber-100/80 dark:bg-amber-900/50 rounded px-1 py-px shrink-0"
-                    >
-                      {readLineRange}
-                    </span>
-                  )}
-                </span>
-              )}
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggle(msg.id);
-                }}
-                className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-amber-700 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-900/40 hover:bg-amber-200/70 dark:hover:bg-amber-800/50 transition-colors cursor-pointer shrink-0"
-              >
-                {expanded ? '收起全部' : '展开全部'}
-              </button>
             </div>
 
-            {expanded && argsStr && (
+            {/* write/edit/read：文件摘要行（常显，点击行或按钮切换明细） */}
+            {hasMetaRow && (
+              <div
+                className="px-3 pb-2 flex items-center gap-2 min-w-0 cursor-pointer"
+                onClick={() => onToggle(msg.id)}
+              >
+                <span className="flex items-center gap-1.5 min-w-0" data-testid="tool-call-meta">
+                  <FileCode className="w-3.5 h-3.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
+                  {writeEditSummary ? (
+                    <>
+                      <span
+                        className="text-[11px] font-mono text-amber-800 dark:text-amber-300 truncate max-w-[300px]"
+                        title={writeEditSummary.path ?? undefined}
+                      >
+                        {writeEditSummary.path ?? '(未提供路径)'}
+                      </span>
+                      {(writeEditSummary.added > 0 || writeEditSummary.removed === 0) && (
+                        <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
+                          +{writeEditSummary.added}
+                        </span>
+                      )}
+                      {writeEditSummary.removed > 0 && (
+                        <span className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0">
+                          -{writeEditSummary.removed}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <span
+                        className="text-[11px] font-mono text-amber-800 dark:text-amber-300 truncate max-w-[300px]"
+                        title={readPath ?? undefined}
+                      >
+                        {readPath}
+                      </span>
+                      {readLineRange && (
+                        <span
+                          data-testid="tool-call-line-range"
+                          className="text-[10px] font-mono font-bold text-amber-700 dark:text-amber-300 bg-amber-100/80 dark:bg-amber-900/50 rounded px-1 py-px shrink-0"
+                        >
+                          {readLineRange}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    // 摘要行整行可点击，避免按钮冒泡后双重切换
+                    e.stopPropagation();
+                    onToggle(msg.id);
+                  }}
+                  className="px-1.5 py-0.5 rounded text-[10px] font-medium text-amber-700 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-900/40 hover:bg-amber-200/70 dark:hover:bg-amber-800/50 transition-colors cursor-pointer shrink-0"
+                >
+                  {expanded ? '收起全部' : '展开全部'}
+                </button>
+              </div>
+            )}
+
+            {expanded && (argsStr || readContent) && (
               <div data-testid="tool-call-expanded">
                 {writeEditDiff && (toolName === 'write' || toolName === 'edit') ? (
                   <DiffViewer
@@ -150,6 +192,38 @@ function ToolCallCard({
                     newText={writeEditDiff.newText}
                     viewType={toolName === 'write' ? 'write' : 'edit'}
                   />
+                ) : readContent ? (
+                  <div
+                    className={`border-t border-amber-200 dark:border-amber-800${
+                      readContent.isError ? ' bg-rose-50/60 dark:bg-rose-950/20' : ''
+                    }`}
+                  >
+                    {readContent.truncated && (
+                      <div className="px-3 py-1 text-[10px] italic text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-slate-800/30 border-b border-amber-100 dark:border-amber-800/30">
+                        仅显示前 {READ_MAX_LINES} 行（共 {readContent.totalLines} 行）
+                      </div>
+                    )}
+                    <div className="max-h-96 overflow-auto px-3 py-2">
+                      {readContent.text.trim() === '' ? (
+                        <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">（空内容）</div>
+                      ) : (
+                        <pre
+                          className={`text-[11px] font-mono whitespace-pre leading-relaxed ${
+                            readContent.isError
+                              ? 'text-rose-700 dark:text-rose-400'
+                              : 'text-amber-900 dark:text-amber-200'
+                          }`}
+                        >
+                          {readContent.text}
+                        </pre>
+                      )}
+                    </div>
+                    {readContent.notice && (
+                      <div className="px-3 py-1 text-[10px] font-mono text-amber-600 dark:text-amber-400 border-t border-amber-100 dark:border-amber-800/50">
+                        {readContent.notice}
+                      </div>
+                    )}
+                  </div>
                 ) : showArgsTable && parsedArgs ? (
                   <div className="border-t border-amber-200 dark:border-amber-800 px-3 py-2">
                     <table className="w-full text-[11px] font-mono leading-relaxed">
@@ -169,13 +243,13 @@ function ToolCallCard({
                       </tbody>
                     </table>
                   </div>
-                ) : (
+                ) : argsStr ? (
                   <div className="border-t border-amber-200 dark:border-amber-800 px-3 py-2">
                     <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
                       {argsStr}
                     </pre>
                   </div>
-                )}
+                ) : null}
               </div>
             )}
           </div>
