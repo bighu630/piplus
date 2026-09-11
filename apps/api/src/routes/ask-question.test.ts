@@ -282,51 +282,88 @@ describe('POST /api/v1/sessions/:sessionId/ask-answer', () => {
     expect(res.status).toBe(400);
   });
 
-  test('WS 推送：createPending 触发 ask_question_pending 事件到订阅连接', async () => {
+  test('WS 推送：createPending 按用户定向投递（同用户未订阅连接也收到，其他用户收不到）', async () => {
     const path = makeDbPath();
     createSeedDb(path);
     Bun.env.DATABASE_URL = `file:${path}`;
     const app = createApp(); // 注册路由时挂载 ask_question_pending → socketHub 监听
-    const sessionId = await prepareSession(path, 'local-user');
+    const sessionId = await prepareSession(path, DEV_USER);
 
-    // 挂一个订阅了该会话的假 socket：auth 开启时 authorizeSubscribe 要求连接带
-    // __userId（真实连接由 ws/server.ts 认证握手写入），这里模拟已认证连接。
-    const received: string[] = [];
-    const fakeSocket = { send(data: string) { received.push(data); }, __userId: DEV_USER };
-    socketHub.attach(fakeSocket);
-    socketHub.handleClientMessage(fakeSocket, {
+    // 三连接模拟真实场景：
+    // ① 订阅了本会话的同用户连接 —— 保底路径
+    // ② **未订阅本会话**的同用户连接 —— 本次修复核心：用户切到别的会话/标签页也要收到通知
+    // ③ 其他用户的连接 —— 必须收不到（多用户下不得泄露他人提问内容）
+    const subscribedReceived: string[] = [];
+    const subscribedSocket = { send(data: string) { subscribedReceived.push(data); }, __userId: DEV_USER };
+    const unsubscribedReceived: string[] = [];
+    const unsubscribedSocket = { send(data: string) { unsubscribedReceived.push(data); }, __userId: DEV_USER };
+    const otherUserReceived: string[] = [];
+    const otherUserSocket = { send(data: string) { otherUserReceived.push(data); }, __userId: 'someone-else' };
+
+    socketHub.attach(subscribedSocket);
+    socketHub.attach(unsubscribedSocket);
+    socketHub.attach(otherUserSocket);
+    socketHub.handleClientMessage(subscribedSocket, {
       kind: 'client',
       type: 'subscribe_session',
       payload: { session_id: sessionId },
     });
 
-    const { questionId } = createPending(sessionId, { question: 'Q?', options: ['A', 'B'] });
+    try {
+      const { questionId } = createPending(sessionId, { question: 'Q?', options: ['A', 'B'] });
 
-    const events = received
-      .map((s) => JSON.parse(s) as { type: string; payload?: { questionId?: string } })
-      .filter((e) => e.type === 'ask_question_pending');
-    expect(events.length).toBe(1);
-    expect(events[0].payload?.questionId).toBe(questionId);
+      const extract = (raw: string[]) =>
+        raw
+          .map((s) => JSON.parse(s) as { type: string; payload?: { questionId?: string } })
+          .filter((e) => e.type === 'ask_question_pending');
 
-    // 另一条已认证连接，订阅的是另一个**真实会话**（同属 local-user）：订阅成功，
-    // 但不应收到本会话的 ask_question_pending —— 否则断言会因「订阅被拒」而恒真。
-    const otherSessionId = await prepareSession(path, DEV_USER);
-    const otherReceived: string[] = [];
-    const otherSocket = { send(data: string) { otherReceived.push(data); }, __userId: DEV_USER };
-    socketHub.attach(otherSocket);
-    socketHub.handleClientMessage(otherSocket, {
-      kind: 'client',
-      type: 'subscribe_session',
-      payload: { session_id: otherSessionId },
-    });
-    const { questionId: q2 } = createPending(sessionId, { question: 'Q2?', options: ['A'] });
-    expect(otherReceived.some((s) => s.includes('ask_question_pending'))).toBe(false);
+      const subscribedEvents = extract(subscribedReceived);
+      expect(subscribedEvents.length).toBe(1);
+      expect(subscribedEvents[0].payload?.questionId).toBe(questionId);
 
-    // 清理挂起项，避免 5 分钟 timer 拖住测试进程
-    socketHub.detach(fakeSocket);
-    socketHub.detach(otherSocket);
-    answerQuestion(questionId, null);
-    answerQuestion(q2, null);
+      const unsubscribedEvents = extract(unsubscribedReceived);
+      expect(unsubscribedEvents.length).toBe(1);
+      expect(unsubscribedEvents[0].payload?.questionId).toBe(questionId);
+
+      expect(extract(otherUserReceived)).toHaveLength(0);
+
+      answerQuestion(questionId, null);
+    } finally {
+      // 断言失败也不能把假 socket 留在模块级单例 hub 里污染后续用例
+      socketHub.detach(subscribedSocket);
+      socketHub.detach(unsubscribedSocket);
+      socketHub.detach(otherUserSocket);
+    }
+  });
+
+  test('GET /api/v1/ask-pending：跨会话返回本人待回答，不含他人会话；匿名 401', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+    const ownSessionA = await prepareSession(path, DEV_USER);
+    const ownSessionB = await prepareSession(path, DEV_USER);
+    const foreignSession = await prepareSession(path, 'someone-else');
+
+    const { questionId: qA } = createPending(ownSessionA, { question: 'A?', options: ['1'] });
+    const { questionId: qB } = createPending(ownSessionB, { question: 'B?', options: ['2'] });
+    const { questionId: qForeign } = createPending(foreignSession, { question: 'X?', options: ['3'] });
+
+    const res = await app.request('/api/v1/ask-pending', { headers: makeHeaders() });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pending: Array<{ questionId: string; sessionId?: string }> };
+    expect(body.pending.map((p) => p.questionId).sort()).toEqual([qA, qB].sort());
+    expect(body.pending.some((p) => p.questionId === qForeign)).toBe(false);
+
+    // 会话内接口回归：仍只返回该会话的 pending
+    const oneRes = await app.request(`/api/v1/sessions/${ownSessionA}/ask-pending`, { headers: makeHeaders() });
+    expect(oneRes.status).toBe(200);
+    const oneBody = (await oneRes.json()) as { pending: Array<{ questionId: string }> };
+    expect(oneBody.pending.map((p) => p.questionId)).toEqual([qA]);
+
+    // app.ts 已挂 requireAuth：匿名访问一律 401
+    const anonRes = await app.request('/api/v1/ask-pending');
+    expect(anonRes.status).toBe(401);
   });
 
   test('auth 开启时：token 身份与会话归属匹配才能回填（非 owner → 404）', async () =>

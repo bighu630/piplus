@@ -8,6 +8,8 @@ import hljsDark from 'highlight.js/styles/github-dark.css?url';
 import {
   getNotificationPermission,
   requestNotificationPermission,
+  systemNotificationsEnabled as readSystemNotificationsEnabled,
+  SYSTEM_NOTIFICATIONS_STORAGE_KEY,
 } from './lib/notification';
 import {
   THEME_STORAGE_KEY,
@@ -19,6 +21,7 @@ import {
   type ThemePreference,
 } from './lib/theme';
 import Sidebar from './components/Sidebar';
+import AskQuestionNotifier from './components/AskQuestionNotifier';
 import TabChat from './components/TabChat';
 import TabSessionInfo from './components/TabSessionInfo';
 import TabGitDiff from './components/TabGitDiff';
@@ -218,9 +221,7 @@ export default function App() {
       return 'enter';
     }
   });
-  const [systemNotificationsEnabled, setSystemNotificationsEnabled] = useState(() => {
-    try { return localStorage.getItem('pi-system-notifications') === 'true'; } catch { return false; }
-  });
+  const [systemNotificationsEnabled, setSystemNotificationsEnabled] = useState(() => readSystemNotificationsEnabled());
   const [notificationPermissionStatus, setNotificationPermissionStatus] = useState<string | null>(null);
   const isMobile = useIsMobile();
   const [showMobileSidebar, setShowMobileSidebar] = useState(() => !(typeof window !== 'undefined' && getSessionIdFromPath(window.location.pathname)));
@@ -271,7 +272,7 @@ export default function App() {
   }, [sendShortcutMode]);
 
   useEffect(() => {
-    try { localStorage.setItem('pi-system-notifications', String(systemNotificationsEnabled)); } catch {}
+    try { localStorage.setItem(SYSTEM_NOTIFICATIONS_STORAGE_KEY, String(systemNotificationsEnabled)); } catch {}
   }, [systemNotificationsEnabled]);
 
   // Reconcile persisted toggle state with actual browser permission on mount.
@@ -436,6 +437,25 @@ export default function App() {
       if (isMobile) setShowMobileSidebar(false);
     });
   }, [isMobile]);
+
+  /**
+   * ask_question 通知/toast 的跳转：把用户带到提问所在会话。
+   * 树里能找到项目就走与侧边栏点击同一条路径（切项目 + 会话 + chat 标签）；
+   * 找不到时仍先设置会话 id（树还在加载时，树到达后 App 的校验 effect 会自动定位到它）；
+   * 若该会话已不在树中（如已归档），校验 effect 会回退到第一个会话。
+   */
+  const handleNavigateToSession = useCallback((sessionId: string) => {
+    const projectId = tree.length > 0 ? findProjectId(tree, sessionId) : null;
+    if (projectId) {
+      handleSelectSession(projectId, sessionId);
+      return;
+    }
+    startTransition(() => {
+      setSelectedSessionId(sessionId);
+      setActiveTab('chat');
+      if (isMobile) setShowMobileSidebar(false);
+    });
+  }, [tree, handleSelectSession, isMobile]);
 
 
 
@@ -1007,6 +1027,12 @@ export default function App() {
       <ProviderModal
         isOpen={showProviderModal}
         onClose={() => { setShowProviderModal(false); }}
+      />
+
+      {/* ask_question 通知：系统通知 + 应用内 toast + 标题前缀；侧边栏琥珀标记由 Sidebar 消费同一 map */}
+      <AskQuestionNotifier
+        activeSessionId={selectedSessionId}
+        onNavigateSession={handleNavigateToSession}
       />
     </div>
   );

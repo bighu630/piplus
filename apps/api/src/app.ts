@@ -93,6 +93,7 @@ export function createApp(options?: { piClient?: PiClient }) {
   app.use('/api/v1/projects', requireAuth);
   app.use('/api/v1/projects/*', requireAuth);
   app.use('/api/v1/sessions/*', requireAuth);
+  app.use('/api/v1/ask-pending', requireAuth);
   registerTreeRoutes(app);
   registerProjectRoutes(app);
   registerSessionRoutes(app, options?.piClient);
