@@ -310,3 +310,111 @@ describe('FileToolGroupCard edit 行', () => {
     expect(rows()[0].textContent).toContain('-2');
   });
 });
+
+describe('FileToolGroupCard 状态着色与失败展开', () => {
+  const okWrite = fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'x' });
+
+  test('全部成功：卡片绿色', () => {
+    render(
+      <Harness
+        calls={[okWrite]}
+        messages={[toolResult('r1', 'write', 'e1-tool-0', 'Successfully wrote to src/a.ts')]}
+      />,
+    );
+
+    expect(container!.querySelector('.bg-emerald-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-rose-50')).toBeNull();
+    expect(rows()[0].getAttribute('data-status')).toBe('ok');
+    // 成功行默认收起
+    expect(details()).toHaveLength(0);
+  });
+
+  test('运行中（结果未回）：保持琥珀色', () => {
+    render(<Harness calls={[okWrite]} runningIds={new Set(['e1-tool-0'])} />);
+    expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
+  });
+
+  test('失败：卡片红色，失败原因默认展开', () => {
+    render(
+      <Harness
+        calls={[okWrite]}
+        messages={[toolResult('r1', 'write', 'e1-tool-0', 'Error: EACCES: permission denied')]}
+      />,
+    );
+
+    expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
+    expect(rows()[0].getAttribute('data-status')).toBe('error');
+    expect(details()).toHaveLength(1);
+    expect(details()[0].textContent).toContain('EACCES');
+    expect(header()!.textContent).toContain('失败');
+  });
+
+  test('失败行点击可收起原因，再点击重新展开', () => {
+    render(
+      <Harness
+        calls={[okWrite]}
+        messages={[toolResult('r1', 'write', 'e1-tool-0', 'Error: EACCES')]}
+      />,
+    );
+
+    click(rows()[0]);
+    expect(details()).toHaveLength(0);
+
+    click(rows()[0]);
+    expect(details()[0].textContent).toContain('EACCES');
+  });
+
+  test('部分失败：整卡红色，仅失败行标红并默认展开', () => {
+    const calls = [
+      fileCall('e1-tool-0', 'write', { path: 'ok.ts', content: 'x' }),
+      fileCall('e1-tool-1', 'write', { path: 'bad.ts', content: 'y' }),
+    ];
+    render(
+      <Harness
+        calls={calls}
+        messages={[
+          toolResult('r1', 'write', 'e1-tool-0', 'Successfully wrote to ok.ts'),
+          toolResult('r2', 'write', 'e1-tool-1', 'Error: disk full'),
+        ]}
+      />,
+    );
+
+    expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
+    expect(rows()[0].getAttribute('data-status')).toBe('ok');
+    expect(rows()[1].getAttribute('data-status')).toBe('error');
+    // 仅失败行默认展开
+    expect(details()).toHaveLength(1);
+    expect(details()[0].textContent).toContain('disk full');
+  });
+
+  test('全部收起时失败行也收起，全部展开时恢复', () => {
+    render(
+      <Harness
+        calls={[okWrite]}
+        messages={[toolResult('r1', 'write', 'e1-tool-0', 'Error: EACCES')]}
+      />,
+    );
+
+    // 失败行默认展开 → 视为全展开，按钮为「收起全部」
+    expect(allButton()!.textContent!.trim()).toBe('收起全部');
+    click(allButton());
+    expect(details()).toHaveLength(0);
+
+    click(allButton());
+    expect(details()).toHaveLength(1);
+    expect(details()[0].textContent).toContain('EACCES');
+  });
+
+  test('失败的 edit 不渲染 diff 明细（只显示错误原因）', () => {
+    render(
+      <Harness
+        calls={[fileCall('e1-tool-0', 'edit', { path: 'src/a.ts', edits: [{ oldText: 'a', newText: 'b' }] })]}
+        messages={[toolResult('r1', 'edit', 'e1-tool-0', 'Error: text not found in file')]}
+      />,
+    );
+
+    expect(details()).toHaveLength(1);
+    expect(details()[0].querySelectorAll('[data-testid="diff-line"]')).toHaveLength(0);
+    expect(details()[0].textContent).toContain('text not found');
+  });
+});

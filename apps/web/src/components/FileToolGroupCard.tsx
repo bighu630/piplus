@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, FileCode, LoaderCircle, Wrench } from 'lucide-react';
 import DiffViewer from './DiffViewer';
@@ -13,12 +13,19 @@ import {
 
 /**
  * 文件工具聚合卡片：同一条 assistant 消息内的 write/edit/read 调用以多行文件列表展示。
- * 交互：每行点击=独立展开该文件的明细；头部/「展开全部/收起全部」按钮=整组展开或收起（卡片级仅此一个总控）。
+ *
+ * 交互：
+ * - 每行点击 = 独立展开/收起该文件的明细；失败行的失败原因默认展开（点击可收起）
+ * - 头部与卡片级唯一的「展开全部/收起全部」按钮 = 整组展开/收起
+ *
+ * 状态着色（工具调用视为一个整体）：
+ * - 全部成功 → 绿色卡片；有任一失败 → 红色卡片（失败行额外标红便于定位）
+ * - 仍在运行（结果未回）→ 保持琥珀色
  */
 export interface FileToolGroupCardProps {
   /** 同一 assistant 消息内的 write/edit/read 调用（长度 ≥ 1） */
   calls: ChatMessageDTO[];
-  /** 全部消息：为每行查找对应 tool result（edit 精确 diff / read 内容） */
+  /** 全部消息：为每行查找对应 tool result（edit 精确 diff / read 内容 / 失败原因） */
   messages: ChatMessageDTO[];
   /** 已独立展开的调用 id 集合 */
   expandedIds: Set<string>;
@@ -29,16 +36,23 @@ export interface FileToolGroupCardProps {
   runningIds: Set<string>;
 }
 
+/** result 文本以 Error 开头视为失败（与 TabChat 既有判定口径一致） */
+function isErrorText(text: string | null | undefined): boolean {
+  return /^error/i.test((text ?? '').trim());
+}
+
 const FileRow = React.memo(function FileRow({
   call,
   result,
   expanded,
+  isError,
   onToggle,
 }: {
   call: ChatMessageDTO;
   result: ChatMessageDTO | null;
   expanded: boolean;
-  onToggle: (id: string) => void;
+  isError: boolean;
+  onToggle: () => void;
 }) {
   const toolName = call.tool_name || 'unknown';
   // 解析与统计按输入缓存：write 的 args 可能携带整份文件内容（几十~百 KB），
@@ -52,38 +66,45 @@ const FileRow = React.memo(function FileRow({
     [toolName, parsedArgs, result?.details],
   );
   const writeEditDiff = React.useMemo(
-    () => (parsedArgs ? parseWriteEditDiff(toolName, parsedArgs) : null),
-    [toolName, parsedArgs],
+    () => (parsedArgs && !isError ? parseWriteEditDiff(toolName, parsedArgs) : null),
+    [toolName, parsedArgs, isError],
   );
   const readPath = toolName === 'read' && parsedArgs && typeof parsedArgs.path === 'string'
     ? parsedArgs.path
     : null;
   // 注：read 行号是「请求范围」而非文件实际内容范围（offset 超出文件尾时会偏大）
   const readLineRange = toolName === 'read' && parsedArgs ? formatReadLineRange(parsedArgs) : null;
-  const readContent = toolName === 'read' ? result?.content_text ?? null : null;
+  const readContent = toolName === 'read' && !isError ? result?.content_text ?? null : null;
 
   const path = writeEditSummary?.path ?? readPath ?? null;
+  const tone = isError ? 'text-rose-700 dark:text-rose-400' : 'text-amber-800 dark:text-amber-300';
+  const iconTone = isError ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400';
 
   return (
     <div>
       <div
         data-testid="tool-file-row"
-        className="px-3 py-1.5 flex items-center gap-2 min-w-0 cursor-pointer hover:bg-amber-100/60 dark:hover:bg-amber-900/30"
-        onClick={() => onToggle(call.id)}
+        data-status={isError ? 'error' : 'ok'}
+        className={`px-3 py-1.5 flex items-center gap-2 min-w-0 cursor-pointer ${
+          isError
+            ? 'hover:bg-rose-100/60 dark:hover:bg-rose-900/30'
+            : 'hover:bg-emerald-100/60 dark:hover:bg-emerald-900/30'
+        }`}
+        onClick={onToggle}
       >
         {expanded ? (
-          <ChevronDown className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+          <ChevronDown className={`w-3 h-3 shrink-0 ${iconTone}`} />
         ) : (
-          <ChevronRight className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+          <ChevronRight className={`w-3 h-3 shrink-0 ${iconTone}`} />
         )}
-        <FileCode className="w-3.5 h-3.5 text-amber-600/80 dark:text-amber-400/80 shrink-0" />
+        <FileCode className={`w-3.5 h-3.5 shrink-0 ${iconTone}`} />
         <span
-          className="text-[11px] font-mono text-amber-800 dark:text-amber-300 truncate max-w-[300px]"
+          className={`text-[11px] font-mono truncate max-w-[300px] ${tone}`}
           title={path ?? undefined}
         >
           {path ?? '(未提供路径)'}
         </span>
-        {writeEditSummary && (
+        {writeEditSummary && !isError && (
           <>
             {(writeEditSummary.added > 0 || writeEditSummary.removed === 0) && (
               <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
@@ -97,7 +118,7 @@ const FileRow = React.memo(function FileRow({
             )}
           </>
         )}
-        {readLineRange && (
+        {readLineRange && !isError && (
           <span
             data-testid="tool-call-line-range"
             className="text-[10px] font-mono font-bold text-amber-700 dark:text-amber-300 bg-amber-100/80 dark:bg-amber-900/50 rounded px-1 py-px shrink-0"
@@ -105,11 +126,22 @@ const FileRow = React.memo(function FileRow({
             {readLineRange}
           </span>
         )}
+        {isError && (
+          <span className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0">
+            失败
+          </span>
+        )}
       </div>
 
       {expanded && (
         <div data-testid="tool-file-detail">
-          {writeEditDiff && (toolName === 'write' || toolName === 'edit') ? (
+          {isError && result ? (
+            <div className="border-t border-rose-200 dark:border-rose-800 bg-rose-50/50 dark:bg-rose-950/20 px-3 py-2">
+              <pre className="text-[11px] font-mono whitespace-pre-wrap break-all leading-relaxed text-rose-700 dark:text-rose-400">
+                {result.content_text}
+              </pre>
+            </div>
+          ) : writeEditDiff && (toolName === 'write' || toolName === 'edit') ? (
             <DiffViewer
               oldText={writeEditDiff.oldText}
               newText={writeEditDiff.newText}
@@ -138,51 +170,115 @@ function FileToolGroupCard({
   onToggleAll,
   runningIds,
 }: FileToolGroupCardProps) {
+  // 失败原因默认展开；用户点击失败行可收起（纯展示态，无需提升到父级）
+  const [collapsedErrorIds, setCollapsedErrorIds] = useState<Set<string>>(new Set());
+
+  const rows = calls.map((call) => {
+    const result = findToolResultMessage(messages, call.id, call.tool_name || 'unknown', call.tool_call_id);
+    return { call, result, isError: result !== null && isErrorText(result.content_text) };
+  });
+
   const ids = calls.map((c) => c.id);
-  const allExpanded = ids.length > 0 && ids.every((id) => expandedIds.has(id));
+  const hasError = rows.some((r) => r.isError);
   const anyRunning = ids.some((id) => runningIds.has(id));
+  const isRowExpanded = (id: string, isError: boolean) =>
+    isError ? !collapsedErrorIds.has(id) : expandedIds.has(id);
+  const allExpanded = rows.length > 0 && rows.every((r) => isRowExpanded(r.call.id, r.isError));
+
   const toolNames = [...new Set(calls.map((c) => c.tool_name || 'unknown'))];
   const label = `${toolNames.join(' + ')}${calls.length > 1 ? ` × ${calls.length}` : ''}`;
+
+  const scheme = hasError
+    ? {
+        card: 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800',
+        accent: 'text-rose-600 dark:text-rose-400',
+        title: 'text-rose-800 dark:text-rose-300',
+      }
+    : anyRunning
+      ? {
+          card: 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800',
+          accent: 'text-amber-600 dark:text-amber-400',
+          title: 'text-amber-800 dark:text-amber-300',
+        }
+      : {
+          card: 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800',
+          accent: 'text-emerald-600 dark:text-emerald-400',
+          title: 'text-emerald-800 dark:text-emerald-300',
+        };
+
+  const toggleAll = (expand: boolean) => {
+    if (expand) {
+      setCollapsedErrorIds(new Set());
+      onToggleAll(ids, true);
+    } else {
+      // 收起全部：失败行也一并收起（否则它们会因“默认展开”规则再次出现）
+      setCollapsedErrorIds(new Set(rows.filter((r) => r.isError).map((r) => r.call.id)));
+      onToggleAll(ids, false);
+    }
+  };
+
+  const toggleOne = (id: string, isError: boolean) => {
+    if (!isError) {
+      onToggleOne(id);
+      return;
+    }
+    setCollapsedErrorIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   return (
     <div className="flex justify-start items-start w-full min-w-0">
       <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
         <div className="flex items-start min-w-0">
-          <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40">
+          <div className={`border rounded-xl overflow-hidden transition-colors ${scheme.card}`}>
             <div
               data-testid="tool-group-header"
               className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
-              onClick={() => onToggleAll(ids, !allExpanded)}
+              onClick={() => toggleAll(!allExpanded)}
             >
               {allExpanded ? (
-                <ChevronDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                <ChevronDown className={`w-3.5 h-3.5 shrink-0 ${scheme.accent}`} />
               ) : (
-                <ChevronRight className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                <ChevronRight className={`w-3.5 h-3.5 shrink-0 ${scheme.accent}`} />
               )}
-              <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-              <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 font-mono">
-                {label}
-              </span>
+              <Wrench className={`w-3.5 h-3.5 shrink-0 ${scheme.accent}`} />
+              <span className={`text-xs font-semibold font-mono ${scheme.title}`}>{label}</span>
+              {hasError && (
+                <span className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0">
+                  失败
+                </span>
+              )}
               <button
                 type="button"
                 onClick={(e) => {
                   // 头部整行可点击，避免按钮冒泡后双重切换
                   e.stopPropagation();
-                  onToggleAll(ids, !allExpanded);
+                  toggleAll(!allExpanded);
                 }}
-                className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-amber-700 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-900/40 hover:bg-amber-200/70 dark:hover:bg-amber-800/50 transition-colors cursor-pointer shrink-0"
+                className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer shrink-0 ${
+                  hasError
+                    ? 'text-rose-700 dark:text-rose-300 bg-rose-100/70 dark:bg-rose-900/40 hover:bg-rose-200/70 dark:hover:bg-rose-800/50'
+                    : anyRunning
+                      ? 'text-amber-700 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-900/40 hover:bg-amber-200/70 dark:hover:bg-amber-800/50'
+                      : 'text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/40 hover:bg-emerald-200/70 dark:hover:bg-emerald-800/50'
+                }`}
               >
                 {allExpanded ? '收起全部' : '展开全部'}
               </button>
             </div>
 
-            {calls.map((call) => (
+            {rows.map(({ call, result, isError }) => (
               <FileRow
                 key={call.id}
                 call={call}
-                result={findToolResultMessage(messages, call.id, call.tool_name || 'unknown', call.tool_call_id)}
-                expanded={expandedIds.has(call.id)}
-                onToggle={onToggleOne}
+                result={result}
+                isError={isError}
+                expanded={isRowExpanded(call.id, isError)}
+                onToggle={() => toggleOne(call.id, isError)}
               />
             ))}
           </div>

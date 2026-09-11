@@ -303,12 +303,12 @@ export function splitReadContent(content: string): { body: string; notice: strin
 }
 
 /**
- * write/edit/read 的成功结果由文件聚合卡片呈现（read 内容可在行内展开），不再单独渲染结果卡片；
- * 错误结果仍返回 false（保留失败反馈）。
+ * write/edit/read 的结果（成功或失败）都整合进文件聚合卡片呈现，因此结果消息不再单独渲染：
+ * - 成功：卡片/行呈绿色状态
+ * - 失败：卡片/行呈红色状态，失败原因在对应行内默认展开
  */
-export function isHiddenFileToolResult(msg: ChatMessageDTO): boolean {
+export function isFileToolResult(msg: ChatMessageDTO): boolean {
   if (msg.message_kind !== 'tool' && msg.role !== 'tool') return false;
   const toolName = msg.tool_name ?? '';
-  if (toolName !== 'write' && toolName !== 'edit' && toolName !== 'read') return false;
-  return !/^error/i.test((msg.content_text ?? '').trim());
+  return toolName === 'write' || toolName === 'edit' || toolName === 'read';
 }
