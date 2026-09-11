@@ -19,14 +19,19 @@
 set -uo pipefail
 
 # 调用方可能是 git hook：git 会把自己的内部变量导出给 hook 进程，而这些变量会
-# 污染测试里对 fixture 仓库的 git 调用 —— GIT_DIR / GIT_INDEX_FILE 的优先级高于
-# `git -C <dir>` 与 cwd，于是 `git -C /tmp/fixture init` 会去操作外面这个仓库。
-# 实测（linked worktree 里跑 pre-merge-commit）：GIT_DIR 是绝对路径，apps/api 的
-# 9 个 git 用例把 fixture 初始化到了错误仓库而全部假失败；主工作区里 GIT_DIR 未导出、
-# GIT_INDEX_FILE 又是相对路径，所以当时恰好没暴露。
-# 脚本自身靠 cwd 发现仓库即可，所以在做任何事之前先清干净。
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX \
-      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR 2>/dev/null || true
+# 从两个方面污染基线：
+#   1) 改变 git 对仓库的定位 —— GIT_DIR / GIT_INDEX_FILE 优先级高于 `git -C <dir>`
+#      与 cwd，fixture 仓库因此被指错（实测 9 个 api git 用例假失败）
+#   2) 改变 git 自身行为与输出 —— 例如 GIT_REFLOG_ACTION 会改写 reflog 消息，
+#      使 `git branch` 在 detached HEAD 下不再输出 "(HEAD detached at ...)"，
+#      而 apps/api 有用例依赖该输出做 sanity 断言（实测把发布合并拦了第二次）
+# 逐个列举不可靠（git 每加一个内部变量就漏一个），所以整体清掉 GIT_*。
+# 脚本自身靠 cwd 发现仓库即可（hook 的 cwd = 工作区根），清掉后语义不变。
+while IFS='=' read -r _git_env_name _; do
+  case "$_git_env_name" in
+    GIT*) unset "$_git_env_name" ;;
+  esac
+done <<<"$(env)"
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   echo "baseline-check: 不在 git 仓库内，无法定位仓库根" >&2

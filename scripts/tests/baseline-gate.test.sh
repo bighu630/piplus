@@ -96,7 +96,8 @@ FAKEBIN="$WORK/bin"
 mkdir -p "$FAKEBIN"
 cat >"$FAKEBIN/bun" <<'FAKEBUN'
 #!/usr/bin/env bash
-echo "FAKE-BUN $*" >>"${FAKE_BUN_LOG:-/dev/null}"
+# 记录被调用时的 GIT_* 变量个数，用来断言 baseline-check.sh 已清理 hook 泄漏的环境
+{ echo "FAKE-BUN $* git_env=$(env | grep -c '^GIT')"; } >>"${FAKE_BUN_LOG:-/dev/null}"
 [ "${FAKE_BUN_EXIT:-0}" = "0" ] || exit "${FAKE_BUN_EXIT}"
 exit 0
 FAKEBUN
@@ -169,6 +170,15 @@ mv "$A_REPO/node_modules.off" "$A_REPO/node_modules"
 rc="$(run_check BASELINE_NO_CACHE=1 GIT_DIR=/nonexistent GIT_INDEX_FILE=/nonexistent/index)"
 assert_exit_zero "A9 忽略调用方泄漏的 GIT_DIR/GIT_INDEX_FILE" "$rc"
 assert_contains "A9 仍然完成全量检查" "基线检查通过" "$(cat "$OUT")"
+
+# A10：hook 泄漏的任意 GIT_* 变量都必须被清掉（不只 GIT_DIR）。
+# 背景：GIT_REFLOG_ACTION 会改写 reflog 消息，使 git 在 detached HEAD 下不再输出
+# "(HEAD detached at ...)"（变成 "(no branch)"），直接打挂 apps/api 的 sanity 断言 ——
+# 真实发布合并被它拦了第二次。这里直接断言子进程环境里没有残留 GIT_*。
+rm -f "$A_REPO/bun.log"
+rc="$(run_check BASELINE_NO_CACHE=1 GIT_REFLOG_ACTION="merge dev" GITHEAD_deadbeef=dev GIT_EDITOR=: GIT_DIR=/nonexistent)"
+assert_exit_zero "A10 带任意 GIT_* 污染仍能跑完基线" "$rc"
+assert_eq "A10 子进程环境里没有残留 GIT_* 变量" "0" "$(grep -c 'git_env=[1-9]' "$A_REPO/bun.log" 2>/dev/null || true)"
 
 # A8：工作区有未 staged 改动时，被测内容 ≠ index tree，必须禁用缓存（否则会误标已通过）
 rm -f "$CACHE"
