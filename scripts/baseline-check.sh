@@ -94,12 +94,10 @@ if ! command -v bun >/dev/null 2>&1; then
   exit 1
 fi
 
-missing=()
-for p in "." "${PACKAGES[@]}"; do
-  [ -d "$p/node_modules" ] || missing+=("$p")
-done
-if [ "${#missing[@]}" -gt 0 ]; then
-  echo "❌ 以下目录缺少 node_modules：${missing[*]}" >&2
+# 只检查工作区根：bun 会把依赖 hoist 到根，无依赖的包（如 packages/shared）
+# 本来就不会有 node_modules —— 按包检查会在 fresh install / 新 worktree / CI 上误报。
+if [ ! -d node_modules ]; then
+  echo "❌ 找不到 node_modules（依赖未安装）" >&2
   echo "   先运行：bun install" >&2
   exit 1
 fi

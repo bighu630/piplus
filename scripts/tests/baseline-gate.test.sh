@@ -105,7 +105,7 @@ chmod +x "$FAKEBIN/bun"
 A_REPO="$WORK/repo-a"
 mkdir -p "$A_REPO/scripts" "$A_REPO/src"
 cp "$REAL_ROOT/scripts/baseline-check.sh" "$A_REPO/scripts/baseline-check.sh"
-printf 'tracked\n' >"$A_REPO/tracked.txt"   # A7 需要一个受版本控制的文件来制造未 staged 改动
+printf 'tracked\n' >"$A_REPO/tracked.txt"   # A8 需要一个受版本控制的文件来制造未 staged 改动
 for p in . apps/api apps/web packages/db packages/domain packages/pi-client packages/shared; do
   mkdir -p "$A_REPO/$p/node_modules"
 done
@@ -149,26 +149,34 @@ rc="$(run_check BASELINE_SKIP=1)"
 assert_exit_zero "A5 BASELINE_SKIP=1 直接放行" "$rc"
 assert_eq "A5 跳过时零调用" "$calls_before" "$(bun_calls)"
 
+# A6：某个包没有自己的 node_modules 不算缺依赖（fresh install 下 packages/shared 就没有：
+# 无依赖的包不会有 node_modules，依赖都 hoist 到根）—— 这正是 CI / 新 worktree 的真实情况。
 mv "$A_REPO/packages/db/node_modules" "$A_REPO/packages/db/node_modules.off"
 rc="$(run_check BASELINE_NO_CACHE=1)"
-assert_exit_nonzero "A6 缺 node_modules 时失败" "$rc"
-assert_contains "A6 提示 bun install" "bun install" "$(cat "$OUT")"
+assert_exit_zero "A6 包内缺 node_modules 不算缺依赖（依赖 hoist 到根）" "$rc"
 mv "$A_REPO/packages/db/node_modules.off" "$A_REPO/packages/db/node_modules"
 
-# A7：工作区有未 staged 改动时，被测内容 ≠ index tree，必须禁用缓存（否则会误标已通过）
+# A7：根 node_modules 缺失才算依赖未安装
+mv "$A_REPO/node_modules" "$A_REPO/node_modules.off"
+rc="$(run_check BASELINE_NO_CACHE=1)"
+assert_exit_nonzero "A7 缺根 node_modules 时失败" "$rc"
+assert_contains "A7 提示 bun install" "bun install" "$(cat "$OUT")"
+mv "$A_REPO/node_modules.off" "$A_REPO/node_modules"
+
+# A8：工作区有未 staged 改动时，被测内容 ≠ index tree，必须禁用缓存（否则会误标已通过）
 rm -f "$CACHE"
 rc="$(run_check)"
-assert_exit_zero "A7 干净工作区写入缓存" "$rc"
-assert_file_exists "A7 缓存已写入" "$CACHE"
+assert_exit_zero "A8 干净工作区写入缓存" "$rc"
+assert_file_exists "A8 缓存已写入" "$CACHE"
 calls_before="$(bun_calls)"
 echo "unstaged edit" >>"$A_REPO/tracked.txt"
 rc="$(run_check)"
-assert_exit_zero "A7 脏工作区仍能跑完" "$rc"
-assert_contains "A7 提示不使用缓存" "不使用缓存" "$(cat "$OUT")"
-assert_eq "A7 脏工作区不被缓存短路（真的跑了 7 次）" "$(( calls_before + 7 ))" "$(bun_calls)"
+assert_exit_zero "A8 脏工作区仍能跑完" "$rc"
+assert_contains "A8 提示不使用缓存" "不使用缓存" "$(cat "$OUT")"
+assert_eq "A8 脏工作区不被缓存短路（真的跑了 7 次）" "$(( calls_before + 7 ))" "$(bun_calls)"
 ( cd "$A_REPO" && git checkout -- tracked.txt ) >/dev/null 2>&1
 rc="$(run_check)"
-assert_contains "A7 恢复干净后缓存又生效" "缓存命中" "$(cat "$OUT")"
+assert_contains "A8 恢复干净后缓存又生效" "缓存命中" "$(cat "$OUT")"
 
 # ---------------------------------------------------------------------------
 section "group B: pre-merge-commit（拦截 + 守卫）"

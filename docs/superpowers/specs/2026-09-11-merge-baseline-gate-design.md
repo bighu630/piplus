@@ -61,7 +61,8 @@
 
 - 拒绝从仓库根裸跑 `bun test`，改为**逐包**执行 6 个包。
 - 顺序：全量 `bun run typecheck` → 逐包 `bun test`；失败即停，打印失败步骤。
-- 前置检查：`bun` 存在、各级 `node_modules` 存在（worktree 缺依赖时给清晰报错，而非满屏 module not found）。
+- 前置检查：`bun` 存在、工作区**根** `node_modules` 存在（worktree 缺依赖时给清晰报错，而非满屏 module not found）。
+  - 不能按包检查：bun 把依赖 hoist 到根，无依赖的包（如 `packages/shared`）本来就不会有 `node_modules` —— 按包检查会在 fresh install / 新 worktree / CI 上误报"缺依赖"（已修，由自测 A6/A7 覆盖）。
 - tree 缓存：key 为**即将被检查的那棵树**，通过后写入 `<git-common-dir>/baseline-passed-tree`，命中即跳过。
   - 默认取 `git write-tree`（index tree）。原因：`pre-merge-commit` 阶段合并结果已进 index 但 commit 尚未生成，此时 `HEAD^{tree}` 仍是合并前的旧树，用它当 key 会产生错误的缓存语义。
   - `pre-push` 用被推送 sha 的 tree（`BASELINE_TREE_KEY`）。

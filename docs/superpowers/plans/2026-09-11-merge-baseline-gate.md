@@ -167,3 +167,4 @@ bun install                            # 预期：输出 "✅ 已设置 core.hoo
 6. **脚本可执行位**：`scripts/baseline-check.sh`、`scripts/setup-hooks.sh`、`scripts/tests/baseline-gate.test.sh` 均 `chmod +x`。
 7. **发现既有问题（不在本任务范围）**：`apps/web` 测试对 CPU 负载敏感（单独跑 12/12 通过，满载下 4/4 失败，基线脚本内 4 次失败 2 次），会导致门禁假拦截。已在 spec "已知限制"记录实测数据与两种机制，修复建议单独立任务。
 8. `TODO.md` 为本次工作的临时跟踪文件，交付前删除（持久记录在本计划与 spec 里）。
+9. **后续修复（发布 v0.3.0 时发现）**：原计划"前置检查逐包 `[ -d node_modules ]`"是错的 —— bun 把依赖 hoist 到根，无依赖的包（`packages/shared`）在 fresh install 后根本没 `node_modules`，该检查会在新 worktree / CI 上误报缺依赖（直接挡住首次发布合并）。已改为只检查根 `node_modules`，并把自测 A6（包内缺失不得报错）/ A7（根缺失才报错）补上。
