@@ -66,9 +66,20 @@ cd packages/db && bun test                    # 0.6s
 - 不要用 `BASELINE_SKIP=1` 图省事；它只是"用户明确知情时"的应急开关。
 - 在 main 上合并被 hook 拦下后，注意 Git 会把 merge 留在进行中状态：用 `git merge --abort` 回到合并前。
 - 声明任务完成时必须附真实证据（贴出你实际跑过的 scoped 命令与输出），不要凭"应该没问题"下结论。
-- 如果确实需要跑全量，用第 5 节的 `bun run baseline`，而不是自己拼全局命令。
+- 如果确实需要跑全量，用第 6 节的 `bun run baseline`，而不是自己拼全局命令。
 
-## 5. 速查表
+## 5. 发布流程
+
+发布（dev → main → tag）的完整步骤见 **`docs/release-process.md`**。要点：
+
+- 发布**不需要 worktree**，在主工作区直接操作即可
+- 先跑 `bash scripts/release-check.sh`：它会检查每个 worktree / 分支是否已进入 main，**未进入则阻塞** ——
+  此时不要自己决定，**先询问用户是否需要合并**；已合并的临时分支用 `--prune-merged` 清理
+- 版本号只改 `apps/desktop/package.json`（唯一来源），在 dev 上提交
+- 合并必须用 `git merge --no-ff dev`（fast-forward 不触发门禁），门禁会跑全量基线
+- push 没权限就跳过，不要强推、不要改 remote；tag 会触发 Release 构建，不要乱打
+
+## 6. 速查表
 
 | 目的 | 命令 |
 | --- | --- |
@@ -77,3 +88,5 @@ cd packages/db && bun test                    # 0.6s
 | 手动跑完整基线 | `bun run baseline` 或 `bash scripts/baseline-check.sh` |
 | 忽略缓存强制实跑 | `BASELINE_NO_CACHE=1 bun run baseline` |
 | 应急跳过基线 | `BASELINE_SKIP=1 git merge ...` / `git push --no-verify` |
+| 发布前检查（只读） | `bash scripts/release-check.sh` |
+| 清理已合并的临时分支 | `bash scripts/release-check.sh --prune-merged` |
