@@ -26,7 +26,7 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
-import { buildFileToolGroups, parseToolArgsJson } from '../lib/tool-summary';
+import { buildFileToolGroups, isHiddenFileToolResult, parseToolArgsJson } from '../lib/tool-summary';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -812,6 +812,9 @@ function TabChat({
 
           // Tool result message: compact result card
           if (isTool) {
+            // write/edit/read 的成功结果已由文件聚合卡片呈现（read 内容可展开）；错误结果仍渲染
+            if (isHiddenFileToolResult(msg)) return null;
+
             const toolName = msg.tool_name || 'unknown';
             const isError = /^error/i.test(msg.content_text?.trim() ?? '');
             const summary = msg.content_text

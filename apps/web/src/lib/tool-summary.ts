@@ -301,3 +301,14 @@ export function splitReadContent(content: string): { body: string; notice: strin
   }
   return { body: content, notice: null };
 }
+
+/**
+ * write/edit/read 的成功结果由文件聚合卡片呈现（read 内容可在行内展开），不再单独渲染结果卡片；
+ * 错误结果仍返回 false（保留失败反馈）。
+ */
+export function isHiddenFileToolResult(msg: ChatMessageDTO): boolean {
+  if (msg.message_kind !== 'tool' && msg.role !== 'tool') return false;
+  const toolName = msg.tool_name ?? '';
+  if (toolName !== 'write' && toolName !== 'edit' && toolName !== 'read') return false;
+  return !/^error/i.test((msg.content_text ?? '').trim());
+}

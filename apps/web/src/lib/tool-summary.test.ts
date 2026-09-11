@@ -5,6 +5,7 @@ import {
   findToolResultMessage,
   formatReadLineRange,
   isFileToolCall,
+  isHiddenFileToolResult,
   parseToolArgsJson,
   parseWriteEditDiff,
   splitLineCount,
@@ -336,5 +337,23 @@ describe('splitReadContent', () => {
   test('普通内容（含非提示方括号）不拆分', () => {
     const content = 'const a = [1, 2];\nconst b = [3];';
     expect(splitReadContent(content)).toEqual({ body: content, notice: null });
+  });
+});
+
+describe('isHiddenFileToolResult', () => {
+  test('write/edit/read 的成功结果不再单独渲染', () => {
+    expect(isHiddenFileToolResult(msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'write', content_text: 'Successfully wrote to a.ts' }))).toBe(true);
+    expect(isHiddenFileToolResult(msg({ id: 'r2', role: 'tool', message_kind: 'tool', tool_name: 'edit', content_text: 'ok' }))).toBe(true);
+    expect(isHiddenFileToolResult(msg({ id: 'r3', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'file body' }))).toBe(true);
+  });
+
+  test('错误结果仍渲染（保留失败反馈）', () => {
+    expect(isHiddenFileToolResult(msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'read', content_text: 'Error: ENOENT: no such file' }))).toBe(false);
+    expect(isHiddenFileToolResult(msg({ id: 'r2', role: 'tool', message_kind: 'tool', tool_name: 'write', content_text: '  error: permission denied' }))).toBe(false);
+  });
+
+  test('其它工具的结果与调用消息不受影响', () => {
+    expect(isHiddenFileToolResult(msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'bash', content_text: 'ok' }))).toBe(false);
+    expect(isHiddenFileToolResult(msg({ id: 'c1', tool_name: 'write' }))).toBe(false);
   });
 });
