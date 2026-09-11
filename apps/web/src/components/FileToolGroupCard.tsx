@@ -98,6 +98,7 @@ const FileRow = React.memo(function FileRow({
         data-status={status}
         role="button"
         tabIndex={0}
+        aria-expanded={expanded}
         onClick={() => onToggle(call.id, status)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -269,6 +270,7 @@ function FileToolGroupCard({
               data-testid="tool-group-header"
               role="button"
               tabIndex={0}
+              aria-expanded={allExpanded}
               onClick={() => toggleAll(!allExpanded)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -299,14 +301,14 @@ function FileToolGroupCard({
                     e.stopPropagation();
                     toggleAll(!allExpanded);
                   }}
-                className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer shrink-0 ${
-                  cardStatus === 'error'
-                    ? 'text-rose-700 dark:text-rose-300 bg-rose-100/70 dark:bg-rose-900/40 hover:bg-rose-200/70 dark:hover:bg-rose-800/50'
-                    : cardStatus === 'pending'
-                      ? 'text-amber-700 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-900/40 hover:bg-amber-200/70 dark:hover:bg-amber-800/50'
-                      : 'text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/40 hover:bg-emerald-200/70 dark:hover:bg-emerald-800/50'
-                }`}
-              >
+                  className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer shrink-0 ${
+                    cardStatus === 'error'
+                      ? 'text-rose-700 dark:text-rose-300 bg-rose-100/70 dark:bg-rose-900/40 hover:bg-rose-200/70 dark:hover:bg-rose-800/50'
+                      : cardStatus === 'pending'
+                        ? 'text-amber-700 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-900/40 hover:bg-amber-200/70 dark:hover:bg-amber-800/50'
+                        : 'text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/40 hover:bg-emerald-200/70 dark:hover:bg-emerald-800/50'
+                  }`}
+                >
                   {allExpanded ? '收起全部' : '展开全部'}
                 </button>
               )}

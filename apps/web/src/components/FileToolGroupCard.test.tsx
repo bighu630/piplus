@@ -544,6 +544,18 @@ describe('FileToolGroupCard 键盘可达性', () => {
 
     pressKey(header(), 'Enter');
     expect(details()).toHaveLength(1);
+
+    pressKey(header(), ' ');
+    expect(details()).toHaveLength(0);
+  });
+
+  test('键盘状态可通过 aria-expanded 播报', () => {
+    render(<Harness calls={[fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'a' })]} />);
+
+    expect(header()!.getAttribute('aria-expanded')).toBe('false');
+    pressKey(header(), 'Enter');
+    expect(header()!.getAttribute('aria-expanded')).toBe('true');
+    expect(rows()[0].getAttribute('aria-expanded')).toBe('true');
   });
 
   test('多文件组头部可用键盘整组展开', () => {
