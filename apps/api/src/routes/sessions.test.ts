@@ -389,6 +389,115 @@ describe('session routes', () => {
     expect(userRows).toHaveLength(0);
   });
 
+  test('vision relay 占位认领写 lastRunAt：旧 run 的迟到 cleanup 不得把占位误判为自己所有', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+
+    let releaseDescribe!: () => void;
+    const describeGate = new Promise<void>((resolve) => { releaseDescribe = resolve; });
+    let describeEntered = false;
+    const realClient = createPiClient();
+    const stubClient = new Proxy(realClient, {
+      get(target, prop, receiver) {
+        if (prop === 'completeModel') {
+          return async () => {
+            describeEntered = true;
+            await describeGate; // 保持占位窗口开启，使 DB 状态可观测
+            return { text: '占位窗口内的识别结果', stopReason: 'stop' };
+          };
+        }
+        if (prop === 'sendMessage') {
+          return async () => { throw new Error('no_api_key_in_test'); };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const app = createApp({ piClient: stubClient });
+
+    const projectRes = await app.request('/api/v1/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({ name: 'Vision Placeholder Claim', mode: 'existing', path: '/tmp' }),
+    });
+    const projectBody = await projectRes.json();
+    const sessionId = projectBody.sessionId as string;
+
+    // 切纯文本模型（无图片支持）→ 走 vision relay
+    const modelsRes = await app.request('/api/v1/models', { headers: { 'x-user-id': 'user_seed' } });
+    const modelsBody = await modelsRes.json();
+    const textOnlyModel = (modelsBody.models as Array<{ provider: string; id: string; input?: string[] }>).find(
+      (m) => Array.isArray(m.input) && !m.input.includes('image'),
+    );
+    if (textOnlyModel) {
+      await app.request(`/api/v1/sessions/${sessionId}/model`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+        body: JSON.stringify({ provider: textOnlyModel.provider, id: textOnlyModel.id }),
+      });
+    }
+    const settingsRes = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        vision_enabled: 'true',
+        vision_model: 'fake-vision/fake-model',
+        vision_fallback_model: 'fake-vision/fallback-model',
+      }),
+    });
+    expect(settingsRes.status).toBe(200);
+
+    const db = createDb(`file:${path}`);
+    const [before] = await db.select({ lastRunAt: sessions.lastRunAt }).from(sessions).where(eq(sessions.id, sessionId));
+    const sendStartedAt = Date.now();
+
+    const sendPromise = app.request(`/api/v1/sessions/${sessionId}/chat/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user-id': 'user_seed' },
+      body: JSON.stringify({
+        content: 'describe this',
+        attachments: [{
+          type: 'image',
+          mime_type: 'image/png',
+          data_base64: Buffer.from('blocked').toString('base64'),
+          filename: 'blocked.png',
+        }],
+      }),
+    });
+
+    // 有界轮询等到确实进入 describe（占位窗口开启）
+    for (let i = 0; i < 200 && !describeEntered; i++) {
+      await Bun.sleep(10);
+    }
+    expect(describeEntered).toBe(true);
+
+    // 占位期间：running 且 lastRunAt 已被本次占位推进。
+    // 修复前占位不写 lastRunAt（仍是 null/旧值）→ markSessionIdleIfRunOwned 会把本占位
+    // 误判给旧 run，导致多广播一次 idle（R1 审查发现）。
+    const [during] = await db
+      .select({ runtimeStatus: sessions.runtimeStatus, lastRunAt: sessions.lastRunAt })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId));
+    expect(during?.runtimeStatus).toBe('running');
+    expect(during?.lastRunAt).not.toBeNull();
+    expect(during!.lastRunAt!.getTime()).toBeGreaterThanOrEqual(sendStartedAt);
+    if (before?.lastRunAt) {
+      expect(during!.lastRunAt!.getTime()).toBeGreaterThan(before.lastRunAt.getTime());
+    }
+
+    releaseDescribe();
+    await sendPromise;
+
+    // 占位收尾语义不变：会话回到 idle
+    let after: { runtimeStatus: string } | undefined;
+    for (let i = 0; i < 200; i++) {
+      [after] = await db.select({ runtimeStatus: sessions.runtimeStatus }).from(sessions).where(eq(sessions.id, sessionId));
+      if (after?.runtimeStatus === 'idle') break;
+      await Bun.sleep(10);
+    }
+    expect(after?.runtimeStatus).toBe('idle');
+  });
+
   test('vision relay: history shows original user text and image attachments instead of merged description', async () => {
     const path = makeDbPath();
     createSeedDb(path);

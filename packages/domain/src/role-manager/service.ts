@@ -589,28 +589,24 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
         const userId = (child as any).createdBy ?? (parent as any).createdBy;
         if (!userId) return { parentSessionId, messageId };
 
-        // 动态 import 避免 service ↔ runtime 循环依赖
-        const { startSessionRun } = await import('../session/runtime');
+        // 动态 import 避免 service ↔ runtime 循环依赖（runtime → extensions/registry → service 是静态环）
+        const { wakeSessionWithContent } = await import('../session/runtime');
 
-        // 原子 idle→running 认领保证幂等：并发重复拉起会抛 session_busy，此处吞掉即可。
-        // 其他错误仅 warn 不向外抛 —— writeback 本身已成功落库，不应因拉起失败而让子会话报错。
-        await startSessionRun({
+        // 与强杀补投递共用同一实现：原子 idle→running 认领保证幂等（并发重复拉起抛
+        // session_busy 由 helper 吞掉），其他错误只 warn 不向外抛 —— writeback 本身
+        // 已成功落库，不应因拉起失败而让子会话报错。
+        const wakeResult = await wakeSessionWithContent({
           db: db as any,
           piClient: piClient as any,
           sessionId: parentSessionId,
           userId,
           content,
           requestId: `wb_${messageId}`,
-        }).then(() => {
-          console.log('[role-manager] parent auto-woken', { parentSessionId, messageId });
-        }).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('session_busy') || msg.includes('session_not_found')) {
-            console.log('[role-manager] auto-wake skipped', { parentSessionId, reason: msg });
-            return;
-          }
-          console.warn('[role-manager] auto-wake failed', { parentSessionId, err: msg });
+          reason: 'writeback-auto-wake',
         });
+        if (wakeResult === 'started') {
+          console.log('[role-manager] parent auto-woken', { parentSessionId, messageId });
+        }
       } catch (err) {
         console.warn('[role-manager] auto-wake check failed', { parentSessionId, err: String(err) });
       }

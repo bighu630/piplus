@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
-import { messages, projects, sessions } from '@piplus/db/schema';
+import { messages, projects, sessionEvents, sessions } from '@piplus/db/schema';
 import type { PiClient } from '@piplus/pi-client';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import { clearForcedRuntimeDisposeHandlers, notifyForcedRuntimeDispose } from '@piplus/pi-client/runtime-lifecycle-hooks';
@@ -310,6 +310,90 @@ describe('forced runtime reclaim → idle 收敛 → 迟到 writeback auto-wake'
       expect(parentMessages.some((m) => m.messageKind === 'writeback' && m.contentText === 'late writeback content')).toBe(true);
     } finally {
       // 释放挂起的 run（让 doCleanup 正常收尾，避免遗留 pending promise / 定时器）
+      releaseSend();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      clearIdleRuntimeCleanup(PARENT_ID);
+    }
+  });
+
+  /**
+   * ① 强杀补投递（线上事故里 Worker A 那条 writeback 的回归）：
+   * writeback 在强杀**之前**落库（父会话当时仍 running，其消费者=当时那次 wait 循环），
+   * 父会话随后被杀 → 旧实现没有任何代码会再读这条 → 永久搁置。
+   * 新实现：强杀收敛时重扫窗口 [lastRunAt, 收敛落库时刻] 并补投给父会话（带醒目标记）。
+   */
+  test('强杀补投递：被杀 run 窗口内已落库的 writeback 被重扫补投给父会话（+审计事件）', async () => {
+    const dbPath = makeDbPath('runtime-reclaim-replay');
+    createSeedDb(dbPath);
+    Bun.env.DATABASE_URL = `file:${dbPath}`;
+
+    const parentLastRunAt = new Date('2026-01-01T00:00:00.000Z');
+    const disposedAt = Date.parse('2026-01-01T00:10:00.000Z');
+    const { db } = await seedParentAndChild(dbPath, { parentLastRunAt });
+
+    // 事故时序：writeback 在被强杀之前落库
+    await db.insert(messages).values({
+      id: 'msg_stranded_before_kill',
+      sessionId: PARENT_ID,
+      piMessageId: null,
+      messageKind: 'writeback',
+      sourceSessionId: CHILD_ID,
+      role: 'assistant',
+      contentText: 'Worker A 在被强杀之前落库的 writeback',
+      contentBlocksJson: null,
+      contentVersion: 1,
+      requestId: 'req_stranded_before_kill',
+      createdAt: new Date('2026-01-01T00:05:00.000Z'),
+    } as any);
+
+    // 生产接线：createApp 把 piClient 注入给 reclaim hook（补投递用它拉起会话）
+    const { client, state, releaseSend } = makeStubPiClient();
+    createApp({ piClient: client });
+    const socket = createMockSocket();
+    attached.push(socket);
+    socketHub.attach(socket as never);
+
+    try {
+      await notifyForcedRuntimeDispose({
+        sessionId: PARENT_ID,
+        disposedAt,
+        attempts: 40,
+        noProgressMs: 1_800_000,
+      });
+
+      // 补投递生效：父会话被拉起，消费内容含醒目标记与被困住的 writeback
+      const [parentAfterReplay] = await db.select().from(sessions).where(eq(sessions.id, PARENT_ID)).limit(1);
+      expect(parentAfterReplay?.runtimeStatus).toBe('running');
+      expect(state.sent).toHaveLength(1);
+      expect(state.sent[0].sessionId).toBe(PARENT_ID);
+      expect(state.sent[0].content).toContain('补投递');
+      expect(state.sent[0].content).toContain('Worker A 在被强杀之前落库的 writeback');
+      expect(state.sent[0].content).toContain(CHILD_ID);
+
+      // ② 审计事件可查（旧实现只有 stdout 日志）
+      const events = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, PARENT_ID));
+      const audit = events
+        .filter((e) => e.type === 'runtime_forced_reclaim')
+        .map((e) => JSON.parse(e.payload) as Record<string, unknown>);
+      expect(audit).toHaveLength(1);
+      expect(audit[0]).toMatchObject({
+        result: 'converged',
+        stranded_writebacks: 1,
+        wake_result: 'started',
+        attempts: 40,
+        no_progress_ms: 1_800_000,
+      });
+
+      // 补投递 run 的前端可见性：hooks 把 onRuntimeStatusChange 透传给 wake，
+      // 因此除收敛时广播的 idle 外，还应看到补投递 run 的 running（否则前端停在 idle）。
+      const frames = socket.sent.map((raw) => JSON.parse(raw) as {
+        kind: string;
+        type?: string;
+        payload?: { runtime_status?: string };
+      });
+      expect(frames.some((f) => f.type === 'session.runtime_status_changed' && f.payload?.runtime_status === 'idle')).toBe(true);
+      expect(frames.some((f) => f.type === 'session.runtime_status_changed' && f.payload?.runtime_status === 'running')).toBe(true);
+    } finally {
       releaseSend();
       await new Promise((resolve) => setTimeout(resolve, 0));
       clearIdleRuntimeCleanup(PARENT_ID);

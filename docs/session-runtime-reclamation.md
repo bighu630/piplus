@@ -64,6 +64,70 @@
 
 ---
 
+### 0.2 强杀善后：补投递 + 审计事件 + vision 占位认领（残余加固，独立审查 R1 记录）
+
+#### ① 强杀补投递（`finalizeForcedRuntimeReclaim`）
+
+**动机（事故里丢的那条）**：Worker A 的 writeback 在 13:58:34 落库，父会话当时仍 `running`（它的消费者＝当时在跑的那次 wait 循环），父会话 13:59:36 被强杀 → 该条此后**没有任何消费者**：
+「收敛之后到达」的 writeback 有 87b60ef 的 auto-wake 兜底，而「强杀前已落库」的那条没有。
+
+**机制**：强杀收敛（或会话已 idle）时重扫 `messages` 中窗口内的 `message_kind='writeback'` 行，拼成一段**带醒目标记**（【平台补投递】…可能已被消费过，若重复请忽略）的内容，用 `wakeSessionWithContent` 拉起会话消费（与 writeback auto-wake 共用实现，原子 idle→running 认领保证幂等）。
+
+- **窗口 = `[lastRunAt, 收敛落库后的当前时刻]`**（`lastRunAt` 可靠：run 认领即写，见 `markSessionIdleIfRunOwned` JSDoc）。上界刻意取「收敛之后」而不是 `disposedAt`：强杀（`disposedAt`）到真正收敛落库之间有时间差（hook 是 fire-and-forget），这段间隙内落库的 writeback 的 auto-wake 会读到 DB 仍 `running` 而跳过，用 `disposedAt` 作上界仍会丢。
+- **不变式**：「收敛之后落库的写回，其 auto-wake 必然看到 idle → 由它负责；收敛之前的，一律补投」。两条路径即使竞争，也由 `startSessionRun` 的原子 `idle→running` 认领保证只投一次（输的一方 `session_busy`）。
+- **两个调用点**：收敛路径（状态由本函数落为 idle）；**会话已被旧 run 的 `doCleanup` 抢先收敛为 idle**（hook 慢到）——否则「谁先落 idle」会静默决定补投递是否发生（审查发现 L1）。该路径用 `lastRunAt <= disposedAt` 护栏保证没有被更新的 run 接管。
+- **有界重试（含「让位」语义）**：唤醒被并发认领（用户消息 / 其它 writeback 的 auto-wake）时会 `session_busy`，不重试会把这**整包**被困回写一并丢掉（审查发现 L3）。因此：
+  - 每轮尝试前只确认「会话可用」：`!row` / 已归档 → 终止（记 `skip_reason`）；`runtimeStatus !== 'idle'`（正被并发 run 占用）→ **让位并继续重试**（不抢在跑的 run，但也不会一次 busy 就丢弃整包）；会话释放后下一轮直接投出。
+  - `wake_result='failed'`（如 SQLITE_BUSY、`pi_session_runtime_unavailable`、模型绑定失败）同样消耗重试预算——失败路径已把会话复位 idle，重试不会重复认领，而瞬态错误值得重试。
+  - 预算是有限的：预算用尽后记 `wake_result` + `skip_reason='retries_exhausted'`（可从 `session_events` 发现，不静默丢失）。尝试次数与间隔见下表 env。
+- **取舍（用户确认）**：DB 侧没有「该 writeback 已被消费」的持久标记（「wait 循环匹配到」≠「内容真的落进上下文」），因此策略是**一律补投 + 醒目标记**：宁可偶发重复摘要，也不让结果永久丢失。
+
+#### ② 强杀审计事件
+
+`finalizeForcedRuntimeReclaim` 每次调用都往 `session_events` 落一条 `type='runtime_forced_reclaim'`。**两阶段写**：收敛/判定后立刻落一行 `wake_result='pending'`，补投递（含重试预算，最长约 1 分钟）结束后更新**同一行**为最终结果——进程在重试窗口内重启也不会丢掉「何时强杀过」的证据。payload：
+
+| 字段 | 含义 |
+|---|---|
+| `result` | `converged` / `skipped_not_running` / `skipped_newer_run` / `session_missing` |
+| `disposed_at` / `attempts` / `no_progress_ms` | 强杀时刻与 hook 信息（来自 pi-client） |
+| `last_run_at` | 判定所有权时读到的 run 认领时刻 |
+| `stranded_writebacks` | 窗口内扫到的被困回写条数；`null` = 未扫描（无 piClient / 无 lastRunAt / 被新 run 接管） |
+| `wake_result` | `started`（已投出）/ `skipped`（并发认领或 `session_not_found`）/ `failed`（拉起失败）/ `not_attempted`（无候选或不可拉起） |
+| `skip_reason` | `wake_result='skipped'` 时的原因：`session_not_idle`（整个预算内被并发 run 占用）/ `retries_exhausted`（尝试过但预算用尽仍未投出）/ `not_replayable`（会话不可补投：已归档或数据异常）/ `session_missing`；其余情况为 `null` |
+
+用途：强制回收此前只有 stdout 日志（线上日志未必落在文件里），现在可直接查：
+
+```sql
+SELECT created_at, session_id, json_extract(payload,'$.result') AS result,
+       json_extract(payload,'$.stranded_writebacks') AS stranded,
+       json_extract(payload,'$.wake_result') AS wake_result
+FROM session_events WHERE type='runtime_forced_reclaim' ORDER BY created_at DESC;
+```
+
+#### ③ vision 中转占位认领写 `lastRunAt`
+
+`apps/api/src/routes/sessions/routes/chat.ts` 的图片识别占位认领（把会话临时置 `running`）现在同时写 `lastRunAt`；否则旧 run 的迟到 cleanup 会因 `lastRunAt` 仍是旧值而把它误判为自己所有（多广播一次 idle）。`finally` 复位 idle 时保留 `lastRunAt`——随后的 `startSessionRun` 认领会覆盖成自己的 startedAt。
+
+环境变量（调用时读取，非法回落默认）：
+
+| 环境变量 | 含义 | 默认 |
+|---|---|---|
+| `PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS` | 补投递最大尝试次数（正整数） | `3` |
+| `PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS` | 补投递重试间隔（ms，>=0；默认取 30s 是为覆盖「并发 run 占着会话」的典型时长） | `30_000` |
+
+回归测试：`packages/domain/src/session/runtime.test.ts` 的 `forced reclaim 补投递` 组（窗口内补投 / 强杀到收敛之间落库仍补投 / 收敛之后不补投 / 无回写不拉起 / 归档不拉起 / 拉起失败不外抛 / 已 idle 仍补投 L1 / 被新 run 接管不补投 / busy 重试成功 L3 / 重试耗尽记 skipped）、`apps/api/src/routes/sessions/runtime-reclaim.test.ts`（生产接线端到端：收敛 → 补投递 → 审计事件 + WS running/idle）、`apps/api/src/routes/sessions.test.ts`（vision 占位写 lastRunAt）。
+
+#### 已知残余缺口（未修，记录待后续）
+
+**「父会话 `running` 期间到达、且没有匹配的在途 wait 循环」的 writeback 无消费者**：`writebackToParent` 只在父 `idle` 时 auto-wake，否则跳过；此后也没有任何机制回头扫它（补投递的窗口下界是下一次被杀 run 的 `lastRunAt`，按构造排除更早的写回）。触发场景：`wait=false` 的子会话在父忙时 writeback、wait 超时后子才 writeback、补投递 run 运行期间到达的写回。
+**建议的闭环**：持久化「已消费」标记（wait 循环匹配时写 `session_events`），并在每次 run 结束（`doCleanup` → idle）时重扫未消费 writeback 补投；顺带给 `messages(session_id, message_kind, created_at)` 加索引。
+
+另一条同源残余：**`stopping` 状态下的强杀不补投**（补投递闸门要求 `idle`，尊重用户显式停止）。此时窗口内的 writeback 会永久搁置（同样被后续窗口下界排除），属已知取舍而非新 bug。
+
+还有两条与「不丢」相关的待办（审查记录，未实现）：(a) **确定性错误与瞬态错误未区分**——`wakeSessionWithContent` 把 `session_not_found`（如 project/ownership 不匹配）也归入可重试的 `skipped`，会白耗一次重试预算后记 `retries_exhausted`，真实原因被掩盖；(b) **`notifyForcedRuntimeDispose` 串行 await handler**——一个 handler 的重试窗口（最长约 1 分钟）会拖住后续强杀通知的收敛，缓解办法是改并发派发（handler 内部已各自 try/catch）。
+
+---
+
 ## 1. 架构总览：两套"定时器 + 状态"
 
 runtime 生命周期由 **两个层级的 30 分钟定时器** 共同管理，外加 DB 中的 `sessions.runtimeStatus`（`idle`/`running`/`stopping`，schema.ts:62）作为状态机。

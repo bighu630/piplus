@@ -1,5 +1,5 @@
-import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
-import { and, eq, lte, ne } from 'drizzle-orm';
+import { messages, projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
+import { and, eq, gte, lte, ne } from 'drizzle-orm';
 import type { PiClient, PiImageInput, PiSessionStreamEvent } from '@piplus/pi-client';
 import { NON_WORKER_IDLE_RUNTIME_TTL_MS } from '@piplus/pi-client/constants';
 import { parseLocator } from '@piplus/pi-client/locator';
@@ -123,8 +123,9 @@ export async function markSessionIdle(db: RoleManagerDb, sessionId: string, time
  * 条件收敛 idle（带 run 所有权护栏）：仅当会话仍为 running 且本 run 仍是所有者
  * （lastRunAt <= runStartedAt，自身 run 满足相等）时写入并返回 true。
  *
- * 为什么用 lastRunAt 而不是 updated_at：lastRunAt 仅由「run 认领」写入（startSessionRun 的
- * 原子认领与 markSessionRunning 写同一个值），是「哪个 run 认领了会话」的可靠标记；
+ * 为什么用 lastRunAt 而不是 updated_at：lastRunAt 是「哪个 run 认领了会话」的可靠标记
+ * —— 由 run 的原子认领与 markSessionRunning 写同一个值，以及 chat 路由 vision 中转的
+ * 占位认领（同样显式写自己时刻的 lastRunAt，否则它会被旧 run 的迟到 cleanup 误判为自己所有）；
  * updated_at 会被 writeback/活动消息刷新，用它判定会把已被新 run 接管的会话误判给旧 run。
  *
  * lastRunAt IS NULL 的处理（刻意保持「不视为本 run 所有」）：
@@ -133,12 +134,11 @@ export async function markSessionIdle(db: RoleManagerDb, sessionId: string, time
  * running 会话的 lastRunAt 必然非 NULL——认领（idle→running 的条件 UPDATE）就同刻写入
  * lastRunAt，而 doCleanup 永远在认领与 markSessionRunning 之后才可能执行；markSessionRunning
  * 抛错时认领已被 catch 复位 idle 并抛出，不会带着 NULL 停在 running。
- * 因此该分支只在「非 run 的临时 running 写者」（如 chat 路由 vision 中转的原子占位，finally
- * 自行复位）或历史脏数据下可达；此时无法证明所有权。刻意**不**把它当成本 run 所有
- * （不用 `or(isNull(...), lte(...))`）：NULL 意味着「没有 run 认领过」，若一律判定为所有者，
- * 任何忘记写 lastRunAt 的未来/现有写者都会重新打开「旧 run 误判新 run 为自己的」窗口——
- * 正是本护栏要堵住的事故类别。宁可保守（交给停止收尾/重启 recoverStuckSessions 兜底），
- * 也不冒误覆盖的风险。
+ * 因此该分支在当前的写者集合（run 认领 + vision 占位认领）下基本不可达，只可能命中历史脏数据；
+ * 此时无法证明所有权。刻意**不**把它当成本 run 所有（不用 `or(isNull(...), lte(...))`）：
+ * NULL 意味着「没有认领者」，若一律判定为所有者，任何忘记写 lastRunAt 的未来写者都会重新
+ * 打开「旧 run 误判新 run 为自己的」窗口——正是本护栏要堵住的事故类别。宁可保守
+ * （交给停止收尾/重启 recoverStuckSessions 兜底），也不冒误覆盖的风险。
  */
 export async function markSessionIdleIfRunOwned(
   db: RoleManagerDb,
@@ -174,6 +174,271 @@ async function isSessionOwnedByNewerRun(db: RoleManagerDb, sessionId: string, ru
   return row.lastRunAt !== null && row.lastRunAt.getTime() > runStartedAt.getTime();
 }
 
+/**
+ * ② 强杀审计事件：强制回收原先只打 stdout 日志（线上日志未必落在文件里），
+ * 落一条 session_events 便于事后直接从 DB 查「哪个会话何时、为何被强杀」。
+ * 与 persistRuntimeError 同策略：审计写入失败绝不影响善后主流程。
+ */
+async function persistForcedReclaimEvent(
+  db: RoleManagerDb,
+  sessionId: string,
+  payload: Record<string, unknown>,
+  existingEventId?: string,
+) {
+  try {
+    if (existingEventId) {
+      await db.update(sessionEvents)
+        .set({ payload: JSON.stringify(payload) })
+        .where(eq(sessionEvents.id, existingEventId));
+      return existingEventId;
+    }
+    const eventId = `event_forced_reclaim_${crypto.randomUUID().slice(0, 12)}`;
+    await db.insert(sessionEvents).values({
+      id: eventId,
+      sessionId,
+      type: 'runtime_forced_reclaim',
+      payload: JSON.stringify(payload),
+      parentMessageId: null,
+      sequence: 1,
+      createdAt: new Date(),
+    } as any);
+    return eventId;
+  } catch (insertErr) {
+    console.error('[session-runtime] failed to persist forced reclaim audit event', { sessionId, insertErr });
+    return existingEventId;
+  }
+}
+
+/**
+ * 用一段内容拉起会话消费（writeback auto-wake 与强杀补投递共用同一实现）。
+ * 原子 idle→running 认领保证幂等：并发重复拉起抛 session_busy，这里吞掉即视为没拉起；
+ * 其他错误只 warn 不抛 —— 调用方（writeback 落库 / 强杀善后）不得因拉起失败而失败。
+ */
+export type WakeSessionWithContentInput = {
+  db: RoleManagerDb;
+  piClient: PiClient;
+  sessionId: string;
+  userId: string;
+  content: string;
+  requestId: string;
+  /** 仅日志标签（如 'writeback-auto-wake' / 'forced-reclaim-rescan'） */
+  reason: string;
+  onRuntimeStatusChange?: StartSessionRunInput['onRuntimeStatusChange'];
+};
+
+export async function wakeSessionWithContent(
+  input: WakeSessionWithContentInput,
+): Promise<'started' | 'skipped' | 'failed'> {
+  try {
+    await startSessionRun({
+      db: input.db,
+      piClient: input.piClient,
+      sessionId: input.sessionId,
+      userId: input.userId,
+      content: input.content,
+      requestId: input.requestId,
+      onRuntimeStatusChange: input.onRuntimeStatusChange,
+    });
+    console.log('[session-runtime] session woken with content', { sessionId: input.sessionId, reason: input.reason });
+    return 'started';
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('session_busy') || msg.includes('session_not_found')) {
+      console.log('[session-runtime] wake skipped', { sessionId: input.sessionId, reason: input.reason, error: msg });
+      return 'skipped';
+    }
+    console.warn('[session-runtime] wake failed', { sessionId: input.sessionId, reason: input.reason, error: msg });
+    return 'failed';
+  }
+}
+
+type StrandedWritebackRow = {
+  id: string;
+  sourceSessionId: string | null;
+  contentText: string | null;
+  contentBlocksJson: string | null;
+  createdAt: Date;
+};
+
+/** 扫描 [from, to] 窗口内发给该会话的 writeback —— 强杀补投递的候选集。 */
+async function findStrandedWritebacks(
+  db: RoleManagerDb,
+  sessionId: string,
+  from: Date,
+  to: Date,
+): Promise<StrandedWritebackRow[]> {
+  return await db.select({
+    id: messages.id,
+    sourceSessionId: messages.sourceSessionId,
+    contentText: messages.contentText,
+    contentBlocksJson: messages.contentBlocksJson,
+    createdAt: messages.createdAt,
+  })
+    .from(messages)
+    .where(and(
+      eq(messages.sessionId, sessionId),
+      eq(messages.messageKind, 'writeback'),
+      gte(messages.createdAt, from),
+      lte(messages.createdAt, to),
+    ))
+    .orderBy(messages.createdAt);
+}
+
+/**
+ * 补投递内容：醒目标记 + 逐条来源/时间 + summary(+blocks)。
+ *
+ * 为什么要醒目标记：窗口内的 writeback 可能在强杀前已被 wait 循环「匹配」过，
+ * 但「匹配到」≠「内容真的落进上下文」（事故里 Worker A 那条就是匹配后交给被杀 agent 吞掉的），
+ * DB 侧没有可靠信号区分两者，因此策略是**一律补投**——宁可偶发重复摘要，也不让结果永久丢失；
+ * 标记让模型/用户能识别这是一次补投递并自行核对。
+ */
+// 补投递（强杀善后）的有界重试参数：会话恰好被并发认领（用户消息/其它 auto-wake）而 session_busy 时，
+// 不因一次失败就丢掉**整包**被困回写（L3）。调用时读 env，便于测试用极小值驱动重试。
+const DEFAULT_REPLAY_ATTEMPTS = 3;
+// 间隔取 30s（而非秒级）：补投递最常见的竞争是「用户消息 / 其它 auto-wake 的 run 正占着会话」，
+// 这些 run 通常是几十秒级；太短的间隔只会在同一个 busy 窗口里空转，白耗重试预算。
+// 两个 resolver 均在调用时读 env（attempts 取正整数；retry ms 取 >=0，便于测试用极小值驱动重试）。
+const DEFAULT_REPLAY_RETRY_MS = 30_000;
+
+function resolveReplayAttempts(): number {
+  const raw = typeof process !== 'undefined' ? process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS?.trim() : undefined;
+  if (raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return DEFAULT_REPLAY_ATTEMPTS;
+}
+
+function resolveReplayRetryMs(): number {
+  const raw = typeof process !== 'undefined' ? process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS?.trim() : undefined;
+  if (raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return DEFAULT_REPLAY_RETRY_MS;
+}
+
+function buildReplayContent(items: StrandedWritebackRow[]): string {
+  const header = `【平台补投递】上一轮 run 因长时间无进展被强制回收，以下 ${items.length} 条子会话写回结果未能进入会话上下文（可能已被消费过，若重复请忽略）。`;
+  const body = items.map((item, index) => {
+    let blocksPart = '';
+    if (item.contentBlocksJson) {
+      try {
+        blocksPart = `\n\n${JSON.stringify(JSON.parse(item.contentBlocksJson), null, 2)}`;
+      } catch {
+        blocksPart = `\n\n${item.contentBlocksJson}`;
+      }
+    }
+    return `--- ${index + 1}/${items.length} 来自 ${item.sourceSessionId ?? '未知子会话'}（${item.createdAt.toISOString()}）---\n${item.contentText ?? ''}${blocksPart}`;
+  }).join('\n\n');
+  return `${header}\n\n${body}`;
+}
+
+type ReplayOutcome = {
+  /** 窗口内扫描到的被困 writeback 数；null = 未扫描（如无 piClient / 无 lastRunAt） */
+  stranded: number | null;
+  wakeResult: 'started' | 'skipped' | 'failed' | 'not_attempted';
+  /**
+   * wakeResult='skipped' 时的原因（审计用，区分「正常让位」与「需要关注」）：
+   * - `session_not_idle`：重试期间会话始终被并发 run 占用；
+   * - `retries_exhausted`：重试预算用尽仍未投出；
+   * - `not_replayable`：会话不可补投（已归档，或缺少 createdBy 等无法拉起的数据异常）；
+   * - `session_missing`：会话行已被删。
+   * 投出成功或未尝试（无候选）时为 null。
+   */
+  skipReason: 'session_not_idle' | 'retries_exhausted' | 'not_replayable' | 'session_missing' | null;
+};
+
+/**
+ * ① 补投递：重扫窗口 [lastRunAt, windowEnd] 内的 writeback 并补投给会话（内容带醒目标记）。
+ *
+ * 两个调用点：
+ * - 收敛路径：强杀后由本函数把状态落为 idle，随后必然 idle → 可被拉起；
+ * - 非收敛路径（旧 run 的 doCleanup 抢先收敛为 idle，hook 慢到）：状态已 idle 同样可被拉起。
+ *   此时若不补投，同一条被困 writeback 就永久搁置（审查发现 L1）；调用方已用
+ *   lastRunAt <= disposedAt 护栏保证会话没有被更新的 run 接管。
+ *
+ * 有界重试：唤醒靠原子 idle→running 认领，会话恰好被并发认领（用户消息 / 其它 writeback
+ * 的 auto-wake）时会 session_busy；不重试就会把**整包**被困回写一并丢掉（L3）。
+ * 每次重试前只重新确认「会话仍空闲可用」（idle + active）——一旦有新 run 在跑就让位（不抢）。
+ */
+async function replayStrandedWritebacks(input: {
+  db: RoleManagerDb;
+  piClient: PiClient;
+  sessionId: string;
+  userId: string;
+  lastRunAt: Date;
+  windowEnd: Date;
+  onRuntimeStatusChange?: StartSessionRunInput['onRuntimeStatusChange'];
+}): Promise<ReplayOutcome> {
+  const stranded = await findStrandedWritebacks(input.db, input.sessionId, input.lastRunAt, input.windowEnd);
+  if (stranded.length === 0) return { stranded: 0, wakeResult: 'not_attempted', skipReason: null };
+
+  const content = buildReplayContent(stranded);
+  const attempts = resolveReplayAttempts();
+  let lastWakeResult: 'skipped' | 'failed' = 'skipped';
+  // 最近一次尝试是否只是「让位」（会话被并发 run 占用）——预算用尽时据此区分
+  // session_not_idle（全程被占用，正常让位）与 retries_exhausted（尝试过但未投出/失败）。
+  let lastAttemptWasDefer = false;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, resolveReplayRetryMs()));
+
+    // 每次尝试前重新确认「会话空闲可用」：仍 idle 且未归档。
+    // 刻意**不**在这里再比 lastRunAt 与 disposedAt：上一次失败的尝试自身会写
+    // lastRunAt = 自己的 startedAt（认领即写 run 身份），那会把「我们自己的失败」
+    // 误判成「被更新的 run 接管」而放弃重试。"通知是否仍然相关"（lastRunAt <= disposedAt）
+    // 由调用方在进入补投递之前判定一次；这里只保证不打断/不抢正在跑的 run。
+    const [row] = await input.db
+      .select({ runtimeStatus: sessions.runtimeStatus, status: sessions.status })
+      .from(sessions)
+      .where(eq(sessions.id, input.sessionId))
+      .limit(1);
+    if (!row) return { stranded: stranded.length, wakeResult: 'skipped', skipReason: 'session_missing' };
+    if (row.status !== 'active') return { stranded: stranded.length, wakeResult: 'skipped', skipReason: 'not_replayable' };
+    if (row.runtimeStatus !== 'idle') {
+      // 会话正被并发 run 占用：让位但**继续重试**（不抢在跑的 run，也不能一次 busy 就丢掉整包）。
+      // 常见触发：用户消息或其它 writeback 的 auto-wake 抢在重扫前认领。
+      console.log('[session-runtime] forced reclaim replay deferred — session busy', {
+        sessionId: input.sessionId,
+        attempt: attempt + 1,
+        attempts,
+        count: stranded.length,
+      });
+      lastWakeResult = 'skipped';
+      lastAttemptWasDefer = true;
+      continue;
+    }
+
+    const wakeResult = await wakeSessionWithContent({
+      db: input.db,
+      piClient: input.piClient,
+      sessionId: input.sessionId,
+      userId: input.userId,
+      content,
+      requestId: `wbreplay_${crypto.randomUUID().slice(0, 12)}`,
+      reason: 'forced-reclaim-rescan',
+      onRuntimeStatusChange: input.onRuntimeStatusChange,
+    });
+    console.log('[session-runtime] forced reclaim replay attempt', {
+      sessionId: input.sessionId,
+      attempt: attempt + 1,
+      count: stranded.length,
+      result: wakeResult,
+    });
+    if (wakeResult === 'started') return { stranded: stranded.length, wakeResult, skipReason: null };
+    // 'skipped'（并发认领 / session_not_found）与 'failed'（含 SQLITE_BUSY、runtime 暂不可用、
+    // 模型绑定失败等瞬态错误；失败路径已把会话复位 idle，重试不会重复认领）都继续消耗重试预算，
+    // 预算用尽后以最后一次的结果 + skip_reason 记账。
+    lastWakeResult = wakeResult;
+    lastAttemptWasDefer = false;
+  }
+  return {
+    stranded: stranded.length,
+    wakeResult: lastWakeResult,
+    skipReason: lastAttemptWasDefer ? 'session_not_idle' : 'retries_exhausted',
+  };
+}
+
 export type FinalizeForcedRuntimeReclaimInput = {
   db: RoleManagerDb;
   sessionId: string;
@@ -183,10 +448,16 @@ export type FinalizeForcedRuntimeReclaimInput = {
   attempts?: number;
   /** 仅日志 */
   noProgressMs?: number;
+  /**
+   * 强杀补投递（①）所需的客户端：把被杀 run 窗口 [lastRunAt, disposedAt] 内已落库、
+   * 却因 run 被杀而失去消费者的 writeback 重新投给该会话。缺省则只收敛、不补投。
+   */
+  piClient?: PiClient;
   onRuntimeStatusChange?: (payload: {
     sessionId: string;
     projectId: string;
-    runtimeStatus: 'idle';
+    /** 'idle' = 收敛广播；'running' = 补投递 run 拉起后（与普通 run 同形，供前端刷新状态） */
+    runtimeStatus: 'idle' | 'running';
     error: string | null;
   }) => void | Promise<void>;
 };
@@ -201,27 +472,89 @@ export type FinalizeForcedRuntimeReclaimInput = {
  * （lastRunAt 推进到 disposedAt 之后），绝不能覆盖新 run。
  *
  * domain 不直接依赖 socketHub：广播通过 onRuntimeStatusChange 回调交给调用方（api 层）。
+ *
+ * 除了状态收敛，本函数还负责两件善后：
+ * ① **补投递**：重扫被杀 run 窗口 [lastRunAt, 收敛落库后的当前时刻] 内发给本会话的 writeback，
+ *    有则用 wakeSessionWithContent 重新拉起会话消费（附醒目标记，会话 busy 时有界重试）。
+ *    上界取「收敛落库之后」而不是 disposedAt：强杀（disposedAt）到收敛落库之间存在时间差
+ *    （hook 是 fire-and-forget），这段时间内落库的 writeback 的 auto-wake 会看到 DB 仍 running
+ *    而跳过，若不计入窗口就会永久丢失。取收敛后的时刻后，不变式为：
+ *    「收敛之后落库的写回，其 auto-wake 必然看到 idle → 由它负责；收敛之前的，一律补投」，
+ *    两条路径即使竞争也由原子 idle→running 认领保证只投一次（输的一方 session_busy 跳过/重试）。
+ *    会话已经 idle（旧 run 的 doCleanup 抢先收敛、hook 慢到）时同样补投——否则 "hook 与
+ *    doCleanup 谁先落 idle" 会静默决定补投递是否发生（审查发现 L1）。
+ * ② **审计事件**：落一条 session_events(type='runtime_forced_reclaim')，含 result / 窗口 /
+ *    stranded_writebacks / wake_result，便于事后从 DB 审计强杀与补投递是否真的投出。
  */
 export async function finalizeForcedRuntimeReclaim(input: FinalizeForcedRuntimeReclaimInput): Promise<boolean> {
   const [session] = await input.db.select({
     id: sessions.id,
     projectId: sessions.projectId,
+    status: sessions.status,
+    createdBy: sessions.createdBy,
     runtimeStatus: sessions.runtimeStatus,
     lastRunAt: sessions.lastRunAt,
   }).from(sessions).where(eq(sessions.id, input.sessionId)).limit(1);
+
+  const auditBase = {
+    disposed_at: new Date(input.disposedAt).toISOString(),
+    attempts: input.attempts ?? null,
+    no_progress_ms: input.noProgressMs ?? null,
+    last_run_at: session?.lastRunAt?.toISOString() ?? null,
+  };
 
   if (!session) {
     console.warn('[session-runtime] forced reclaim finalization skipped — session not found', {
       sessionId: input.sessionId,
       disposedAt: input.disposedAt,
     });
+    await persistForcedReclaimEvent(input.db, input.sessionId, {
+      ...auditBase, result: 'session_missing', stranded_writebacks: null, wake_result: 'not_attempted', skip_reason: null,
+    });
     return false;
   }
+
+  /** 非收敛出口的补投递：仅当会话已 idle、未归档、且未被更新的 run 接管（lastRunAt <= disposedAt）。 */
+  const replayOnAlreadyIdle = async (): Promise<ReplayOutcome> => {
+    const notTakenOver = session.lastRunAt !== null && session.lastRunAt.getTime() <= input.disposedAt;
+    if (!input.piClient || !session.lastRunAt || session.runtimeStatus !== 'idle' || session.status !== 'active' || !session.createdBy || !notTakenOver) {
+      return { stranded: null, wakeResult: 'not_attempted', skipReason: null };
+    }
+    try {
+      return await replayStrandedWritebacks({
+        db: input.db,
+        piClient: input.piClient,
+        sessionId: input.sessionId,
+        userId: session.createdBy,
+        lastRunAt: session.lastRunAt,
+        windowEnd: new Date(),
+        onRuntimeStatusChange: input.onRuntimeStatusChange,
+      });
+    } catch (err) {
+      console.warn('[session-runtime] forced reclaim replay failed (already-idle path)', {
+        sessionId: input.sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return { stranded: null, wakeResult: 'failed', skipReason: null };
+    }
+  };
+
   if (session.runtimeStatus !== 'running') {
     console.log('[session-runtime] forced reclaim finalization skipped — session not running', {
       sessionId: input.sessionId,
       runtimeStatus: session.runtimeStatus,
     });
+    // 会话已经 idle：旧 run 的 doCleanup 抢先收敛（hook 慢到）时，窗口内的被困 writeback
+    // 同样需要补投，否则「谁先落 idle」会静默决定补投递是否发生（L1）。
+    // 审计两阶段写：先落 pending（重试预算最长可达 ~1 分钟，"发生过强杀"的证据不能拖到重试结束才落库），
+    // 补投递结束后更新同一行为最终结果。
+    const notRunningAuditId = await persistForcedReclaimEvent(input.db, input.sessionId, {
+      ...auditBase, result: 'skipped_not_running', stranded_writebacks: null, wake_result: 'pending', skip_reason: null,
+    });
+    const outcome = await replayOnAlreadyIdle();
+    await persistForcedReclaimEvent(input.db, input.sessionId, {
+      ...auditBase, result: 'skipped_not_running', stranded_writebacks: outcome.stranded, wake_result: outcome.wakeResult, skip_reason: outcome.skipReason,
+    }, notRunningAuditId ?? undefined);
     return false;
   }
 
@@ -243,6 +576,9 @@ export async function finalizeForcedRuntimeReclaim(input: FinalizeForcedRuntimeR
       disposedAt: input.disposedAt,
       lastRunAt: session.lastRunAt?.toISOString() ?? null,
     });
+    await persistForcedReclaimEvent(input.db, input.sessionId, {
+      ...auditBase, result: 'skipped_newer_run', stranded_writebacks: null, wake_result: 'not_attempted', skip_reason: null,
+    });
     return false;
   }
 
@@ -258,6 +594,56 @@ export async function finalizeForcedRuntimeReclaim(input: FinalizeForcedRuntimeR
     runtimeStatus: 'idle',
     error: null,
   });
+
+  // ① 补投递：被杀 run 窗口内已落库但失去消费者的 writeback（事故里 Worker A 那条）。
+  // 窗口上界取「收敛落库之后」：强杀到收敛之间落库的 writeback 的 auto-wake 会因 DB 仍 running
+  // 而跳过，不计入窗口就会丢失；收敛之后落库的则由其 auto-wake（看到 idle）负责。
+  const replayWindowEnd = new Date();
+  // 审计两阶段写：pending 行先落（进程在重试窗口内重启也不会丢掉「何时强杀过」的证据），
+  // 补投递结束后更新同一行。
+  const convergedAuditId = await persistForcedReclaimEvent(input.db, input.sessionId, {
+    ...auditBase, result: 'converged', stranded_writebacks: null, wake_result: 'pending', skip_reason: null,
+  });
+  let outcome: ReplayOutcome = { stranded: null, wakeResult: 'not_attempted', skipReason: null };
+  if (input.piClient && session.lastRunAt) {
+    try {
+      if (session.status === 'active' && session.createdBy) {
+        outcome = await replayStrandedWritebacks({
+          db: input.db,
+          piClient: input.piClient,
+          sessionId: input.sessionId,
+          userId: session.createdBy,
+          lastRunAt: session.lastRunAt,
+          windowEnd: replayWindowEnd,
+          onRuntimeStatusChange: input.onRuntimeStatusChange,
+        });
+      } else {
+        // 归档/无 createdBy：扫一眼只为如实记账，不尝试拉起
+        const stranded = await findStrandedWritebacks(input.db, input.sessionId, session.lastRunAt, replayWindowEnd);
+        outcome = {
+          stranded: stranded.length,
+          wakeResult: 'not_attempted',
+          skipReason: 'not_replayable',
+        };
+        console.log('[session-runtime] forced reclaim replay skipped — session not replayable', {
+          sessionId: input.sessionId,
+          status: session.status,
+          count: stranded.length,
+        });
+      }
+    } catch (err) {
+      // 补投递失败绝不影响强杀善后（状态已收敛、审计仍要落）
+      console.warn('[session-runtime] forced reclaim replay failed', {
+        sessionId: input.sessionId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      outcome = { stranded: null, wakeResult: 'failed', skipReason: null };
+    }
+  }
+
+  await persistForcedReclaimEvent(input.db, input.sessionId, {
+    ...auditBase, result: 'converged', stranded_writebacks: outcome.stranded, wake_result: outcome.wakeResult, skip_reason: outcome.skipReason,
+  }, convergedAuditId ?? undefined);
   return true;
 }
 

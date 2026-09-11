@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
-import { projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
+import { messages, projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
 import { startSessionRun, clearIdleRuntimeCleanup, scheduleIdleRuntimeCleanup, finalizeSessionStop, finalizeForcedRuntimeReclaim, markSessionIdleIfRunOwned } from './runtime';
@@ -1413,7 +1413,8 @@ describe('finalizeForcedRuntimeReclaim', () => {
     return { db };
   }
 
-  type StatusPayload = { sessionId: string; projectId: string; runtimeStatus: 'idle'; error: string | null };
+  // 'running' 也出现：强杀收敛会广播 idle，随后补投递 run 拉起时会广播 running（前端状态刷新）
+  type StatusPayload = { sessionId: string; projectId: string; runtimeStatus: 'idle' | 'running'; error: string | null };
 
   test('running 且 lastRunAt <= disposedAt：收敛 idle + 广播一次（payload 形状断言）', async () => {
     const { db } = await seedRunningSession({ lastRunAt: new Date('2026-01-01T00:00:00.000Z') });
@@ -1881,6 +1882,498 @@ describe('markSessionIdleIfRunOwned / doCleanup 所有权判定', () => {
       expect(afterStartup?.lastRuntimeError).toBeNull();
     } finally {
       clearIdleRuntimeCleanup(sessionId);
+    }
+  });
+
+});
+
+/**
+ * ① 补投递（rescan）与 ② 强杀审计事件。
+ *
+ * 场景来源（线上事故）：Worker A 的 writeback 在 13:58:34 落库（父会话当时仍 running，
+ * 其消费者=当时在跑的 wait 循环），父会话 13:59:36 被卡死兜底强杀 → 该条 writeback
+ * 再也没有任何消费者（事后到达的 writeback 有 auto-wake 兜底，这条「强杀前已落库」的没有）。
+ * 因此强杀收敛时重扫「被杀那次 run 窗口 [lastRunAt, disposedAt]」内的 writeback 并补投给父会话。
+ */
+describe('forced reclaim 补投递（rescan stranded writebacks）', () => {
+  const SESSION = 'session_test_runtime';
+  const RUN_STARTED_AT = new Date('2026-01-01T00:00:00.000Z');
+  const DISPOSED_AT = Date.parse('2026-01-01T00:10:00.000Z');
+
+  /** 有界轮询：预算内确认条件始终不成立（「不得发生」类断言，避免固定 sleep 的单点抽样）。 */
+  async function confirmNever(predicate: () => boolean | Promise<boolean>, budgetMs = 200): Promise<boolean> {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      if (await predicate()) return false;
+      await Bun.sleep(10);
+    }
+    return !(await predicate());
+  }
+
+  async function seedParent(options: {
+    writebacks?: Array<{ summary: string; at: number; source?: string; blocks?: unknown }>;
+    status?: string;
+    lastRunAt?: Date | null;
+    runtimeStatus?: string;
+  } = {}) {
+    const { db } = await setupSession();
+    await db.update(sessions).set({
+      runtimeStatus: options.runtimeStatus ?? 'running',
+      status: options.status ?? 'active',
+      lastRunAt: options.lastRunAt === undefined ? RUN_STARTED_AT : options.lastRunAt,
+      lastRuntimeError: 'stale_error',
+      updatedAt: RUN_STARTED_AT,
+    }).where(eq(sessions.id, SESSION));
+
+    for (const [i, wb] of (options.writebacks ?? []).entries()) {
+      await db.insert(messages).values({
+        id: `msg_stranded_${i}`,
+        sessionId: SESSION,
+        piMessageId: null,
+        messageKind: 'writeback',
+        sourceSessionId: wb.source ?? `session_child_${i}`,
+        role: 'assistant',
+        contentText: wb.summary,
+        contentBlocksJson: wb.blocks ? JSON.stringify(wb.blocks) : null,
+        contentVersion: 1,
+        requestId: `req_child_${i}`,
+        createdAt: new Date(wb.at),
+      } as any);
+    }
+    return { db };
+  }
+
+  async function readReclaimEvents(db: TestDb) {
+    const rows = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, SESSION));
+    return rows.filter((e) => e.type === 'runtime_forced_reclaim').map((e) => JSON.parse(e.payload));
+  }
+
+  test('收敛后补投递窗口内的 writeback（带醒目标记）并写审计事件', async () => {
+    const { db } = await seedParent({
+      writebacks: [
+        { summary: 'Worker A 完成：后端 tag 端点', at: Date.parse('2026-01-01T00:05:00.000Z'), source: 'session_child_a' },
+        { summary: 'Worker B 完成：前端切换 UI', at: Date.parse('2026-01-01T00:06:00.000Z'), source: 'session_child_b', blocks: [{ type: 'text', text: 'done' }] },
+      ],
+    });
+    const { client, state } = makePiClient();
+
+    try {
+      const converged = await finalizeForcedRuntimeReclaim({
+        db,
+        sessionId: SESSION,
+        disposedAt: DISPOSED_AT,
+        attempts: 40,
+        noProgressMs: 1_800_000,
+        piClient: client,
+      });
+      expect(converged).toBe(true);
+
+      // 补投递：父会话被拉起，内容包含两条 summary、来源会话与醒目标记
+      expect(await waitUntil(() => state.sent.some((s) => s.sessionId === SESSION))).toBe(true);
+      const replayed = state.sent.find((s) => s.sessionId === SESSION)!;
+      expect(replayed.content).toContain('补投递');
+      expect(replayed.content).toContain('Worker A 完成：后端 tag 端点');
+      expect(replayed.content).toContain('Worker B 完成：前端切换 UI');
+      expect(replayed.content).toContain('session_child_a');
+      expect(replayed.content).toContain('session_child_b');
+      // blocks 不丢：结构化内容一并补投
+      expect(replayed.content).toContain('done');
+
+      // ② 审计事件可查
+      const events = await readReclaimEvents(db);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        result: 'converged',
+        disposed_at: new Date(DISPOSED_AT).toISOString(),
+        attempts: 40,
+        no_progress_ms: 1_800_000,
+        last_run_at: RUN_STARTED_AT.toISOString(),
+        stranded_writebacks: 2,
+        wake_result: 'started',
+      });
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('强杀之后、收敛之前落库的 writeback 仍会补投递（当时 auto-wake 看到 running 会跳过）', async () => {
+    // disposedAt 到 hook 实际收敛之间有时间差（fire-and-forget），这段窗口内落库的 writeback
+    // 既不在「对杀前」也不在「收敛后」，只靠 auto-wake 会被跳过 → 必须由补投递接住。
+    const { db } = await seedParent({
+      writebacks: [{ summary: '强杀之后、收敛之前到达的 writeback', at: DISPOSED_AT + 60_000 }],
+    });
+    const { client, state } = makePiClient();
+
+    try {
+      expect(await finalizeForcedRuntimeReclaim({
+        db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client,
+      })).toBe(true);
+      expect(await waitUntil(() => state.sent.some((s) => s.sessionId === SESSION))).toBe(true);
+      expect(state.sent[0].content).toContain('强杀之后、收敛之前到达的 writeback');
+
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({ result: 'converged', stranded_writebacks: 1, wake_result: 'started' });
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('窗口上界：收敛之后落库的 writeback 不补投递（由它自己的 auto-wake 负责）', async () => {
+    // 收敛（=本次 finalize 执行）之后才落库的写回，其 auto-wake 必然读到 idle → 由那条路径负责。
+    const futureAt = Date.now() + 60_000;
+    const { db } = await seedParent({
+      writebacks: [{ summary: '收敛之后才到达的 writeback', at: futureAt }],
+    });
+    const { client, state } = makePiClient();
+
+    try {
+      const converged = await finalizeForcedRuntimeReclaim({
+        db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client,
+      });
+      expect(converged).toBe(true);
+      expect(await confirmNever(() => state.sent.length > 0)).toBe(true);
+
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({ result: 'converged', stranded_writebacks: 0, wake_result: 'not_attempted' });
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('无 writeback 时不拉起（审计记录 stranded=0 / wake_result=not_attempted）', async () => {
+    const { db } = await seedParent();
+    const { client, state } = makePiClient();
+
+    try {
+      expect(await finalizeForcedRuntimeReclaim({ db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client })).toBe(true);
+      expect(await confirmNever(() => state.sent.length > 0)).toBe(true);
+      expect(await readReclaimEvents(db)).toHaveLength(1);
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('已归档父会话不补投递（仍写审计事件）', async () => {
+    const { db } = await seedParent({
+      status: 'archived',
+      writebacks: [{ summary: '归档会话的遗留 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client, state } = makePiClient();
+
+    try {
+      expect(await finalizeForcedRuntimeReclaim({ db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client })).toBe(true);
+      expect(await confirmNever(() => state.sent.length > 0)).toBe(true);
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({
+        result: 'converged',
+        stranded_writebacks: 1,
+        wake_result: 'not_attempted',
+        skip_reason: 'not_replayable',
+      });
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('补投递失败不外抛（运行时不可用）：finalize 仍返回 true 且审计 wake_result=failed', async () => {
+    const previousRetry = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+    const previousAttempts = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+    // failed 也消耗重试预算（覆盖 SQLITE_BUSY 等瞬态错误）→ 测试用极小值驱动，避免等默认 30s 间隔
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = '5';
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = '2';
+    const { db } = await seedParent({
+      writebacks: [{ summary: '运行时不可用时的遗留 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client } = makePiClient({ ensureRuntimeError: new Error('pi_session_runtime_unavailable') });
+
+    try {
+      expect(await finalizeForcedRuntimeReclaim({ db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client })).toBe(true);
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({
+        result: 'converged',
+        stranded_writebacks: 1,
+        wake_result: 'failed',
+        skip_reason: 'retries_exhausted',
+      });
+    } finally {
+      if (previousRetry === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = previousRetry;
+      if (previousAttempts === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = previousAttempts;
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('skipped_newer_run：不覆盖新 run、不补投递，但写审计事件', async () => {
+    const newerRunStartedAt = new Date(DISPOSED_AT + 60_000);
+    const { db } = await seedParent({
+      lastRunAt: newerRunStartedAt,
+      writebacks: [{ summary: '旧 run 窗口内的 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client, state } = makePiClient();
+
+    try {
+      expect(await finalizeForcedRuntimeReclaim({ db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client })).toBe(false);
+      expect(await confirmNever(() => state.sent.length > 0)).toBe(true);
+
+      const [session] = await db.select().from(sessions).where(eq(sessions.id, SESSION)).limit(1);
+      expect(session?.runtimeStatus).toBe('running');
+      expect(session?.lastRunAt?.toISOString()).toBe(newerRunStartedAt.toISOString());
+
+      const events = await readReclaimEvents(db);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ result: 'skipped_newer_run', stranded_writebacks: null, wake_result: 'not_attempted' });
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  // ─── 审查发现 L1：会话已 idle（旧 run 的 doCleanup 抢先收敛，hook 慢到）时也必须补投 ───
+  test('会话已被旧 run 的 doCleanup 抢先收敛为 idle：仍补投递（不能由「谁先落 idle」决定是否补投）', async () => {
+    const { db } = await seedParent({
+      runtimeStatus: 'idle',
+      writebacks: [{ summary: 'doCleanup 抢先收敛时被困住的 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client, state } = makePiClient();
+
+    try {
+      // 会话已 idle → 不收敛（返回 false），但补投递照常发生
+      expect(await finalizeForcedRuntimeReclaim({ db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client })).toBe(false);
+      expect(await waitUntil(() => state.sent.some((s) => s.sessionId === SESSION))).toBe(true);
+      expect(state.sent[0].content).toContain('补投递');
+      expect(state.sent[0].content).toContain('doCleanup 抢先收敛时被困住的 writeback');
+
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({ result: 'skipped_not_running', stranded_writebacks: 1, wake_result: 'started' });
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('会话已 idle 但已被更新的 run 接管（lastRunAt > disposedAt）：不补投，让位给新 run', async () => {
+    const newerRunStartedAt = new Date(DISPOSED_AT + 60_000);
+    const { db } = await seedParent({
+      runtimeStatus: 'idle',
+      lastRunAt: newerRunStartedAt,
+      writebacks: [{ summary: '新 run 窗口内、不属于旧 run 的写回', at: DISPOSED_AT + 120_000 }],
+    });
+    const { client, state } = makePiClient();
+
+    try {
+      expect(await finalizeForcedRuntimeReclaim({ db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client })).toBe(false);
+      expect(await confirmNever(() => state.sent.length > 0)).toBe(true);
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({ result: 'skipped_not_running', stranded_writebacks: null, wake_result: 'not_attempted' });
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  // ─── 审查发现 L3：一次 session_busy 不得丢掉整包被困回写 ───
+  test('并发认领导致 session_busy 时有界重试：第二次成功投出', async () => {
+    const previousRetry = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = '5';
+    const { db } = await seedParent({
+      writebacks: [{ summary: 'busy 之后仍应被投出的 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client, state } = makePiClient();
+    let ensureCalls = 0;
+    const baseEnsure = client.ensureRuntime.bind(client);
+    client.ensureRuntime = async (sessionId: string, options: Parameters<typeof baseEnsure>[1]) => {
+      ensureCalls += 1;
+      // 第一次模拟「原子认领被并发 runner 抢到」→ startSessionRun 抛 session_busy 被吞成 skipped
+      if (ensureCalls === 1) throw new Error('session_busy');
+      return baseEnsure(sessionId, options);
+    };
+
+    try {
+      expect(await finalizeForcedRuntimeReclaim({ db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client })).toBe(true);
+      expect(await waitUntil(() => state.sent.some((s) => s.sessionId === SESSION))).toBe(true);
+      expect(ensureCalls).toBe(2);
+      expect(state.sent[0].content).toContain('busy 之后仍应被投出的 writeback');
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({ result: 'converged', stranded_writebacks: 1, wake_result: 'started' });
+    } finally {
+      if (previousRetry === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = previousRetry;
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('重试耗尽仍 busy：审计 wake_result=skipped（不静默丢失，可从 session_events 发现）', async () => {
+    const previousRetry = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+    const previousAttempts = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = '5';
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = '2';
+    const { db } = await seedParent({
+      writebacks: [{ summary: '始终 busy 的 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client, state } = makePiClient();
+    let ensureCalls = 0;
+    client.ensureRuntime = async () => {
+      ensureCalls += 1;
+      throw new Error('session_busy');
+    };
+
+    try {
+      expect(await finalizeForcedRuntimeReclaim({ db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client })).toBe(true);
+      expect(await confirmNever(() => state.sent.length > 0)).toBe(true);
+      // 有界：尝试次数 = env attempts
+      expect(ensureCalls).toBe(2);
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({
+        result: 'converged',
+        stranded_writebacks: 1,
+        wake_result: 'skipped',
+        skip_reason: 'retries_exhausted',
+      });
+    } finally {
+      if (previousRetry === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = previousRetry;
+      if (previousAttempts === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = previousAttempts;
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  // R1 [major] 回归：并发 run（用户消息 / 其它 writeback 的 auto-wake）正占着会话时，
+  // 旧实现第一次 gate 检查就 return skipped（整包丢弃）；现在让位并继续重试，会话释放后投出。
+  test('会话被并发 run 占用时让位重试，释放后投出（不再一次 busy 丢弃整包）', async () => {
+    const previousRetry = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+    const previousAttempts = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = '30';
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = '5';
+    const { db } = await seedParent({
+      writebacks: [{ summary: '并发 run 释放后应投出的 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client, state } = makePiClient();
+    let releasedResolve!: () => void;
+    const released = new Promise<void>((resolve) => { releasedResolve = resolve; });
+
+    try {
+      const converged = await finalizeForcedRuntimeReclaim({
+        db,
+        sessionId: SESSION,
+        disposedAt: DISPOSED_AT,
+        piClient: client,
+        // 收敛 idle 广播的这一刻模拟「另一个 run 抢先把会话认领走」，并在 ~10ms 后释放
+        onRuntimeStatusChange: async () => {
+          await db.update(sessions)
+            .set({ runtimeStatus: 'running', lastRunAt: new Date(), updatedAt: new Date() })
+            .where(eq(sessions.id, SESSION));
+          setTimeout(() => {
+            void db.update(sessions)
+              .set({ runtimeStatus: 'idle', updatedAt: new Date() })
+              .where(eq(sessions.id, SESSION))
+              .then(() => releasedResolve());
+          }, 10);
+        },
+      });
+      expect(converged).toBe(true);
+      await released;
+
+      // 让位后重试命中：内容最终投出（旧实现会在第一次 gate 就 return skipped）
+      expect(await waitUntil(() => state.sent.some((s) => s.sessionId === SESSION))).toBe(true);
+      expect(state.sent[0].content).toContain('并发 run 释放后应投出的 writeback');
+
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({
+        result: 'converged',
+        stranded_writebacks: 1,
+        wake_result: 'started',
+        skip_reason: null,
+      });
+    } finally {
+      if (previousRetry === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = previousRetry;
+      if (previousAttempts === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = previousAttempts;
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('整个预算内会话都被占用：审计 skip_reason=session_not_idle（与 retries_exhausted 区分）', async () => {
+    const previousRetry = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+    const previousAttempts = process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = '5';
+    process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = '2';
+    const { db } = await seedParent({
+      writebacks: [{ summary: '全程被占用时被困的 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client, state } = makePiClient();
+
+    try {
+      // 收敛广播这一刻起会话一直被并发 run 占用（模拟用户消息/其它 auto-wake 长期占着）
+      expect(await finalizeForcedRuntimeReclaim({
+        db,
+        sessionId: SESSION,
+        disposedAt: DISPOSED_AT,
+        piClient: client,
+        onRuntimeStatusChange: async () => {
+          await db.update(sessions)
+            .set({ runtimeStatus: 'running', lastRunAt: new Date(), updatedAt: new Date() })
+            .where(eq(sessions.id, SESSION));
+        },
+      })).toBe(true);
+
+      expect(await confirmNever(() => state.sent.length > 0)).toBe(true);
+      const events = await readReclaimEvents(db);
+      expect(events[0]).toMatchObject({
+        result: 'converged',
+        stranded_writebacks: 1,
+        wake_result: 'skipped',
+        skip_reason: 'session_not_idle',
+      });
+    } finally {
+      if (previousRetry === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_RETRY_MS = previousRetry;
+      if (previousAttempts === undefined) delete process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS;
+      else process.env.PIPLUS_FORCED_RECLAIM_REPLAY_ATTEMPTS = previousAttempts;
+      clearIdleRuntimeCleanup(SESSION);
+    }
+  });
+
+  test('审计两阶段写：补投递进行中就能查到 pending 行（进程重启不丢「何时强杀过」的证据）', async () => {
+    const { db } = await seedParent({
+      writebacks: [{ summary: '两阶段审计用例的 writeback', at: Date.parse('2026-01-01T00:05:00.000Z') }],
+    });
+    const { client, state } = makePiClient();
+    let releaseEnsure!: () => void;
+    const ensureGate = new Promise<void>((resolve) => { releaseEnsure = resolve; });
+    const baseEnsure = client.ensureRuntime.bind(client);
+    let ensureEntered = false;
+    client.ensureRuntime = async (sessionId: string, options: Parameters<typeof baseEnsure>[1]) => {
+      ensureEntered = true;
+      await ensureGate; // 把补投递 run 卡在启动阶段，以便观测 pending 行
+      return baseEnsure(sessionId, options);
+    };
+
+    try {
+      const finalizePromise = finalizeForcedRuntimeReclaim({
+        db, sessionId: SESSION, disposedAt: DISPOSED_AT, piClient: client,
+      });
+      expect(await waitUntil(() => ensureEntered)).toBe(true);
+
+      // 补投递尚未完成：审计行已存在且是 pending
+      const during = await readReclaimEvents(db);
+      expect(during).toHaveLength(1);
+      expect(during[0]).toMatchObject({ result: 'converged', wake_result: 'pending' });
+
+      releaseEnsure();
+      expect(await finalizePromise).toBe(true);
+
+      // 完成后同一行被更新为最终结果（不新增第二行）
+      const after = await readReclaimEvents(db);
+      expect(after).toHaveLength(1);
+      expect(after[0]).toMatchObject({
+        result: 'converged',
+        stranded_writebacks: 1,
+        wake_result: 'started',
+        skip_reason: null,
+      });
+      expect(await waitUntil(() => state.sent.some((s) => s.sessionId === SESSION))).toBe(true);
+    } finally {
+      clearIdleRuntimeCleanup(SESSION);
     }
   });
 

@@ -42,9 +42,10 @@ export function createApp(options?: { piClient?: PiClient }) {
 
   // 强制回收（pi-client 卡死兜底强杀）后的状态收敛接线：注册 pi-client 的 dispose 通知 handler。
   // handler 为模块级函数引用（pi-client 用 Set 去重），重复 createApp 不会叠加；
+  // 传入 app 的 piClient 供「强杀补投递」拉起会话（缺省用懒建默认实例）。
   // 注册失败（如模块加载异常）不得阻塞启动。
   try {
-    registerRuntimeReclaimHook();
+    registerRuntimeReclaimHook(options?.piClient);
   } catch (err) {
     console.error('[app] failed to register runtime reclaim hook', err);
   }
