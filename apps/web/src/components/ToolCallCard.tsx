@@ -51,8 +51,10 @@ function ToolCallCard({
 
   const showArgsTable =
     (toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs !== null;
-  // spawn/send_message 与 ask_question 保持既有展示（表格 / JSON args）
-  const keepLegacyArgsOnly = showArgsTable || toolName === 'ask_question';
+  // spawn/send_message 与 ask_question 保持既有展示（args 表格 / JSON args），不显示「结果」子项
+  // （其结果由独立卡片承载）；注意不依赖 parsedArgs，args 非法时同样保持表格/JSON 布局
+  const keepLegacyArgsOnly =
+    toolName === 'spawn_session' || toolName === 'send_message_to_session' || toolName === 'ask_question';
 
   const hasResult = resultContent !== null;
   const resultIsError = hasResult && isToolErrorMessage(resultContent);

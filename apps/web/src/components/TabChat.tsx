@@ -26,7 +26,7 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
-import { buildFileToolGroups, collectCoveredFileToolResultIds, findToolResultMessage, parseToolArgsJson } from '../lib/tool-summary';
+import { buildFileToolGroups, collectCoveredToolResultIds, findToolResultMessage, isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -666,8 +666,8 @@ function TabChat({
 
   // 同一条 assistant 消息内的 write/edit/read 调用聚合为一张卡片（多行文件列表，卡片级一个总控按钮）
   const { groups: fileToolGroups, memberIds: fileToolMemberIds } = buildFileToolGroups(displayMessages);
-  // 已被聚合卡片承载的文件类结果 id：用于隐藏独立结果卡片（孤立结果不隐藏）
-  const coveredFileResultIds = collectCoveredFileToolResultIds(displayMessages);
+  // 已被工具卡片承载的结果 id（文件聚合卡片 / 普通工具「结果」子项）：用于隐藏独立结果卡片（孤立结果不隐藏）
+  const coveredToolResultIds = collectCoveredToolResultIds(displayMessages);
 
   // 运行中的工具调用 id：聚合卡片（整行 spinner）与单卡片共用同一判定
   const runningToolIds = new Set<string>();
@@ -817,9 +817,12 @@ function TabChat({
           if (isTool) {
             const toolName = msg.tool_name || 'unknown';
 
-            // write/edit/read 的结果已由文件聚合卡片承载；其余普通工具结果已在 ToolCallCard
-            // 的「结果」子项内展示，故不再渲染独立结果卡片（分页边界下文件类孤立结果除外）
-            if (coveredFileResultIds.has(msg.id)) return null;
+            // 已被工具卡片承载的结果不渲染独立卡片：
+            // - 文件类（write/edit/read）：文件聚合卡片承载状态与失败原因
+            // - 普通工具（bash/grep 等）：ToolCallCard 的「结果」子项承载
+            // 例外（ask_question / spawn_session / send_message_to_session）与孤立结果（调用不在当前
+            // 视图内，分页边界）继续走独立卡片，避免信息丢失
+            if (coveredToolResultIds.has(msg.id)) return null;
 
             // ═══ ask_question 已回答：渲染结果卡片（单选✓/自己输入/多选逐行/取消warning/问卷逐题）。
             //     优先用透传的 details，缺失时降级为 content text。 ═══
@@ -842,13 +845,15 @@ function TabChat({
               );
             }
 
-            // ═══ spawn_session / send_message_to_session：子会话摘要紫色卡片（保留独立展示）；
-            //     其余情况（普通结果 / 失败 / 无摘要）不再单独渲染，信息已在工具卡片内 ═══
-            if (toolName !== 'spawn_session' && toolName !== 'send_message_to_session') return null;
+            // ═══ 独立结果卡片（保持既有展示）：spawn/send 摘要、以及调用不在视图内的孤立结果 ═══
+            const isError = isToolErrorMessage(msg.content_text);
+            const summary = msg.content_text
+              ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
+              : '(empty result)';
 
             let spawnSummary: string | null = null;
             let spawnStatus: string | null = null;
-            if (msg.content_text) {
+            if ((toolName === 'spawn_session' || toolName === 'send_message_to_session') && msg.content_text && !isError) {
               try {
                 const parsed = JSON.parse(msg.content_text);
                 if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
@@ -856,51 +861,95 @@ function TabChat({
                   spawnStatus = typeof parsed.status === 'string' ? parsed.status : null;
                 }
               } catch {
-                // 不是 JSON：无摘要可展示
+                // 不是 JSON：按普通结果渲染
               }
             }
-            if (!spawnSummary) return null;
+
+            const colorScheme = isError
+              ? {
+                  bg: 'bg-red-50 dark:bg-red-950/30',
+                  border: 'border-red-200 dark:border-red-800',
+                  borderT: 'border-red-200 dark:border-red-800',
+                  icon: 'text-red-600 dark:text-red-400',
+                  label: 'text-red-800 dark:text-red-300',
+                  text: 'text-red-900 dark:text-red-200',
+                  suffix: 'text-red-600/60 dark:text-red-400/60',
+                }
+              : spawnSummary
+                ? {
+                    bg: 'bg-indigo-50 dark:bg-indigo-950/30',
+                    border: 'border-indigo-200 dark:border-indigo-800',
+                    borderT: 'border-indigo-200 dark:border-indigo-800',
+                    icon: 'text-indigo-600 dark:text-indigo-400',
+                    label: 'text-indigo-800 dark:text-indigo-300',
+                    text: 'text-indigo-900 dark:text-indigo-200',
+                    suffix: 'text-indigo-600/60 dark:text-indigo-400/60',
+                  }
+                : {
+                    bg: 'bg-emerald-50 dark:bg-emerald-950/30',
+                    border: 'border-emerald-200 dark:border-emerald-800',
+                    borderT: 'border-emerald-200 dark:border-emerald-800',
+                    icon: 'text-emerald-600 dark:text-emerald-400',
+                    label: 'text-emerald-800 dark:text-emerald-300',
+                    text: 'text-emerald-900 dark:text-emerald-200',
+                    suffix: 'text-emerald-600/60 dark:text-emerald-400/60',
+                  };
 
             return (
               <div key={msg.id} className="flex justify-start items-start w-full min-w-0 group">
                 <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                  <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl overflow-hidden">
+                  <div className={`${colorScheme.bg} ${colorScheme.border} rounded-xl overflow-hidden`}>
                     <div className="px-3 py-2 flex items-center gap-2">
-                      <Terminal className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                      <span className="text-xs font-semibold text-indigo-800 dark:text-indigo-300 font-mono">
+                      <Terminal className={`w-3.5 h-3.5 ${colorScheme.icon} shrink-0`} />
+                      <span className={`text-xs font-semibold ${colorScheme.label} font-mono`}>
                         {toolName}
                       </span>
-                      {spawnStatus && (
-                        <span className="text-[10px] text-indigo-600/60 dark:text-indigo-400/60 ml-1">
+                      {spawnSummary && spawnStatus && (
+                        <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
                           {spawnStatus === 'completed' ? '完成' : spawnStatus}
                         </span>
                       )}
+                      {!spawnSummary && (
+                        <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
+                          {isError ? '错误' : '结果'}
+                        </span>
+                      )}
                     </div>
-                    <div className="border-t border-indigo-200 dark:border-indigo-800 px-4 py-3">
-                      <div className="text-slate-800 dark:text-slate-200 w-full">
-                        <MarkdownRenderer content={spawnSummary} variant="compact" />
+                    {spawnSummary ? (
+                      <div className={`border-t ${colorScheme.borderT} px-4 py-3`}>
+                        <div className="text-slate-800 dark:text-slate-200 w-full">
+                          <MarkdownRenderer content={spawnSummary} variant="compact" />
+                        </div>
                       </div>
-                    </div>
+                    ) : msg.content_text ? (
+                      <div className={`border-t ${colorScheme.borderT} px-3 py-2`}>
+                        <div className={`text-[11px] ${colorScheme.text} font-mono whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto`}>
+                          {summary}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-2 mt-1 px-1">
-                    <button
-                      type="button"
-                      onClick={() => handleCopyMessage(msg.id, msg.content_text)}
-                      className="md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer order-2"
-                      title="复制消息"
-                    >
-                      {copiedMessageId === msg.id ? (
-                        <>
-                          <Check className="w-3 h-3 text-green-600" />
-                          <span className="text-green-600 font-medium">已复制</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3" />
-                          <span>复制</span>
-                        </>
-                      )}
-                    </button>
+                    {msg.content_text ? (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyMessage(msg.id, msg.content_text)}
+                        className="md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer order-2"
+                        title="复制消息"
+                      >
+                        {copiedMessageId === msg.id ? (
+                          <>
+                            <Check className="w-3 h-3 text-green-600" />
+                            <span className="text-green-600 font-medium">已复制</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>复制</span>
+                          </>
+                        )}
+                      </button>
+                    ) : null}
                     <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono order-1">
                       {new Date(msg.created_at).toLocaleTimeString()}
                     </span>

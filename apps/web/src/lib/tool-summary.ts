@@ -310,23 +310,26 @@ export function isToolErrorMessage(text: string | null | undefined): boolean {
   return /^error/i.test((text ?? '').trim());
 }
 
+/** 结果走独立卡片的工具（结构化答案卡片 / 子会话摘要卡片），不参与「卡片内结果」承载 */
+const STANDALONE_RESULT_TOOLS = new Set(['ask_question', 'spawn_session', 'send_message_to_session']);
+
 /**
- * 收集「已由聚合卡片承载」的文件类结果消息 id。
+ * 收集「已由工具卡片承载」的结果消息 id。
  *
- * 对当前视图内每个文件类调用，用与 findToolResultMessage 相同的配对口径（toolCallId 精确优先、
- * 序数回退）反查其绑定结果；只有这些结果才应隐藏独立结果卡片。
- * 分页边界下调用不在视图内的孤立结果不会进入集合，调用方应降级渲染原结果卡片，避免失败反馈丢失。
+ * - 文件类（write/edit/read）：结果由文件聚合卡片承载
+ * - 普通工具（bash/grep/等）：结果由 ToolCallCard 的「结果」子项承载
+ * - 例外（ask_question / spawn_session / send_message_to_session）与其孤立结果不进集合，仍走独立卡片
+ *
+ * 对视图内每个调用用与 findToolResultMessage 相同的配对口径（toolCallId 精确优先、序数回退）
+ * 反查其绑定结果；分页边界下调用不在视图内的孤立结果不会进入集合，调用方应降级渲染原结果卡片。
  */
-export function collectCoveredFileToolResultIds(visibleMessages: ChatMessageDTO[]): Set<string> {
+export function collectCoveredToolResultIds(visibleMessages: ChatMessageDTO[]): Set<string> {
   const covered = new Set<string>();
   for (const msg of visibleMessages) {
-    if (!isFileToolCall(msg)) continue;
-    const result = findToolResultMessage(
-      visibleMessages,
-      msg.id,
-      msg.tool_name || 'unknown',
-      msg.tool_call_id,
-    );
+    if (msg.message_kind !== 'tool_call') continue;
+    const toolName = msg.tool_name || 'unknown';
+    if (STANDALONE_RESULT_TOOLS.has(toolName)) continue;
+    const result = findToolResultMessage(visibleMessages, msg.id, toolName, msg.tool_call_id);
     if (result) covered.add(result.id);
   }
   return covered;

@@ -5,7 +5,7 @@ import {
   findToolResultMessage,
   formatReadLineRange,
   isFileToolCall,
-  collectCoveredFileToolResultIds,
+  collectCoveredToolResultIds,
   isToolErrorMessage,
   parseToolArgsJson,
   parseWriteEditDiff,
@@ -352,17 +352,32 @@ describe('isToolErrorMessage', () => {
   });
 });
 
-describe('collectCoveredFileToolResultIds', () => {
-  test('只收集视图内调用所绑定的结果（toolCallId 精确配对）', () => {
+describe('collectCoveredToolResultIds', () => {
+  test('文件类与普通工具的绑定结果都收集（toolCallId 精确配对）', () => {
     const messages = [
       msg({ id: 't1-tool-8', tool_name: 'write', tool_call_id: 't1-8' }),
       msg({ id: 'r8', role: 'tool', message_kind: 'tool', tool_name: 'write', tool_call_id: 't1-8' }),
+      msg({ id: 'c-bash', tool_name: 'bash', tool_call_id: 'tc-b' }),
+      msg({ id: 'r-bash', role: 'tool', message_kind: 'tool', tool_name: 'bash', tool_call_id: 'tc-b' }),
       // 孤立结果：对应调用已被分页切走，虽同名但不应被收集
       msg({ id: 'r9', role: 'tool', message_kind: 'tool', tool_name: 'write', tool_call_id: 't1-9' }),
     ];
-    const covered = collectCoveredFileToolResultIds(messages);
+    const covered = collectCoveredToolResultIds(messages);
     expect(covered.has('r8')).toBe(true);
+    expect(covered.has('r-bash')).toBe(true);
     expect(covered.has('r9')).toBe(false);
+  });
+
+  test('例外工具（ask_question / spawn_session / send_message_to_session）的结果不收集', () => {
+    const messages = [
+      msg({ id: 'c1', tool_name: 'ask_question', tool_call_id: 'ta' }),
+      msg({ id: 'ra', role: 'tool', message_kind: 'tool', tool_name: 'ask_question', tool_call_id: 'ta' }),
+      msg({ id: 'c2', tool_name: 'spawn_session', tool_call_id: 'ts' }),
+      msg({ id: 'rs', role: 'tool', message_kind: 'tool', tool_name: 'spawn_session', tool_call_id: 'ts' }),
+      msg({ id: 'c3', tool_name: 'send_message_to_session', tool_call_id: 'tm' }),
+      msg({ id: 'rm', role: 'tool', message_kind: 'tool', tool_name: 'send_message_to_session', tool_call_id: 'tm' }),
+    ];
+    expect(collectCoveredToolResultIds(messages).size).toBe(0);
   });
 
   test('序数回退配对（无 toolCallId 的旧数据）也能收集', () => {
@@ -370,18 +385,10 @@ describe('collectCoveredFileToolResultIds', () => {
       msg({ id: 'c1', tool_name: 'read' }),
       msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'read' }),
     ];
-    expect(collectCoveredFileToolResultIds(messages).has('r1')).toBe(true);
+    expect(collectCoveredToolResultIds(messages).has('r1')).toBe(true);
   });
 
   test('调用无对应结果时不收集', () => {
-    expect(collectCoveredFileToolResultIds([msg({ id: 'c1', tool_name: 'write', tool_call_id: 't1-1' })]).size).toBe(0);
-  });
-
-  test('非文件类调用与其结果不进入集合', () => {
-    const messages = [
-      msg({ id: 'c1', tool_name: 'bash' }),
-      msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'bash' }),
-    ];
-    expect(collectCoveredFileToolResultIds(messages).size).toBe(0);
+    expect(collectCoveredToolResultIds([msg({ id: 'c1', tool_name: 'write', tool_call_id: 't1-1' })]).size).toBe(0);
   });
 });
