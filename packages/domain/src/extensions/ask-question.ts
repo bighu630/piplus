@@ -206,26 +206,7 @@ export function createPending(
   setAskPending(sessionId);
 
   // 通知监听器推送 WS 事件（单题或问卷）
-  const payload: AskQuestionPendingPayload = { questionId, sessionId };
-  if (isQuestionnaireParams(params)) {
-    payload.questions = ((params.questions as unknown[]) ?? []).map((raw) => {
-      const q = (raw ?? {}) as Record<string, unknown>;
-      return {
-        question: String(q.question ?? ''),
-        options: Array.isArray(q.options) ? normalizeOptions((q.options as unknown[]).map(String)) : [],
-        multiSelect: q.multiSelect === true,
-        label: cleanLabel(q.label),
-      } as AskQuestionInput;
-    });
-  } else {
-    if (typeof params.question === 'string') payload.question = params.question;
-    if (Array.isArray(params.options)) {
-      payload.options = normalizeOptions((params.options as unknown[]).map(String));
-    }
-    payload.multiSelect = params.multiSelect === true;
-    payload.label = cleanLabel(params.label);
-  }
-  notifyPending(payload);
+  notifyPending(buildPendingPayload(entry));
 
   return { questionId, promise };
 }
@@ -591,30 +572,47 @@ export function isAskQuestionPendingForSession(sessionId: string): boolean {
   return false;
 }
 
+/**
+ * 由 pending entry 构造对外 payload（单题或问卷）。
+ * createPending（首次推送）、listPendingForSession / listAllPending（补拉）共用，
+ * 保证「实时事件」与「补偿拉取」两条路径产出的形状完全一致。
+ */
+function buildPendingPayload(entry: PendingEntry): AskQuestionPendingPayload {
+  const payload: AskQuestionPendingPayload = { questionId: entry.questionId, sessionId: entry.sessionId };
+  const params = entry.params;
+  if (isQuestionnaireParams(params)) {
+    payload.questions = ((params.questions as unknown[]) ?? []).map((raw) => {
+      const q = (raw ?? {}) as Record<string, unknown>;
+      return {
+        question: String(q.question ?? ''),
+        options: Array.isArray(q.options) ? normalizeOptions((q.options as unknown[]).map(String)) : [],
+        multiSelect: q.multiSelect === true,
+        label: cleanLabel(q.label),
+      } as AskQuestionInput;
+    });
+  } else {
+    if (typeof params.question === 'string') payload.question = params.question;
+    if (Array.isArray(params.options)) payload.options = normalizeOptions((params.options as unknown[]).map(String));
+    payload.multiSelect = params.multiSelect === true;
+    payload.label = cleanLabel(params.label);
+  }
+  return payload;
+}
+
 /** 列出某会话的全部待回答（用于刷新后重建表单）。 */
 export function listPendingForSession(sessionId: string): AskQuestionPendingPayload[] {
   const result: AskQuestionPendingPayload[] = [];
   for (const entry of pendingQuestions.values()) {
     if (entry.sessionId !== sessionId) continue;
-    const payload: AskQuestionPendingPayload = { questionId: entry.questionId, sessionId: entry.sessionId };
-    const params = entry.params;
-    if (Array.isArray(params.questions) && (params.questions as unknown[]).length > 0) {
-      payload.questions = ((params.questions as unknown[]) ?? []).map((raw) => {
-        const q = (raw ?? {}) as Record<string, unknown>;
-        return {
-          question: String(q.question ?? ''),
-          options: Array.isArray(q.options) ? normalizeOptions((q.options as unknown[]).map(String)) : [],
-          multiSelect: q.multiSelect === true,
-          label: cleanLabel(q.label),
-        } as AskQuestionInput;
-      });
-    } else {
-      if (typeof params.question === 'string') payload.question = params.question;
-      if (Array.isArray(params.options)) payload.options = normalizeOptions((params.options as unknown[]).map(String));
-      payload.multiSelect = params.multiSelect === true;
-      payload.label = cleanLabel(params.label);
-    }
-    result.push(payload);
+    result.push(buildPendingPayload(entry));
   }
   return result;
+}
+
+/**
+ * 列出**全部**（跨会话）待回答。
+ * 供全局补偿接口按登录用户过滤归属后返回；不做会话过滤，调用方负责鉴权。
+ */
+export function listAllPending(): AskQuestionPendingPayload[] {
+  return Array.from(pendingQuestions.values(), buildPendingPayload);
 }

@@ -61,17 +61,22 @@ function shouldDeliver(message: ServerMessage, ws: AttachedSocket): boolean {
   return true;
 }
 
+/** 单 socket 投递 + 失败清理（deliver / sendToUser 共用）。 */
+function sendTo(ws: AttachedSocket, payload: string) {
+  try {
+    ws.send(payload);
+  } catch (err) {
+    console.warn('[ws-session] send failed, removing socket', err);
+    sockets.delete(ws);
+    subscriptions.delete(ws);
+  }
+}
+
 function deliver(message: ServerMessage) {
   const payload = JSON.stringify(message);
   for (const ws of sockets) {
     if (!shouldDeliver(message, ws)) continue;
-    try {
-      ws.send(payload);
-    } catch (err) {
-      console.warn('[ws-session] send failed, removing socket', err);
-      sockets.delete(ws);
-      subscriptions.delete(ws);
-    }
+    sendTo(ws, payload);
   }
 }
 
@@ -103,6 +108,24 @@ export function registerSocket(options?: { authorizeSubscribe?: AuthorizeSubscri
     },
     broadcast(message: ServerMessage) {
       deliver(message);
+    },
+    /**
+     * 按登录用户定向投递：只发给携带相同 __userId 的连接，**绕过会话订阅过滤**。
+     *
+     * 用于「必须跨会话送达、但不能跨用户泄露」的事件：ask_question_pending 只投给
+     * 订阅会话的连接时，用户切到别的会话就收不到（前端至多只订阅 1 个会话）；
+     * 无条件广播则会在多用户部署下泄露他人提问内容。
+     *
+     * __userId 由 ws/server.ts 在认证握手（onOpen token / hello 帧）时写入连接。
+     * userId 为空串时不做任何投递（避免「未认证连接互收」）。
+     */
+    sendToUser(userId: string, message: ServerMessage) {
+      if (!userId) return;
+      const payload = JSON.stringify(message);
+      for (const ws of sockets) {
+        if ((ws as { __userId?: string }).__userId !== userId) continue;
+        sendTo(ws, payload);
+      }
     },
     /**
      * 兼容保留：投递完全由消息内容（scope/payload.session_id）+ 各连接订阅集合决定，

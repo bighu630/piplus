@@ -8,6 +8,7 @@ import { createEvent } from '../../../ws/protocol';
 import { WS_EVENT_ASK_QUESTION_PENDING } from '@piplus/shared/ws';
 import {
   answerQuestion,
+  listAllPending,
   listPendingForSession,
   onAskQuestionPending,
   type AskQuestionPendingPayload,
@@ -16,9 +17,50 @@ import {
 let askQuestionPendingListenerRegistered = false;
 
 /**
+ * 按路径缓存的共享 db 实例：ask_question 每次提问都要查会话 owner，
+ * 而 createDb 每次都新开 bun:sqlite 句柄且无法事后 close（同 ws/server.ts）。
+ * 按路径缓存避免句柄累积，同时保证测试同进程切库时互不串库。
+ */
+const dbByPath = new Map<string, ReturnType<typeof createDb>>();
+function getCachedDb() {
+  const path = getDbPath();
+  let db = dbByPath.get(path);
+  if (!db) {
+    db = createDb(`file:${path}`);
+    dbByPath.set(path, db);
+  }
+  return db;
+}
+
+/**
+ * 查会话创建者（= 该提问应通知的用户）。查不到/为空时返回 null，
+ * 由调用方回退广播（auth 关闭的本地单用户场景）。
+ * 用同步的 .get() 而非 await：监听器由 createPending 同步触发，同步查询不影响工具执行时序。
+ */
+function lookupSessionOwner(sessionId: string): string | null {
+  try {
+    const row = getCachedDb()
+      .select({ createdBy: sessions.createdBy })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1)
+      .get();
+    const owner = row?.createdBy;
+    return typeof owner === 'string' && owner.length > 0 ? owner : null;
+  } catch (err) {
+    console.error('[ask-question] lookup session owner failed:', err);
+    return null;
+  }
+}
+
+/**
  * 把 domain 的 ask_question_pending 回调接到 socketHub：
- * ask_question 工具发起提问（createPending）时，向该会话的订阅连接推送
- * ask_question_pending WS 事件（带 scope.session_id，由 socketHub 按订阅过滤投递）。
+ * ask_question 工具发起提问（createPending）时，把事件推给**该会话 owner 的全部连接**。
+ *
+ * 为什么不用 `sendToSession`：它按 `scope.session_id` 做订阅过滤，而前端任何时刻
+ * 只订阅当前激活会话（ws-provider 切会话会退订旧会话），用户切走后就收不到提问事件。
+ * `sendToUser` 绕过订阅过滤但仍限定同一登录用户，兼顾「跨会话可达」与「不跨用户泄露」。
+ * owner 缺失（auth 关闭的历史会话）时回退 broadcast，本地单用户场景等价且更稳。
  * 幂等注册：路由多次注册/测试重复导入不会重复订阅。
  */
 function ensureAskQuestionPendingListener(): void {
@@ -27,14 +69,17 @@ function ensureAskQuestionPendingListener(): void {
   onAskQuestionPending((payload: AskQuestionPendingPayload) => {
     const sessionId = payload.sessionId;
     if (!sessionId) return;
-    socketHub.sendToSession(
-      sessionId,
-      createEvent(
-        WS_EVENT_ASK_QUESTION_PENDING,
-        payload as unknown as Record<string, unknown>,
-        { session_id: sessionId },
-      ),
+    const message = createEvent(
+      WS_EVENT_ASK_QUESTION_PENDING,
+      payload as unknown as Record<string, unknown>,
+      { session_id: sessionId },
     );
+    const ownerId = lookupSessionOwner(sessionId);
+    if (ownerId) {
+      socketHub.sendToUser(ownerId, message);
+    } else {
+      socketHub.broadcast(message);
+    }
   });
 }
 
@@ -168,6 +213,37 @@ export function registerAskQuestionRoutes(app: Hono) {
     }
 
     const pending = listPendingForSession(sessionId);
+    return c.json({ pending });
+  });
+
+  /**
+   * @swagger
+   * /api/v1/ask-pending:
+   *   get:
+   *     summary: 查询当前用户全部会话的待回答 ask_question（全局通知补偿）
+   *     tags: [Sessions]
+   *     security:
+   *       - bearerAuth: []
+   *     description: |
+   *       跨会话返回当前用户所有待回答的 ask_question，仅含当前用户创建的会话。
+   *       用于前端在挂载 / WS 重连 / 窗口重新聚焦时补齐断线期间错过的
+   *       ask_question_pending 实时事件（该事件按用户定向推送，不依赖会话订阅）。
+   *     responses:
+   *       200:
+   *         description: 返回待回答列表。
+   */
+  app.get('/api/v1/ask-pending', async (c) => {
+    const db = createDb(`file:${getDbPath()}`);
+    const userId = (c as any).get('userId') as string;
+
+    // 只返回归属当前用户的会话：pending 在 domain 里是全局内存表，
+    // 必须在路由层按 sessions.createdBy 过滤，否则多用户下会泄露他人提问。
+    const ownedSessions = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(eq(sessions.createdBy, userId));
+    const ownedIds = new Set(ownedSessions.map((row) => row.id));
+    const pending = listAllPending().filter((p) => p.sessionId !== undefined && ownedIds.has(p.sessionId));
     return c.json({ pending });
   });
 }
