@@ -175,6 +175,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       socketRef.current?.close();
       socketRef.current = null;
       prevSubscribedSessionRef.current = null;
+      // 待回答 map 属于上一个登录会话：补偿是 merge-only 不会自愈，
+      // 不清空会让换号后残留标题计数/琥珀标记，因此随登出一起重置。
+      askingPendingMapRef.current = {};
+      setAskingPendingMap({});
       setConnected(false);
       return;
     }

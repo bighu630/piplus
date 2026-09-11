@@ -96,6 +96,7 @@ export default function AskQuestionNotifier({ activeSessionId, onNavigateSession
       const notification = createSystemNotification(`PiPlus：${title} 等待回答`, {
         body,
         tag: `ask-${questionId}`, // 同一提问重复到达时由系统合并，不堆叠
+        silent: true, // 用户明确不要声音提示：不播放系统默认提示音
       });
       if (notification) {
         notification.onclick = () => {

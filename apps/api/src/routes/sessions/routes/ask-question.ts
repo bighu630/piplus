@@ -233,7 +233,9 @@ export function registerAskQuestionRoutes(app: Hono) {
    *         description: 返回待回答列表。
    */
   app.get('/api/v1/ask-pending', async (c) => {
-    const db = createDb(`file:${getDbPath()}`);
+    // 高频入口（挂载/重连/聚焦都会拉）：复用按路径缓存的 db 实例，
+    // 避免每次 createDb() 新开 bun:sqlite 句柄且无法回收（同本文件监听器的查询）。
+    const db = getCachedDb();
     const userId = (c as any).get('userId') as string;
 
     // 只返回归属当前用户的会话：pending 在 domain 里是全局内存表，

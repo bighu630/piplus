@@ -110,6 +110,7 @@ let focused = true;
 let globalPending: AskQuestionPendingPayload[] = [];
 let askPendingFetchCalls = 0;
 let navigated: string[] = [];
+let focusCalls = 0;
 /** 最新一次渲染拿到的 context（用于测试里清理 pending）。 */
 let latestContext: ReturnType<typeof useWebSocket> | null = null;
 
@@ -140,6 +141,8 @@ function setupGlobals() {
   // 焦点可切换：document.hasFocus() 现取，visibilityState 固定 visible 让 hasFocus 分支生效
   Object.defineProperty(window.document, 'visibilityState', { configurable: true, get: () => 'visible' });
   (window.document as unknown as { hasFocus: () => boolean }).hasFocus = () => focused;
+  // window.focus() 是点击通知时“聚焦窗口”的被调用目标（happy-dom 下无副作用，用计数断言）
+  (window as unknown as { focus: () => void }).focus = () => { focusCalls += 1; };
 
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -186,6 +189,7 @@ beforeEach(() => {
   globalPending = [];
   askPendingFetchCalls = 0;
   navigated = [];
+  focusCalls = 0;
   latestContext = null;
   focused = true;
   window.localStorage.setItem(TOKEN_STORAGE_KEY, 'tok-initial');
@@ -255,6 +259,7 @@ describe('AskQuestionNotifier 通知触发条件', () => {
     expect(FakeNotification.instances).toHaveLength(1);
     expect(FakeNotification.instances[0]!.title).toContain(SESSION_TITLE);
     expect(FakeNotification.instances[0]!.options?.body).toBe('要用哪个数据库？');
+    expect(FakeNotification.instances[0]!.options?.silent).toBe(true); // 用户明确不要声音提示
     expect(toastTexts().some((t) => t.includes('要用哪个数据库？'))).toBe(true);
     expect(globalThis.document.title).toBe('(1 条待回答) PiPlus');
   });
@@ -318,6 +323,7 @@ describe('AskQuestionNotifier 交互', () => {
     await act(async () => { (instance.onclick as () => void)(); });
 
     expect(navigated).toEqual([SESSION_ID]);
+    expect(focusCalls).toBe(1); // 聚焦窗口
   });
 
   test('点击 toast → 跳转并关闭浮层', async () => {
@@ -335,6 +341,7 @@ describe('AskQuestionNotifier 交互', () => {
     });
 
     expect(navigated).toEqual([SESSION_ID]);
+    expect(focusCalls).toBe(1);
     expect(toastTexts()).toHaveLength(0);
   });
 
@@ -352,6 +359,36 @@ describe('AskQuestionNotifier 交互', () => {
       latestContext!.clearAskPending?.('q1');
       await flush();
     });
+    expect(globalThis.document.title).toBe('PiPlus');
+  });
+
+  test('系统通知权限被拒 → 静默降级为应用内 toast', async () => {
+    FakeNotification.permission = 'denied';
+    renderNotifier(OTHER_SESSION_ID);
+    const socket = await connectSocket();
+
+    await act(async () => {
+      socket.emitMessage({ questionId: 'q1', sessionId: SESSION_ID, question: '无权限也要提示', options: [] });
+      await flush();
+    });
+
+    expect(FakeNotification.instances).toHaveLength(0);
+    expect(toastTexts().some((t) => t.includes('无权限也要提示'))).toBe(true);
+    expect(globalThis.document.title).toBe('(1 条待回答) PiPlus');
+  });
+
+  test('组件卸载 → 标题前缀还原，不给登录页留残留', async () => {
+    renderNotifier(OTHER_SESSION_ID);
+    const socket = await connectSocket();
+
+    await act(async () => {
+      socket.emitMessage({ questionId: 'q1', sessionId: SESSION_ID, question: '卸载前待回答', options: [] });
+      await flush();
+    });
+    expect(globalThis.document.title).toBe('(1 条待回答) PiPlus');
+
+    await act(async () => { root!.unmount(); });
+    root = null;
     expect(globalThis.document.title).toBe('PiPlus');
   });
 });

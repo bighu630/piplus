@@ -4,6 +4,11 @@ import { createEvent } from './protocol';
 
 export type AttachedSocket = {
   send(data: string): void;
+  /**
+   * 连接身份：由 ws/server.ts 在认证握手（onOpen token / auth 关闭兜底 / 开发态 x-user-id）
+   * 或 hello 帧认证通过时写入。未认证连接无此字段。
+   */
+  __userId?: string;
 };
 
 /**
@@ -123,7 +128,7 @@ export function registerSocket(options?: { authorizeSubscribe?: AuthorizeSubscri
       if (!userId) return;
       const payload = JSON.stringify(message);
       for (const ws of sockets) {
-        if ((ws as { __userId?: string }).__userId !== userId) continue;
+        if (ws.__userId !== userId) continue;
         sendTo(ws, payload);
       }
     },

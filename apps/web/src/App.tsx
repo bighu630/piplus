@@ -441,7 +441,8 @@ export default function App() {
   /**
    * ask_question 通知/toast 的跳转：把用户带到提问所在会话。
    * 树里能找到项目就走与侧边栏点击同一条路径（切项目 + 会话 + chat 标签）；
-   * 找不到（已归档/树未刷新完）也要跳，至少更新会话与 URL。
+   * 找不到时仍先设置会话 id（树还在加载时，树到达后 App 的校验 effect 会自动定位到它）；
+   * 若该会话已不在树中（如已归档），校验 effect 会回退到第一个会话。
    */
   const handleNavigateToSession = useCallback((sessionId: string) => {
     const projectId = tree.length > 0 ? findProjectId(tree, sessionId) : null;

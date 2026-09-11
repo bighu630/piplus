@@ -57,7 +57,7 @@
 
 | 形式 | 触发/可见性 | 说明 |
 | --- | --- | --- |
-| 系统通知（OS 弹窗） | 任意场景（受浏览器权限） | 复用 `sendSystemNotification` + 现有 `pi-system-notifications` 总开关，不新增设置 |
+| 系统通知（OS 弹窗） | 任意场景（受浏览器权限） | 复用 `sendSystemNotification` + 现有 `pi-system-notifications` 总开关，不新增设置；`silent: true`（用户未选声音，不播系统提示音） |
 | 侧边栏会话项琥珀标记 | 应用内 | 数据通路修好后**全局生效**（已有渲染逻辑） |
 | 应用内 toast | 应用内 | 新增 `AskQuestionNotifier` 渲染浮层，无需权限 |
 | 标签页标题前缀 | 应用内（标签可见） | `(N 条待回答) PiPlus`，pending 清空后还原 |
@@ -88,7 +88,7 @@
 - `apps/web/src/lib/api.ts`：`getAllAskPending()`
 - `apps/web/src/lib/ask-notify.ts`（新）：纯函数 `shouldNotifyAsk` / `askNotificationBody` / `withAskTitle` / `stripAskTitle`
 - `apps/web/src/components/AskQuestionNotifier.tsx`（新）：订阅 pending → 系统通知 / toast / 标题前缀 / 点击跳转
-- `apps/web/src/lib/ws-provider.tsx`：`reconcileAskPending()`（挂载 / onOpen / window focus / visibilitychange）
+- `apps/web/src/lib/ws-provider.tsx`：`reconcileAskPending()`（挂载 / onOpen / window focus / visibilitychange，in-flight 合并）+ 登出清空 `askingPendingMap`
 - `apps/web/src/App.tsx`：渲染 `<AskQuestionNotifier>`，接 `handleSelectSession`
 
 ## 5. 测试
@@ -98,8 +98,8 @@
 | `apps/api/src/ws/session.test.ts` | `sendToUser` 只投给同 userId 连接；同用户未订阅连接也能收到；未订阅的**其他用户**收不到 |
 | `apps/api/src/routes/ask-question.test.ts` | ① 同用户未订阅连接收到（更新原断言）；② 其他用户连接收不到；③ `GET /api/v1/ask-pending` 只返回本人会话 |
 | `apps/web/src/lib/ask-notify.test.ts` | 触发条件矩阵；标题前缀生成/还原；通知正文（单题/问卷） |
-| `apps/web/src/components/AskQuestionNotifier.test.tsx` | 非活跃会话收到事件 → 触发系统通知；活跃会话且聚焦 → 不通知；失焦 → 通知；点击 → `onNavigateSession`；toast 渲染与点击；标题前缀随 pending 变化 |
-| `apps/web/src/lib/ws-provider.test.tsx` | 补偿：挂载/重连时调用 `GET /api/v1/ask-pending` 并合并进 `askingPendingMap` |
+| `apps/web/src/components/AskQuestionNotifier.test.tsx` | 非活跃会话收到事件 → 触发系统通知（含 `silent`）；活跃会话且聚焦 → 不通知；失焦 → 通知；点击通知/toast → `window.focus()` + `onNavigateSession`；toast 渲染与关闭；标题前缀随 pending 变化、卸载还原；权限被拒 → 降级为 toast |
+| `apps/web/src/lib/ws-provider.test.tsx` | 补偿：挂载/重连时调用 `GET /api/v1/ask-pending` 并合并进 `askingPendingMap`；实时与补偿重叠去重；登出（4401）清空 map |
 
 ## 6. 平台差异
 

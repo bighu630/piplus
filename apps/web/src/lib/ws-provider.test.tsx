@@ -301,5 +301,30 @@ describe('WebSocketProvider reconnect after re-login', () => {
 
       expect(Object.keys(maps.at(-1)!)).toEqual(['q1']);
     });
+
+    test('登出（4401）清空 askingPendingMap：换号后不残留标题计数/琥珀标记', async () => {
+      askPendingResponse = [{ questionId: 'q1', sessionId: 's1', question: '待回答' }];
+      const { maps } = renderWithPendingMap();
+
+      await act(async () => {
+        await flush();
+        await flush();
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      await act(async () => {
+        socket.open();
+        await flush();
+        await flush();
+      });
+      expect(Object.keys(maps.at(-1)!)).toEqual(['q1']);
+
+      await act(async () => {
+        socket.dispatch('close', { code: 4401 });
+        await flush();
+        await flush();
+      });
+
+      expect(maps.at(-1)).toEqual({});
+    });
   });
 });
