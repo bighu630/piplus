@@ -285,8 +285,11 @@ export function parseToolArgsJson(raw: string | null | undefined): {
   }
 }
 
-/** read 内容展示上限：pi 单次最多读 2000 行，避免超长文件展开时渲染过多 DOM */
-export const READ_MAX_LINES = 500;
+/**
+ * 工具结果展示上限（read 内容与普通工具结果统一标准）：
+ * pi 单次最多读 2000 行 / 输出可达数十 KB，截断避免展开时渲染过多 DOM。
+ */
+export const TOOL_RESULT_MAX_LINES = 200;
 
 /** pi 在结果末尾追加的续读/截断提示行（形如 `[Showing lines 1-501 of 900. ...]`），单独展示且不计入正文行数 */
 const READ_NOTICE_PATTERN = /^\[(?:Showing lines|Line \d+ is |\d+ more lines in file)/;

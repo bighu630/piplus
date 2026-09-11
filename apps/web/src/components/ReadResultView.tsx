@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { isToolErrorMessage, READ_MAX_LINES, splitLineCount, splitReadContent } from '../lib/tool-summary';
+import { isToolErrorMessage, splitLineCount, splitReadContent, TOOL_RESULT_MAX_LINES } from '../lib/tool-summary';
 
 /**
  * read 工具结果的展开内容：正文（超长截断、外层滚动）+ pi 续读提示（单独一行）+ 失败文本样式。
@@ -10,10 +10,10 @@ function ReadResultView({ content }: { content: string }) {
     const { body, notice } = splitReadContent(content);
     // 用 splitLineCount 计数（与摘要 +N 口径一致）：末尾换行不多算一行
     const totalLines = splitLineCount(body);
-    const truncated = totalLines > READ_MAX_LINES;
+    const truncated = totalLines > TOOL_RESULT_MAX_LINES;
     const lines = body === '' ? [] : body.split('\n');
     return {
-      text: truncated ? lines.slice(0, READ_MAX_LINES).join('\n') : body,
+      text: truncated ? lines.slice(0, TOOL_RESULT_MAX_LINES).join('\n') : body,
       truncated,
       totalLines,
       notice,
@@ -29,7 +29,7 @@ function ReadResultView({ content }: { content: string }) {
     >
       {parsed.truncated && (
         <div className="px-3 py-1 text-[10px] italic text-slate-400 dark:text-slate-500 bg-slate-50/50 dark:bg-slate-800/30 border-b border-amber-100 dark:border-amber-800/30">
-          仅显示前 {READ_MAX_LINES} 行（共 {parsed.totalLines} 行）
+          仅显示前 {TOOL_RESULT_MAX_LINES} 行（共 {parsed.totalLines} 行）
         </div>
       )}
       <div className="max-h-96 overflow-auto px-3 py-2">

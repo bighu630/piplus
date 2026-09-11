@@ -6,8 +6,9 @@ import { Window } from 'happy-dom';
 import type { ChatMessageDTO } from '@piplus/shared';
 import ToolCallCard from './ToolCallCard';
 
-// 单条工具调用卡片（非文件类）验收测试：头部 chevron + 工具名，点击展开/收起 args。
-// write/edit/read 由 FileToolGroupCard 覆盖（见 FileToolGroupCard.test.tsx）。
+// 单条工具调用卡片（非文件类）验收测试：
+// - 展开后两个可折叠子项：「执行参数」默认收起、「结果」默认展开（成功/失败/运行中）
+// - 例外保持现状：spawn_session / send_message_to_session（args 表格）、ask_question（JSON args）
 
 const originalWindow = globalThis.window;
 const originalDocument = globalThis.document;
@@ -74,13 +75,24 @@ function toolCallMsg(toolName: string, args: Record<string, unknown> | string): 
   };
 }
 
-function Harness({ msg, roleSuffix, running }: { msg: ChatMessageDTO; roleSuffix?: string | null; running?: boolean }) {
+function Harness({
+  msg,
+  resultContent,
+  roleSuffix,
+  running,
+}: {
+  msg: ChatMessageDTO;
+  resultContent?: string | null;
+  roleSuffix?: string | null;
+  running?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   return (
     <ToolCallCard
       msg={msg}
       expanded={expanded}
       onToggle={() => setExpanded((v) => !v)}
+      resultContent={resultContent}
       roleSuffix={roleSuffix}
       running={running}
     />
@@ -89,49 +101,135 @@ function Harness({ msg, roleSuffix, running }: { msg: ChatMessageDTO; roleSuffix
 
 const header = () => container!.querySelector('[data-testid="tool-call-header"]');
 const expandedArea = () => container!.querySelector('[data-testid="tool-call-expanded"]');
+const argsToggle = () => container!.querySelector('[data-testid="tool-args-toggle"]');
+const argsContent = () => container!.querySelector('[data-testid="tool-args-content"]');
+const resultToggle = () => container!.querySelector('[data-testid="tool-result-toggle"]');
+const resultContent = () => container!.querySelector('[data-testid="tool-result-content"]');
+const resultStatus = () => container!.querySelector('[data-testid="tool-result-status"]');
 
-describe('ToolCallCard（非文件类工具）', () => {
-  test('bash：无摘要行、无按钮，默认收起，点击头部展开 args', () => {
-    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} />);
+describe('ToolCallCard 普通工具（两个子项）', () => {
+  test('默认收起；点击头部展开后出现「执行参数」与「结果」两个子项', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
 
-    expect(header()!.textContent).toContain('bash');
-    expect(container!.querySelectorAll('button')).toHaveLength(0);
-    expect(container!.querySelector('[data-testid="tool-call-meta"]')).toBeNull();
     expect(expandedArea()).toBeNull();
 
     click(header());
-    expect(expandedArea()!.textContent).toContain('echo hi');
 
-    click(header());
-    expect(expandedArea()).toBeNull();
+    expect(expandedArea()).not.toBeNull();
+    expect(argsToggle()!.textContent).toContain('执行参数');
+    expect(resultToggle()!.textContent).toContain('结果');
   });
 
-  test('spawn_session：头部显示角色后缀，展开为 args 表格', () => {
-    render(<Harness msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'do work' })} roleSuffix="worker" />);
+  test('执行参数默认收起，点击后显示 args，再点击收起', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+
+    expect(argsContent()).toBeNull();
+
+    click(argsToggle());
+    expect(argsContent()!.textContent).toContain('echo hi');
+
+    click(argsToggle());
+    expect(argsContent()).toBeNull();
+  });
+
+  test('结果默认展开：显示内容与「成功」标识', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+
+    expect(resultStatus()!.textContent).toBe('成功');
+    expect(resultContent()).not.toBeNull();
+    expect(resultContent()!.textContent).toContain('hi');
+  });
+
+  test('失败结果：红色「失败」标识 + 错误内容', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
+    click(header());
+
+    expect(resultStatus()!.textContent).toBe('失败');
+    expect(resultContent()!.querySelector('pre')!.className).toContain('text-rose-700');
+    expect(resultContent()!.textContent).toContain('exit code 1');
+  });
+
+  test('结果未回：显示「运行中」与执行中占位', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
+    click(header());
+
+    expect(resultStatus()!.textContent).toBe('运行中');
+    expect(resultContent()!.textContent).toContain('执行中');
+  });
+
+  test('结果子项可收起', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+    expect(resultContent()).not.toBeNull();
+
+    click(resultToggle());
+    expect(resultContent()).toBeNull();
+  });
+
+  test('重新展开主卡片时子项恢复默认（参数收起、结果展开）', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+    click(argsToggle()); // 参数展开
+    click(resultToggle()); // 结果收起
+    expect(argsContent()).not.toBeNull();
+    expect(resultContent()).toBeNull();
+
+    click(header()); // 收起主卡片
+    click(header()); // 重新展开
+
+    expect(argsContent()).toBeNull();
+    expect(resultContent()).not.toBeNull();
+  });
+});
+
+describe('ToolCallCard 例外工具保持现状', () => {
+  test('spawn_session：角色后缀 + args 表格（无子项）', () => {
+    render(
+      <Harness
+        msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'do work' })}
+        roleSuffix="worker"
+        resultContent={'{"summary":"done"}'}
+      />,
+    );
 
     expect(header()!.textContent).toContain('spawn_session (worker)');
-    expect(expandedArea()).toBeNull();
 
     click(header());
+
     expect(expandedArea()!.querySelector('table')).not.toBeNull();
     expect(expandedArea()!.textContent).toContain('do work');
+    expect(argsToggle()).toBeNull();
+    expect(resultToggle()).toBeNull();
   });
 
-  test('args JSON 非法时降级展示原始文本', () => {
+  test('ask_question：JSON args（无子项）', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} />);
+
+    click(header());
+
+    expect(expandedArea()!.textContent).toContain('"question"');
+    expect(argsToggle()).toBeNull();
+  });
+
+  test('args JSON 非法：展开「执行参数」显示原始文本', () => {
     render(<Harness msg={toolCallMsg('bash', '{invalid json')} />);
-
     click(header());
-    expect(expandedArea()!.textContent).toContain('{invalid json');
+    click(argsToggle());
+
+    expect(argsContent()!.textContent).toContain('{invalid json');
   });
 
-  test('无 args 时展开不渲染内容区', () => {
+  test('无 args：执行参数子项显示「（无参数）」', () => {
     render(<Harness msg={toolCallMsg('bash', '')} />);
-
     click(header());
-    expect(expandedArea()).toBeNull();
+    click(argsToggle());
+
+    expect(argsContent()!.textContent).toContain('（无参数）');
   });
 
-  test('running 时渲染 spinner', () => {
+  test('运行中：头部右侧渲染 spinner', () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
     expect(container!.querySelector('.animate-spin')).not.toBeNull();
   });

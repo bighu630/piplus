@@ -10,9 +10,11 @@
 2. **两个交互**：① 每行可**独立展开**显示该文件的 diff 明细（read 显示读取内容，不带行号，行号只在行内范围里）；② 卡片级**只有一个**「展开全部 / 收起全部」总控（按钮 + 头部点击，两者同语义）。
 3. **状态着色（工具调用视为一个整体）**：整组全部成功 → 绿色卡片；有任一失败 → 红色卡片（失败行额外标红并显示「失败」）；仍在运行（结果未回）→ 保持琥珀色。
 4. **失败原因默认展开**在对应行内（点击该行仍可收起）；write/edit/read 的结果（成功与失败）均不再渲染独立结果卡片。
-5. 其它工具（bash/grep/spawn 等）保持原交互：一条调用一张卡片，头部点击展开 args，无摘要行、无按钮；不做全局总控（其结果卡片仍按原样渲染）。
-6. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
-7. 文件路径保持单行截断，鼠标悬停（`title`）看完整。
+5. **普通工具（bash/grep/find/ls 等）**：一条调用一张卡片，头部点击展开后为两个可折叠子项——「执行参数」（默认收起）与「结果」（默认展开，成功/失败标识）；结果不再渲染独立卡片。
+6. **独立结果卡片仅保留两类**：`ask_question` 的结构化答案卡片、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（这两类工具卡片本身也保持既有展示）。
+7. 工具结果统一截断标准：**200 行**（read 内容与普通工具结果同一口径），容器内滚动，截断提示在滚动容器外。
+8. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
+9. 文件路径保持单行截断，鼠标悬停（`title`）看完整。
 
 ## 数据来源（已核实代码事实）
 
@@ -78,14 +80,23 @@ interface ToolCallCardProps {
   onToggle: (id: string) => void;
   running?: boolean;
   roleSuffix?: string | null;    // spawn_session 等角色后缀
+  resultContent?: string | null; // 对应 tool result 文本（卡片内「结果」子项）
 }
 ```
 
-- 头部：chevron + 工具名，点击展开/收起
-- 展开区：spawn_session / send_message_to_session → args 表格；其它 → JSON args
-- 文件类工具的结果消息不再渲染独立结果卡片（由聚合卡片承载状态与失败原因）
+- 头部：chevron + 工具名，点击展开/收起（运行中时卡片右侧 spinner）
+- 展开区（普通工具）：两个可折叠子项
+  - 「执行参数」：默认收起，展开显示 args（JSON；非法 JSON 显示原文；无参数显示「（无参数）」）
+  - 「结果」：默认展开，`成功`/`失败`/`运行中` 标识 + `ToolResultView` 内容（运行中显示「执行中…」占位）
+  - 每次重新展开主卡片时恢复默认（参数收起 / 结果展开）
+- 例外保持既有展示：`spawn_session` / `send_message_to_session` → args 表格；`ask_question` → JSON args
+- 结果消息不再渲染独立结果卡片：文件类由聚合卡片承载、普通工具由「结果」子项承载
 
-**`ReadResultView.tsx`**：read 展开内容（等宽字体 `whitespace-pre`、`max-h-96` 滚动、超 500 行在滚动容器外提示、pi 尾部续读提示单独一行、失败文本 rose 样式、空内容占位）。
+**`ToolResultView.tsx`**：通用工具结果文本（统一截断 200 行 + 滚动、截断提示在滚动容器外、失败 rose / 成功中性色、空输出占位）。
+
+**独立结果卡片仅保留两类**：`ask_question` 的结构化答案卡片（AskQuestionCard）、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（Markdown 渲染）。
+
+**`ReadResultView.tsx`**：read 展开内容（等宽字体 `whitespace-pre`、`max-h-96` 滚动、超 200 行在滚动容器外提示、pi 尾部续读提示单独一行、失败文本 rose 样式、空内容占位）。
 
 ### 3. 改造 `apps/web/src/components/DiffViewer.tsx`
 
@@ -104,7 +115,7 @@ interface ToolCallCardProps {
 - edit 的 details 缺失（旧会话、未落盘）：回退 args 行级 diff 计算
 - write 的 `-N` 不显示（数据不存在）
 - read 结果未落盘（流式中/被中断）：该行展开区回退展示 args JSON
-- read 内容超长：截断到 500 行并提示「仅显示前 500 行（共 N 行）」，容器 `max-h-96` 可滚动
+- 工具结果超长（read 与普通工具统一）：截断到 200 行并提示「仅显示前 200 行（共 N 行）」，容器 `max-h-96` 可滚动，提示在滚动容器外
 - read 行号是请求范围而非实际内容范围（offset 超出文件尾时会偏大），与已确认决策一致
 - 超长路径：单行 `truncate`，hover 显示完整路径
 - 消息 id 不含 `-tool-N` 后缀（非 pi 历史来源）时每条自成一组，行为与单文件卡片一致
@@ -124,12 +135,14 @@ interface ToolCallCardProps {
   3. 单文件组、混合工具组标签（`write + edit + read × 3`）、路径 `title`、running spinner
   4. 状态着色与失败展开：全部成功绿色卡片；结果未回琥珀色（pending，不宣称成功）；失败红色卡片（优先级高于运行中）+ 失败行默认展开错误原因 + 点击可收起；部分失败时仅失败行标红；全部收起/展开与失败行联动；失败的 edit/read 不渲染 diff 或 read 内容（只显示错误原因）
   5. read 行：行号范围 chip、独立展开内容、无结果回退 args；edit 行：details.diff 精确 ±、diff 明细渲染
-- `apps/web/src/components/ToolCallCard.test.tsx`：非文件类（bash/spawn_session）：无摘要无按钮、头部点击切换、args 表格、JSON 非法降级、spinner
+- `apps/web/src/components/ToolCallCard.test.tsx`：普通工具两个子项（执行参数默认收起 / 结果默认展开、成功/失败/运行中标识、子项可收起、重新展开恢复默认）、args 非法与无参数降级；例外保持（spawn 表格 + 角色后缀、ask_question JSON args）、spinner
+- `apps/web/src/components/ToolResultView.test.tsx`：内容渲染、空输出占位、失败样式、200 行截断（提示位置）、恰好 200 行不截断
+- `apps/web/src/components/ReadResultView.test.tsx`：正文渲染、空内容、失败样式、pi 续读提示口径、200 行截断
 - `apps/web/src/components/DiffViewer.test.tsx`：write/edit 明细渲染、>150 行截断提示、无折叠控件
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（195 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（208 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
 
 注：`ReadResultView` 仍保留 `isError` 样式分支（防御层）；当前生产路径下失败 read 由 `FileRow` 的错误分支直接渲染错误原因，不会传入 `ReadResultView`。
 

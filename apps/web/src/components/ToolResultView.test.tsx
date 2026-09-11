@@ -3,9 +3,9 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
-import ReadResultView from './ReadResultView';
+import ToolResultView from './ToolResultView';
 
-// read 展开内容验收测试：正文渲染、空内容占位、失败样式、pi 续读提示、超长截断（提示在滚动容器外）。
+// 通用工具结果视图验收测试：内容渲染、空输出占位、失败样式、超长截断（统一 200 行、提示在滚动容器外）。
 
 const originalWindow = globalThis.window;
 const originalDocument = globalThis.document;
@@ -53,40 +53,28 @@ afterEach(() => {
   container = null;
 });
 
-describe('ReadResultView', () => {
-  test('正文原样渲染（不带行号前缀）', () => {
-    render(<ReadResultView content={'const a = 1;\nconst b = 2;'} />);
-    expect(container!.querySelector('pre')!.textContent).toBe('const a = 1;\nconst b = 2;');
+describe('ToolResultView', () => {
+  test('普通内容原样渲染（成功中性色）', () => {
+    render(<ToolResultView content={'line1\nline2'} />);
+    const pre = container!.querySelector('pre')!;
+    expect(pre.textContent).toBe('line1\nline2');
+    expect(pre.className).toContain('text-slate-700');
   });
 
-  test('空内容显示占位', () => {
-    render(<ReadResultView content={''} />);
-    expect(container!.textContent).toContain('（空内容）');
+  test('空内容与仅空白显示「（无输出）」占位', () => {
+    render(<ToolResultView content={''} />);
+    expect(container!.textContent).toContain('（无输出）');
     expect(container!.querySelector('pre')).toBeNull();
   });
 
-  test('仅空白内容也走空占位', () => {
-    render(<ReadResultView content={'\n\n'} />);
-    expect(container!.textContent).toContain('（空内容）');
-  });
-
-  test('失败文本用错误样式', () => {
-    render(<ReadResultView content={'Error: ENOENT: no such file or directory'} />);
+  test('失败文本用 rose 样式', () => {
+    render(<ToolResultView content={'Error: exit code 1'} />);
     expect(container!.querySelector('pre')!.className).toContain('text-rose-700');
   });
 
-  test('pi 续读提示单独展示且不计入正文', () => {
-    const content = 'l1\nl2\n\n[Showing lines 1-2 of 900. Use offset=3 to continue.]';
-    render(<ReadResultView content={content} />);
-
-    expect(container!.querySelector('pre')!.textContent).toBe('l1\nl2');
-    expect(container!.textContent).toContain('[Showing lines 1-2 of 900. Use offset=3 to continue.]');
-    expect(container!.textContent).not.toContain('仅显示前');
-  });
-
-  test('超长内容截断到 200 行并提示（提示在滚动容器外）', () => {
+  test('超长内容截断到 200 行，提示在滚动容器外', () => {
     const content = Array.from({ length: 620 }, (_, i) => `line ${i}`).join('\n');
-    render(<ReadResultView content={content} />);
+    render(<ToolResultView content={content} />);
 
     const pre = container!.querySelector('pre')!;
     expect(pre.textContent!.split('\n')).toHaveLength(200);
@@ -94,11 +82,9 @@ describe('ReadResultView', () => {
     expect(container!.querySelector('.max-h-96')!.textContent).not.toContain('仅显示前');
   });
 
-  test('正文 501 行 + 续读提示：按正文计数且保留 pi 提示', () => {
-    const body = Array.from({ length: 501 }, (_, i) => `line ${i}`).join('\n');
-    render(<ReadResultView content={`${body}\n\n[Showing lines 1-501 of 900. Use offset=502 to continue.]`} />);
-
-    expect(container!.textContent).toContain('仅显示前 200 行（共 501 行）');
-    expect(container!.textContent).toContain('Use offset=502 to continue.');
+  test('恰好 200 行不截断', () => {
+    const content = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n');
+    render(<ToolResultView content={content} />);
+    expect(container!.textContent).not.toContain('仅显示前');
   });
 });
