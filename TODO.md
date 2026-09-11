@@ -22,10 +22,10 @@
 - [x] `cd packages/domain && bun test` → 122 pass
 - [x] `cd packages/shared && bun test` → 4 pass
 - [x] `cd apps/api && bun test` → 213 pass
-- [x] `cd apps/web && bun test` → 149 pass
+- [x] `cd apps/web && bun test` → 152 pass
 - [x] `cd apps/api && bun run typecheck` → 通过
 - [x] `cd packages/domain && bun run typecheck` → 通过
 - [x] `cd apps/web && bun run lint` → 通过
 
 ## 审查
-- [ ] reviewer 审查 → 修复 → 复审直到通过
+- [x] reviewer 审查（session_01a8cb58-12d）→ 修复 2 🟡 + 4 🔵 + 闭合登出竞态 → 复审 **PASS**

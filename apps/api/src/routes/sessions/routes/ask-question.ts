@@ -245,7 +245,7 @@ export function registerAskQuestionRoutes(app: Hono) {
       .from(sessions)
       .where(eq(sessions.createdBy, userId));
     const ownedIds = new Set(ownedSessions.map((row) => row.id));
-    const pending = listAllPending().filter((p) => p.sessionId !== undefined && ownedIds.has(p.sessionId));
+    const pending = listAllPending().filter((p) => ownedIds.has(p.sessionId));
     return c.json({ pending });
   });
 }

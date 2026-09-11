@@ -64,6 +64,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const authStatusQuery = useAuthStatus();
   const authSessionQuery = useAuthSession();
   const isLoggedIn = authStatusQuery.data?.requiresPassword === false || Boolean(authSessionQuery.data?.ok);
+  // 补偿请求存在 in-flight 窗口：登出后晚到的响应不得再把旧 pending 写回 map。
+  const isLoggedInRef = useRef(isLoggedIn);
+  isLoggedInRef.current = isLoggedIn;
 
   // Refs for latest values used in closures
   const selectedSessionIdRef = useRef<string | null>(null);
@@ -157,6 +160,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     const run = (async () => {
       try {
         const res = await getAllAskPending();
+        // 登出后晚到的响应丢弃：否则会把上一个登录会话的 pending 重新写回 map
+        if (!isLoggedInRef.current) return;
         publishAskPending(res?.pending ?? []);
       } catch {
         // 未登录 / 离线 / 服务不可达：忽略，下次重连或聚焦时再补
