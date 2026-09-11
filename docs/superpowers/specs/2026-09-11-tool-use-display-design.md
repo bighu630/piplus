@@ -7,7 +7,7 @@
 ## 需求（已与用户确认）
 
 1. **write / edit 卡片**：头部常显文件路径 + 增删行数（`+N` / `-N`）。默认收起，展开后显示 diff 明细。
-2. **read 卡片**：头部常显文件路径 + 行号范围（如 `100-150`）。无行号参数时不显示行号部分。
+2. **read 卡片**：头部常显文件路径 + 行号范围（如 `100-149`）。无行号参数时不显示行号部分。
 3. **交互**：点击卡片头部（或头部右侧按钮）展开/收起该卡片，按钮文案为「展开全部」/「收起全部」。所有工具卡片统一带该按钮；不做全局总控。
 4. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
 
@@ -30,7 +30,7 @@
   - `edit`：优先解析 `details.diff` 字符串统计 `+`/`-` 行；否则用 `edits[].oldText/newText` 拼接后调用现有 `computeLineDiff`
   - 非 write/edit 或 args 非法时返回 `null`
 - `formatReadLineRange(args) => string | null`
-  - `offset` 与 `limit` 均为正整数：`offset-(offset+limit-1)`（例：100/50 → `100-150`）
+  - `offset` 与 `limit` 均为正整数：`offset-(offset+limit-1)`（例：100/50 → `100-149`，limit 为行数）
   - 仅 `offset`：`100+`
   - 仅 `limit`：`1-50`
   - 都没有：`null`
@@ -69,9 +69,11 @@ tool_call 分支替换为 `<ToolCallCard …>`；`expandedToolIds` 状态与 `is
 
 ## 边界与降级
 
-- args JSON 解析失败 / 缺少 path：不渲染摘要，展开区回退原始 args 文本
-- edit 的 details 缺失（旧会话、未落盘）：回退 args LCS 计算
+- args JSON 解析失败：不渲染摘要，展开区回退原始 args 文本
+- 缺少 path：摘要显示 `(未提供路径)`，增减行数照常展示
+- edit 的 details 缺失（旧会话、未落盘）：回退 args 行级 diff 计算
 - write 的 `-N` 不显示（数据不存在）
+- read 行号是请求范围而非实际内容范围（offset 超出文件尾时会偏大），与已确认决策一致
 - 超长路径：单行 `truncate`，hover 显示完整路径
 
 ## 测试

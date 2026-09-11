@@ -42,7 +42,12 @@ function DiffViewer({ oldText, newText, viewType }: DiffViewerProps) {
           }
 
           return (
-            <div key={index} className={`flex items-start px-3 py-0.5 ${rowClass}`}>
+            <div
+              key={index}
+              data-testid="diff-line"
+              data-line-type={line.type}
+              className={`flex items-start px-3 py-0.5 ${rowClass}`}
+            >
               <span className="w-5 shrink-0 text-center select-none font-mono text-[11px] font-bold opacity-70 leading-relaxed">
                 {sign}
               </span>

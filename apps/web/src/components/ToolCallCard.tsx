@@ -11,7 +11,8 @@ import { formatReadLineRange, parseWriteEditDiff, summarizeWriteEdit } from '../
 export interface ToolCallCardProps {
   msg: ChatMessageDTO;
   expanded: boolean;
-  onToggle: () => void;
+  /** 切换展开态；传 id 而非闭包，便于父级用 useCallback 稳定引用、让 memo 生效 */
+  onToggle: (id: string) => void;
   running?: boolean;
   /** spawn_session 等工具的角色后缀，如 `worker` */
   roleSuffix?: string | null;
@@ -55,6 +56,7 @@ function ToolCallCard({
   const readPath = toolName === 'read' && parsedArgs && typeof parsedArgs.path === 'string'
     ? parsedArgs.path
     : null;
+  // 注：这是「请求范围」而非文件实际内容范围（offset 超出文件尾或文件更短时会偏大）
   const readLineRange = toolName === 'read' && parsedArgs
     ? formatReadLineRange(parsedArgs)
     : null;
@@ -69,7 +71,7 @@ function ToolCallCard({
           <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40">
             <div
               className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
-              onClick={onToggle}
+              onClick={() => onToggle(msg.id)}
             >
               {expanded ? (
                 <ChevronDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
@@ -93,9 +95,11 @@ function ToolCallCard({
                   >
                     {writeEditSummary.path ?? '(未提供路径)'}
                   </span>
-                  <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
-                    +{writeEditSummary.added}
-                  </span>
+                  {(writeEditSummary.added > 0 || writeEditSummary.removed === 0) && (
+                    <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
+                      +{writeEditSummary.added}
+                    </span>
+                  )}
                   {writeEditSummary.removed > 0 && (
                     <span className="text-[10px] font-mono font-bold text-rose-600 dark:text-rose-400 shrink-0">
                       -{writeEditSummary.removed}
@@ -130,7 +134,7 @@ function ToolCallCard({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onToggle();
+                  onToggle(msg.id);
                 }}
                 className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium text-amber-700 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-900/40 hover:bg-amber-200/70 dark:hover:bg-amber-800/50 transition-colors cursor-pointer shrink-0"
               >

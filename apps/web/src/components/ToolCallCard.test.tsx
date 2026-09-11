@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import React, { useState } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -7,7 +7,8 @@ import type { ChatMessageDTO } from '@piplus/shared';
 import ToolCallCard from './ToolCallCard';
 
 // tool call 卡片展示验收测试：write/edit 摘要（文件 + 增删行数）、read 摘要（文件 + 行号范围）、
-// 默认收起与展开/收起切换。setup 模式参照 AskQuestionCard.test.tsx（happy-dom + React 19）。
+// 默认收起与展开/收起切换、迁移后的降级分支（args 表格 / JSON 降级 / spinner / 角色后缀）。
+// setup 模式参照 AskQuestionCard.test.tsx（happy-dom + React 19）。
 
 const originalWindow = globalThis.window;
 const originalDocument = globalThis.document;
@@ -55,6 +56,10 @@ function cleanup() {
   container = null;
 }
 
+afterEach(() => {
+  cleanup();
+});
+
 function findButton(text: string): HTMLButtonElement | null {
   return [...(container!.querySelectorAll('button') as unknown as HTMLButtonElement[])].find(
     (b) => b.textContent?.trim() === text,
@@ -67,7 +72,7 @@ function click(el: Element | null) {
   });
 }
 
-function toolCallMsg(toolName: string, args: Record<string, unknown>): ChatMessageDTO {
+function toolCallMsg(toolName: string, args: Record<string, unknown> | string): ChatMessageDTO {
   return {
     id: `call-${toolName}`,
     role: 'assistant',
@@ -76,12 +81,22 @@ function toolCallMsg(toolName: string, args: Record<string, unknown>): ChatMessa
     content_text: '',
     created_at: new Date().toISOString(),
     tool_name: toolName,
-    tool_args_json: JSON.stringify(args),
+    tool_args_json: typeof args === 'string' ? args : JSON.stringify(args),
   };
 }
 
 /** 受控 expanded 状态包装，用于验证点击切换。 */
-function Harness({ msg, resultDetails }: { msg: ChatMessageDTO; resultDetails?: unknown }) {
+function Harness({
+  msg,
+  resultDetails,
+  roleSuffix,
+  running,
+}: {
+  msg: ChatMessageDTO;
+  resultDetails?: unknown;
+  roleSuffix?: string | null;
+  running?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   return (
     <ToolCallCard
@@ -89,41 +104,39 @@ function Harness({ msg, resultDetails }: { msg: ChatMessageDTO; resultDetails?: 
       expanded={expanded}
       onToggle={() => setExpanded((v) => !v)}
       resultDetails={resultDetails}
+      roleSuffix={roleSuffix}
+      running={running}
     />
   );
 }
 
 const meta = () => container!.querySelector('[data-testid="tool-call-meta"]');
 const expandedArea = () => container!.querySelector('[data-testid="tool-call-expanded"]');
+const diffLines = () => [...container!.querySelectorAll('[data-testid="diff-line"]')];
+const diffLinesOfType = (type: string) =>
+  diffLines().filter((el) => el.getAttribute('data-line-type') === type);
 
 describe('ToolCallCard write 卡片', () => {
   test('默认收起：头部显示文件与 +N，不渲染 diff 明细，按钮为「展开全部」', () => {
-    render(
-      <Harness
-        msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one\ntwo\nthree' })}
-      />,
-    );
+    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one\ntwo\nthree' })} />);
 
     expect(meta()).not.toBeNull();
     expect(meta()!.textContent).toContain('src/a.ts');
     expect(meta()!.textContent).toContain('+3');
     expect(expandedArea()).toBeNull();
+    expect(diffLines()).toHaveLength(0);
     expect(findButton('展开全部')).not.toBeNull();
     expect(findButton('收起全部')).toBeNull();
-
-    cleanup();
   });
 
   test('点击头部展开显示 diff 明细，按钮变「收起全部」；再点击收起', () => {
-    render(
-      <Harness
-        msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one\ntwo\nthree' })}
-      />,
-    );
+    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one\ntwo\nthree' })} />);
 
     click(findButton('展开全部'));
 
     expect(expandedArea()).not.toBeNull();
+    expect(diffLines()).toHaveLength(3);
+    expect(diffLinesOfType('add')).toHaveLength(3);
     expect(expandedArea()!.textContent).toContain('one');
     expect(expandedArea()!.textContent).toContain('three');
     expect(findButton('收起全部')).not.toBeNull();
@@ -132,33 +145,40 @@ describe('ToolCallCard write 卡片', () => {
 
     expect(expandedArea()).toBeNull();
     expect(findButton('展开全部')).not.toBeNull();
-
-    cleanup();
   });
 
   test('点击头部行（非按钮区域）同样切换展开', () => {
-    render(
-      <Harness
-        msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one' })}
-      />,
-    );
+    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one' })} />);
 
     const header = findButton('展开全部')!.parentElement;
     click(header);
 
     expect(expandedArea()).not.toBeNull();
-    cleanup();
   });
 
   test('空内容显示 +0', () => {
     render(<Harness msg={toolCallMsg('write', { path: 'src/empty.ts', content: '' })} />);
     expect(meta()!.textContent).toContain('+0');
-    cleanup();
+  });
+
+  test('末尾换行内容：头部 +N 与展开明细行数一致（不多出空行）', () => {
+    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'a\nb\n' })} />);
+
+    expect(meta()!.textContent).toContain('+2');
+    click(findButton('展开全部'));
+    expect(diffLines()).toHaveLength(2);
+    expect(diffLinesOfType('add')).toHaveLength(2);
+  });
+
+  test('缺少 path 时显示占位符但保留行数', () => {
+    render(<Harness msg={toolCallMsg('write', { content: 'a\nb' })} />);
+    expect(meta()!.textContent).toContain('(未提供路径)');
+    expect(meta()!.textContent).toContain('+2');
   });
 });
 
 describe('ToolCallCard edit 卡片', () => {
-  test('优先用结果 details.diff 显示 +N -N', () => {
+  test('默认收起，头部优先用结果 details.diff 显示 +N -N', () => {
     render(
       <Harness
         msg={toolCallMsg('edit', { path: 'src/c.ts', edits: [{ oldText: 'x', newText: 'y' }] })}
@@ -166,10 +186,10 @@ describe('ToolCallCard edit 卡片', () => {
       />,
     );
 
+    expect(expandedArea()).toBeNull();
     expect(meta()!.textContent).toContain('src/c.ts');
     expect(meta()!.textContent).toContain('+2');
     expect(meta()!.textContent).toContain('-1');
-    cleanup();
   });
 
   test('无 details 时回退 args 行级 diff', () => {
@@ -181,21 +201,37 @@ describe('ToolCallCard edit 卡片', () => {
 
     expect(meta()!.textContent).toContain('+1');
     expect(meta()!.textContent).toContain('-1');
-    cleanup();
+  });
+
+  test('纯删除只显示 -N（不出现 +0）', () => {
+    render(<Harness msg={toolCallMsg('edit', { path: 'src/e.ts', edits: [{ oldText: 'a\nb', newText: '' }] })} />);
+
+    expect(meta()!.textContent).not.toContain('+0');
+    expect(meta()!.textContent).toContain('-2');
+  });
+
+  test('展开后渲染 edit diff 明细（+/- 行）', () => {
+    render(
+      <Harness
+        msg={toolCallMsg('edit', { path: 'src/f.ts', edits: [{ oldText: 'a\nb', newText: 'a\nc' }] })}
+      />,
+    );
+
+    click(findButton('展开全部'));
+    expect(diffLinesOfType('add')).toHaveLength(1);
+    expect(diffLinesOfType('delete')).toHaveLength(1);
   });
 });
 
 describe('ToolCallCard read 卡片', () => {
-  test('显示读取的文件与行号范围', () => {
-    render(
-      <Harness msg={toolCallMsg('read', { path: 'src/big.ts', offset: 100, limit: 50 })} />,
-    );
+  test('默认收起，显示读取的文件与行号范围', () => {
+    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts', offset: 100, limit: 50 })} />);
 
+    expect(expandedArea()).toBeNull();
     expect(meta()!.textContent).toContain('src/big.ts');
     const range = container!.querySelector('[data-testid="tool-call-line-range"]');
     expect(range).not.toBeNull();
     expect(range!.textContent).toBe('100-149');
-    cleanup();
   });
 
   test('无 offset/limit 时只显示文件、不显示行号', () => {
@@ -203,23 +239,20 @@ describe('ToolCallCard read 卡片', () => {
 
     expect(meta()!.textContent).toContain('src/small.ts');
     expect(container!.querySelector('[data-testid="tool-call-line-range"]')).toBeNull();
-    cleanup();
   });
 
   test('仅 offset 显示 100+', () => {
     render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts', offset: 100 })} />);
     expect(container!.querySelector('[data-testid="tool-call-line-range"]')!.textContent).toBe('100+');
-    cleanup();
   });
 
   test('仅 limit 显示 1-50', () => {
     render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts', limit: 50 })} />);
     expect(container!.querySelector('[data-testid="tool-call-line-range"]')!.textContent).toBe('1-50');
-    cleanup();
   });
 });
 
-describe('ToolCallCard 其它工具', () => {
+describe('ToolCallCard 其它工具与降级', () => {
   test('bash 无文件摘要，但默认收起且有展开按钮，展开显示 args', () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} />);
 
@@ -227,6 +260,35 @@ describe('ToolCallCard 其它工具', () => {
     expect(expandedArea()).toBeNull();
     click(findButton('展开全部'));
     expect(expandedArea()!.textContent).toContain('echo hi');
-    cleanup();
+  });
+
+  test('spawn_session：角色后缀与 args 表格，默认收起', () => {
+    render(
+      <Harness
+        msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'do work' })}
+        roleSuffix="worker"
+      />,
+    );
+
+    expect(container!.textContent).toContain('spawn_session (worker)');
+    expect(expandedArea()).toBeNull();
+
+    click(findButton('展开全部'));
+    expect(expandedArea()!.querySelector('table')).not.toBeNull();
+    expect(expandedArea()!.textContent).toContain('objective');
+    expect(expandedArea()!.textContent).toContain('do work');
+  });
+
+  test('args JSON 非法时降级展示原始文本', () => {
+    render(<Harness msg={toolCallMsg('write', '{invalid json')} />);
+
+    expect(meta()).toBeNull();
+    click(findButton('展开全部'));
+    expect(expandedArea()!.textContent).toContain('{invalid json');
+  });
+
+  test('running 时渲染 spinner', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
+    expect(container!.querySelector('.animate-spin')).not.toBeNull();
   });
 });

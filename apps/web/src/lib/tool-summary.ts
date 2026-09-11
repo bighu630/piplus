@@ -152,11 +152,14 @@ export function summarizeWriteEdit(
 }
 
 /**
- * read 卡片的行号范围文案，按 args 推导：
- * - offset + limit → `100-150`（1-indexed，含端点）
+ * read 卡片的行号范围文案，按 args 推导（limit 为行数，范围含端点）：
+ * - offset + limit → `100-149`
  * - 仅 offset → `100+`
  * - 仅 limit → `1-50`
  * - 都没有 → null（不显示行号部分）
+ *
+ * 注：展示的是请求范围而非文件实际内容范围（offset 超出文件尾或文件更短时会偏大）；
+ * 实际范围仅在 pi 结果文本的 `[Showing lines X-Y of Z]` 中出现，不保证存在。
  */
 export function formatReadLineRange(args: Record<string, unknown>): string | null {
   const offset = toPositiveInt(args.offset);
@@ -176,6 +179,9 @@ function toPositiveInt(value: unknown): number | null {
 /**
  * 在消息序列中查找 tool_call 之后第一条同名工具的 result 消息
  * （与 isToolCallPending 的匹配口径一致，用于取 edit 的 details 精确 diff）。
+ *
+ * 局限：DTO 未暴露 toolCallId，只能按 tool_name 顺序匹配；若某次调用的 result
+ * 缺失（被中断/未落盘），后续同名工具的 result 可能被挂到较前的卡片上。
  */
 export function findToolResultMessage(
   messages: ChatMessageDTO[],

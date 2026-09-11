@@ -230,6 +230,15 @@ function TabChat({
 }: TabChatProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
+  // 稳定引用：配合 ToolCallCard 的 React.memo，避免内联闭包导致工具卡片全量重渲染
+  const toggleToolExpanded = useCallback((id: string) => {
+    setExpandedToolIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -763,14 +772,7 @@ function TabChat({
                 key={msg.id}
                 msg={msg}
                 expanded={expandedToolIds.has(msg.id)}
-                onToggle={() => {
-                  setExpandedToolIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(msg.id)) next.delete(msg.id);
-                    else next.add(msg.id);
-                    return next;
-                  });
-                }}
+                onToggle={toggleToolExpanded}
                 running={isThisToolRunning}
                 roleSuffix={spawnSessionRole}
                 resultDetails={findToolResultMessage(messages, msg.id, toolName)?.details ?? null}
