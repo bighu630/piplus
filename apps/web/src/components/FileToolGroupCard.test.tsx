@@ -418,3 +418,68 @@ describe('FileToolGroupCard 状态着色与失败展开', () => {
     expect(details()[0].textContent).toContain('text not found');
   });
 });
+
+describe('FileToolGroupCard 状态边界', () => {
+  const okWrite = fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'x' });
+
+  test('成功：卡片与行均为 ok', () => {
+    render(
+      <Harness
+        calls={[okWrite]}
+        messages={[toolResult('r1', 'write', 'e1-tool-0', 'Successfully wrote to src/a.ts')]}
+      />,
+    );
+    expect(container!.querySelector('[data-testid="tool-group-card"]')!.getAttribute('data-status')).toBe('ok');
+    expect(rows()[0].getAttribute('data-status')).toBe('ok');
+  });
+
+  test('结果未回（pending）：卡片琥珀色，行标记 pending（不宣称成功）', () => {
+    render(<Harness calls={[okWrite]} />);
+    expect(container!.querySelector('[data-testid="tool-group-card"]')!.getAttribute('data-status')).toBe('pending');
+    expect(rows()[0].getAttribute('data-status')).toBe('pending');
+    expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-emerald-50')).toBeNull();
+  });
+
+  test('失败优先于运行中：整卡红色', () => {
+    const calls = [
+      fileCall('e1-tool-0', 'write', { path: 'bad.ts', content: 'x' }),
+      fileCall('e1-tool-1', 'write', { path: 'running.ts', content: 'y' }),
+    ];
+    render(
+      <Harness
+        calls={calls}
+        messages={[toolResult('r1', 'write', 'e1-tool-0', 'Error: disk full')]}
+        runningIds={new Set(['e1-tool-1'])}
+      />,
+    );
+    expect(container!.querySelector('[data-testid="tool-group-card"]')!.getAttribute('data-status')).toBe('error');
+    expect(rows()[1].getAttribute('data-status')).toBe('pending');
+  });
+
+  test('read 失败走错误分支：显示错误原因而非读取内容', () => {
+    render(
+      <Harness
+        calls={[fileCall('e1-tool-0', 'read', { path: 'src/missing.ts' })]}
+        messages={[toolResult('r1', 'read', 'e1-tool-0', 'Error: ENOENT: no such file or directory')]}
+      />,
+    );
+
+    expect(rows()[0].getAttribute('data-status')).toBe('error');
+    expect(details()).toHaveLength(1);
+    expect(details()[0].textContent).toContain('ENOENT');
+    // 不渲染 ReadResultView 的滚动容器
+    expect(details()[0].querySelector('.max-h-96')).toBeNull();
+  });
+
+  test('前导空白 + 大写 ERROR 仍判为失败', () => {
+    render(
+      <Harness
+        calls={[okWrite]}
+        messages={[toolResult('r1', 'write', 'e1-tool-0', '  ERROR: permission denied')]}
+      />,
+    );
+    expect(rows()[0].getAttribute('data-status')).toBe('error');
+    expect(details()[0].textContent).toContain('permission denied');
+  });
+});

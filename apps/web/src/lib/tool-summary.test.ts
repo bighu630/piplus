@@ -6,6 +6,8 @@ import {
   formatReadLineRange,
   isFileToolCall,
   isFileToolResult,
+  isFileToolResultCovered,
+  isToolErrorMessage,
   parseToolArgsJson,
   parseWriteEditDiff,
   splitLineCount,
@@ -351,5 +353,41 @@ describe('isFileToolResult', () => {
   test('其它工具的结果与调用消息不受影响', () => {
     expect(isFileToolResult(msg({ id: 'r1', role: 'tool', message_kind: 'tool', tool_name: 'bash', content_text: 'ok' }))).toBe(false);
     expect(isFileToolResult(msg({ id: 'c1', tool_name: 'write' }))).toBe(false);
+  });
+});
+
+describe('isToolErrorMessage', () => {
+  test('Error 前缀（大小写/前导空白）视为失败', () => {
+    expect(isToolErrorMessage('Error: x')).toBe(true);
+    expect(isToolErrorMessage('  error: x')).toBe(true);
+    expect(isToolErrorMessage('ERROR: x')).toBe(true);
+    expect(isToolErrorMessage('ok')).toBe(false);
+    expect(isToolErrorMessage('')).toBe(false);
+    expect(isToolErrorMessage(null)).toBe(false);
+  });
+});
+
+describe('isFileToolResultCovered', () => {
+  const fileResult = msg({
+    id: 'r1',
+    role: 'tool',
+    message_kind: 'tool',
+    tool_name: 'write',
+    content_text: 'Error: x',
+  });
+
+  test('当前视图内存在同名文件类调用 → 由聚合卡片承载（隐藏结果卡片）', () => {
+    expect(isFileToolResultCovered(fileResult, [msg({ id: 'c1', tool_name: 'write' })])).toBe(true);
+  });
+
+  test('分页边界下调用不在视图内 → 不隐藏（降级渲染结果卡片，保留失败反馈）', () => {
+    expect(isFileToolResultCovered(fileResult, [msg({ id: 'c2', tool_name: 'bash' })])).toBe(false);
+    expect(isFileToolResultCovered(fileResult, [])).toBe(false);
+  });
+
+  test('非文件类结果与调用消息一律返回 false', () => {
+    const bashResult = msg({ id: 'r2', role: 'tool', message_kind: 'tool', tool_name: 'bash', content_text: 'ok' });
+    expect(isFileToolResultCovered(bashResult, [msg({ id: 'c3', tool_name: 'bash' })])).toBe(false);
+    expect(isFileToolResultCovered(msg({ id: 'c4', tool_name: 'write' }), [msg({ id: 'c5', tool_name: 'write' })])).toBe(false);
   });
 });

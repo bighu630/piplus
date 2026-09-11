@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, FileCode, LoaderCircle, Wrench } from 'lucide-react';
 import DiffViewer from './DiffViewer';
@@ -6,6 +6,7 @@ import ReadResultView from './ReadResultView';
 import {
   findToolResultMessage,
   formatReadLineRange,
+  isToolErrorMessage,
   parseToolArgsJson,
   parseWriteEditDiff,
   summarizeWriteEdit,
@@ -36,25 +37,24 @@ export interface FileToolGroupCardProps {
   runningIds: Set<string>;
 }
 
-/** result 文本以 Error 开头视为失败（与 TabChat 既有判定口径一致） */
-function isErrorText(text: string | null | undefined): boolean {
-  return /^error/i.test((text ?? '').trim());
-}
+/** result 文本以 Error 开头视为失败（口径见 tool-summary.isToolErrorMessage） */
 
 const FileRow = React.memo(function FileRow({
   call,
   result,
   expanded,
-  isError,
+  status,
   onToggle,
 }: {
   call: ChatMessageDTO;
   result: ChatMessageDTO | null;
   expanded: boolean;
-  isError: boolean;
-  onToggle: () => void;
+  /** error=失败；pending=结果未回（运行中/被中断/未落盘）；ok=成功 */
+  status: 'error' | 'pending' | 'ok';
+  onToggle: (id: string, status: 'error' | 'pending' | 'ok') => void;
 }) {
   const toolName = call.tool_name || 'unknown';
+  const isError = status === 'error';
   // 解析与统计按输入缓存：write 的 args 可能携带整份文件内容（几十~百 KB），
   // 流式期间 TabChat 频繁重渲染时不应每行重复 JSON.parse / LCS
   const { argsStr, parsedArgs } = React.useMemo(
@@ -77,20 +77,20 @@ const FileRow = React.memo(function FileRow({
   const readContent = toolName === 'read' && !isError ? result?.content_text ?? null : null;
 
   const path = writeEditSummary?.path ?? readPath ?? null;
-  const tone = isError ? 'text-rose-700 dark:text-rose-400' : 'text-amber-800 dark:text-amber-300';
-  const iconTone = isError ? 'text-rose-600 dark:text-rose-400' : 'text-amber-600 dark:text-amber-400';
+  const tone = isError ? 'text-rose-700 dark:text-rose-400' : 'text-emerald-800 dark:text-emerald-300';
+  const iconTone = isError ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400';
 
   return (
     <div>
       <div
         data-testid="tool-file-row"
-        data-status={isError ? 'error' : 'ok'}
+        data-status={status}
         className={`px-3 py-1.5 flex items-center gap-2 min-w-0 cursor-pointer ${
           isError
             ? 'hover:bg-rose-100/60 dark:hover:bg-rose-900/30'
             : 'hover:bg-emerald-100/60 dark:hover:bg-emerald-900/30'
         }`}
-        onClick={onToggle}
+        onClick={() => onToggle(call.id, status)}
       >
         {expanded ? (
           <ChevronDown className={`w-3 h-3 shrink-0 ${iconTone}`} />
@@ -175,26 +175,36 @@ function FileToolGroupCard({
 
   const rows = calls.map((call) => {
     const result = findToolResultMessage(messages, call.id, call.tool_name || 'unknown', call.tool_call_id);
-    return { call, result, isError: result !== null && isErrorText(result.content_text) };
+    return {
+      call,
+      result,
+      isError: result !== null && isToolErrorMessage(result.content_text),
+      hasResult: result !== null,
+    };
   });
 
   const ids = calls.map((c) => c.id);
   const hasError = rows.some((r) => r.isError);
+  // 结果未回（运行中/被中断/未落盘）时归为 pending，不宣称为成功
+  const hasPending = rows.some((r) => !r.hasResult);
   const anyRunning = ids.some((id) => runningIds.has(id));
-  const isRowExpanded = (id: string, isError: boolean) =>
-    isError ? !collapsedErrorIds.has(id) : expandedIds.has(id);
-  const allExpanded = rows.length > 0 && rows.every((r) => isRowExpanded(r.call.id, r.isError));
+  const cardStatus: 'error' | 'pending' | 'ok' = hasError ? 'error' : hasPending ? 'pending' : 'ok';
+  const rowStatus = (row: { isError: boolean; hasResult: boolean }): 'error' | 'pending' | 'ok' =>
+    row.isError ? 'error' : row.hasResult ? 'ok' : 'pending';
+  const isRowExpanded = (id: string, status: 'error' | 'pending' | 'ok') =>
+    status === 'error' ? !collapsedErrorIds.has(id) : expandedIds.has(id);
+  const allExpanded = rows.length > 0 && rows.every((r) => isRowExpanded(r.call.id, rowStatus(r)));
 
   const toolNames = [...new Set(calls.map((c) => c.tool_name || 'unknown'))];
   const label = `${toolNames.join(' + ')}${calls.length > 1 ? ` × ${calls.length}` : ''}`;
 
-  const scheme = hasError
+  const scheme = cardStatus === 'error'
     ? {
         card: 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800',
         accent: 'text-rose-600 dark:text-rose-400',
         title: 'text-rose-800 dark:text-rose-300',
       }
-    : anyRunning
+    : cardStatus === 'pending'
       ? {
           card: 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800',
           accent: 'text-amber-600 dark:text-amber-400',
@@ -217,8 +227,9 @@ function FileToolGroupCard({
     }
   };
 
-  const toggleOne = (id: string, isError: boolean) => {
-    if (!isError) {
+  // 稳定引用：保持 FileRow 的 React.memo 生效（否则流式重渲染时每行都会重算解析）
+  const toggleOne = useCallback((id: string, status: 'error' | 'pending' | 'ok') => {
+    if (status !== 'error') {
       onToggleOne(id);
       return;
     }
@@ -228,13 +239,17 @@ function FileToolGroupCard({
       else next.add(id);
       return next;
     });
-  };
+  }, [onToggleOne]);
 
   return (
     <div className="flex justify-start items-start w-full min-w-0">
       <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
         <div className="flex items-start min-w-0">
-          <div className={`border rounded-xl overflow-hidden transition-colors ${scheme.card}`}>
+          <div
+            data-testid="tool-group-card"
+            data-status={cardStatus}
+            className={`border rounded-xl overflow-hidden transition-colors ${scheme.card}`}
+          >
             <div
               data-testid="tool-group-header"
               className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
@@ -260,9 +275,9 @@ function FileToolGroupCard({
                   toggleAll(!allExpanded);
                 }}
                 className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer shrink-0 ${
-                  hasError
+                  cardStatus === 'error'
                     ? 'text-rose-700 dark:text-rose-300 bg-rose-100/70 dark:bg-rose-900/40 hover:bg-rose-200/70 dark:hover:bg-rose-800/50'
-                    : anyRunning
+                    : cardStatus === 'pending'
                       ? 'text-amber-700 dark:text-amber-300 bg-amber-100/70 dark:bg-amber-900/40 hover:bg-amber-200/70 dark:hover:bg-amber-800/50'
                       : 'text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/40 hover:bg-emerald-200/70 dark:hover:bg-emerald-800/50'
                 }`}
@@ -271,14 +286,14 @@ function FileToolGroupCard({
               </button>
             </div>
 
-            {rows.map(({ call, result, isError }) => (
+            {rows.map((row) => (
               <FileRow
-                key={call.id}
-                call={call}
-                result={result}
-                isError={isError}
-                expanded={isRowExpanded(call.id, isError)}
-                onToggle={() => toggleOne(call.id, isError)}
+                key={row.call.id}
+                call={row.call}
+                result={row.result}
+                status={rowStatus(row)}
+                expanded={isRowExpanded(row.call.id, rowStatus(row))}
+                onToggle={toggleOne}
               />
             ))}
           </div>

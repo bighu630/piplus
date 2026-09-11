@@ -312,3 +312,22 @@ export function isFileToolResult(msg: ChatMessageDTO): boolean {
   const toolName = msg.tool_name ?? '';
   return toolName === 'write' || toolName === 'edit' || toolName === 'read';
 }
+
+/** result 文本以 Error 开头视为失败（pi-client 对 isError 结果加的前缀；全仓库统一口径） */
+export function isToolErrorMessage(text: string | null | undefined): boolean {
+  return /^error/i.test((text ?? '').trim());
+}
+
+/**
+ * 文件类结果是否已由聚合卡片承载（当前视图内存在同名文件类调用）。
+ * 分页边界可能让调用与结果分处两页：此时返回 false，调用方应降级渲染原结果卡片，
+ * 避免孤立的失败结果因聚合卡片缺失而彻底不可见。
+ */
+export function isFileToolResultCovered(
+  msg: ChatMessageDTO,
+  visibleMessages: ChatMessageDTO[],
+): boolean {
+  if (!isFileToolResult(msg)) return false;
+  const toolName = msg.tool_name ?? '';
+  return visibleMessages.some((m) => isFileToolCall(m) && m.tool_name === toolName);
+}

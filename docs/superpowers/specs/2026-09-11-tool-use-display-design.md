@@ -108,10 +108,11 @@ interface ToolCallCardProps {
 - read 行号是请求范围而非实际内容范围（offset 超出文件尾时会偏大），与已确认决策一致
 - 超长路径：单行 `truncate`，hover 显示完整路径
 - 消息 id 不含 `-tool-N` 后缀（非 pi 历史来源）时每条自成一组，行为与单文件卡片一致
-- 分页边界：同一条 assistant 消息的调用被页边界切开时，仅对当前已加载页内的调用聚合
-- 失败判定：result 文本以 `Error` 开头（大小写不敏感，与 TabChat 既有口径一致）；结果未落盘（流式中/被中断）视为成功态（绿色），不显示失败
-- 部分失败：同组内可能部分成功部分失败（并行调用），整卡按“有任一失败即红色”着色，失败行单独标红
+- 分页边界：同一条 assistant 消息的调用被页边界切开时，仅对当前已加载页内的调用聚合；若结果所在页没有对应调用（孤立结果），则**降级渲染原结果卡片**（`isFileToolResultCovered`），避免失败反馈彻底不可见
+- 失败判定：result 文本以 `Error` 开头（大小写不敏感，统一用 `isToolErrorMessage`）；结果未回（运行中/被中断/未落盘）归为 **pending**（琥珀色），不宣称为成功
+- 部分失败：同组内可能部分成功部分失败（并行调用），整卡按“有任一失败即红色”（失败优先于 pending）着色，失败行单独标红
 - 失败行默认展开；点「收起全部」会把失败行一并收起，再点「展开全部」恢复
+- 已知启发式限制：pi 的 `isError` 在 pi-client 侧被转为 `Error: ` 前缀，前端据此判定；若成功 read 的文件正文以 `Error` 开头会被误判为失败（罕见），彻底修复需在 pi-client/shared 透传 `is_error`
 
 ## 测试
 
@@ -121,13 +122,15 @@ interface ToolCallCardProps {
   1. 多行文件列表 + 卡片级**只有一个**总控按钮（计数断言）
   2. 默认收起不渲染明细；点击单行只展开该行；总控按钮/头部展开全部再收起
   3. 单文件组、混合工具组标签（`write + edit + read × 3`）、路径 `title`、running spinner
-  4. 状态着色与失败展开：全部成功绿色卡片；运行中琥珀色；失败红色卡片 + 失败行默认展开错误原因 + 点击可收起；部分失败时仅失败行标红；全部收起/展开与失败行联动；失败的 edit 不渲染 diff 明细
-  4. read 行：行号范围 chip、独立展开内容、无结果回退 args；edit 行：details.diff 精确 ±、diff 明细渲染
+  4. 状态着色与失败展开：全部成功绿色卡片；结果未回琥珀色（pending，不宣称成功）；失败红色卡片（优先级高于运行中）+ 失败行默认展开错误原因 + 点击可收起；部分失败时仅失败行标红；全部收起/展开与失败行联动；失败的 edit/read 不渲染 diff 或 read 内容（只显示错误原因）
+  5. read 行：行号范围 chip、独立展开内容、无结果回退 args；edit 行：details.diff 精确 ±、diff 明细渲染
 - `apps/web/src/components/ToolCallCard.test.tsx`：非文件类（bash/spawn_session）：无摘要无按钮、头部点击切换、args 表格、JSON 非法降级、spinner
 - `apps/web/src/components/DiffViewer.test.tsx`：write/edit 明细渲染、>150 行截断提示、无折叠控件
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（137 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（195 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+
+注：`ReadResultView` 仍保留 `isError` 样式分支（防御层）；当前生产路径下失败 read 由 `FileRow` 的错误分支直接渲染错误原因，不会传入 `ReadResultView`。
 
 注：基线存在偶发 flaky（happy-dom 全局在并发测试文件间互踩，表现为 `createThrottledFlusher` 失败或 ws-provider 的 `window.event` 报错）；`test:web` 已改用 `bun test --isolate`（每个文件独立全局对象），实测 8/8 稳定通过且耗时无退化。
