@@ -12,9 +12,10 @@
 4. **失败原因默认展开**在对应行内（点击该行仍可收起）；write/edit/read 的结果（成功与失败）均不再渲染独立结果卡片。
 5. **普通工具（bash/grep/find/ls 等）**：一条调用一张卡片，**卡片本身按执行结果着色**（成功绿 / 失败红 / 结果未回琥珀，与文件聚合卡片同口径）；头部点击展开后为两个可折叠子项——「执行参数」（默认收起）与「结果」（默认展开，成功/失败标识）；结果不再渲染独立卡片。`ask_question`（交互型工具，结果即用户答案）保持中性琥珀并与例外展示一致。
 6. **独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片、`spawn_session` / `send_message_to_session` 的紫色摘要卡片，以及**调用不在当前视图内的孤立结果**降级卡片（分页边界，避免信息丢失）。前两类工具卡片本身也保持既有展示。
-7. 工具结果统一截断标准：**200 行**（read 内容与普通工具结果同一口径），容器内滚动，截断提示在滚动容器外。
-8. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
-9. 文件路径保持单行截断，鼠标悬停（`title`）看完整。
+7. **bash 的「执行参数」**用**表格**展示（`command` / `timeout` 等键值行），其中 `command` 的值做**命令格式化**：在顶层分隔符（`&&` / `||` / `|` / `;`）处断行缩进 + bash 语法高亮；表格右上角提供「复制命令」按钮（复制**原始命令**，保证可直接执行）。其它工具仍为 JSON 原文。
+8. 工具结果统一截断标准：**200 行**（read 内容与普通工具结果同一口径），容器内滚动，截断提示在滚动容器外。
+9. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
+10. 文件路径保持单行截断，鼠标悬停（`title`）看完整。
 
 ## 数据来源（已核实代码事实）
 
@@ -87,11 +88,13 @@ interface ToolCallCardProps {
 - 卡片容器：按状态着色（error → rose / pending → amber / ok → emerald），带 `data-testid="tool-call-card"` + `data-status`；展开区边框、图标、标题、args 内容、子项 hover 与卡片悬停反馈随色系（正文/表格键名/状态徽标用 700/800 档保证对比度 ≥4.5:1，图标用 600 档）；`ask_question` 成功态恒为 amber，**失败态仍按红色**
 - 头部：chevron + 工具名，点击展开/收起（运行中时卡片右侧 spinner）；失败时附折叠态可见的「失败」徽标
 - 展开区（普通工具）：两个可折叠子项
-  - 「执行参数」：默认收起，展开显示 args（JSON；非法 JSON 显示原文；无参数显示「（无参数）」）
+  - 「执行参数」：默认收起；bash → **参数表格**（`command` 值经 `formatBashCommand` 断行缩进 + highlight.js bash 高亮，表格右上角「复制命令」复制原始命令）；其它工具 → JSON 原文（非法 JSON 显示原文；无参数显示「（无参数）」）
   - 「结果」：默认展开，`成功`/`失败`/`运行中` 标识 + `ToolResultView` 内容（运行中显示「执行中…」占位）
   - 每次重新展开主卡片时恢复默认（参数收起 / 结果展开）
 - 例外保持既有展示：`spawn_session` / `send_message_to_session` → args 表格；`ask_question` → JSON args
 - 结果消息不再渲染独立结果卡片：文件类由聚合卡片承载、普通工具由「结果」子项承载
+
+**`lib/format-bash-command.ts`**：`formatBashCommand(command)` —— 顶层分隔符（`&&` / `||` / `|` / `;`）处断行并缩进，引号（`' " \``）与反斜杠转义内的分隔符不处理，单个 `&`（后台任务）不处理；保留原始换行与行首缩进、折叠首尾空行。仅用于**展示**（不加续行符，不保证可直接粘贴执行；执行请用「复制命令」复制的原始命令）。
 
 **`ToolResultView.tsx`**：通用工具结果文本（统一截断 200 行 + 滚动、截断提示在滚动容器外、失败 rose / 成功中性色、空输出占位）。
 
@@ -145,13 +148,15 @@ interface ToolCallCardProps {
   4. 状态着色与失败展开：全部成功绿色卡片；结果未回琥珀色（pending，不宣称成功）；失败红色卡片（优先级高于运行中）+ 失败行默认展开错误原因 + 点击可收起；部分失败时仅失败行标红；全部收起/展开与失败行联动；失败的 edit/read 不渲染 diff 或 read 内容（只显示错误原因）
   5. read 行：行号范围 chip、独立展开内容、无结果回退 args；edit 行：details.diff 精确 ±、diff 明细渲染
 - `apps/web/src/components/ToolCallCard.test.tsx`：普通工具两个子项（执行参数默认收起 / 结果默认展开、成功/失败/运行中标识、子项可收起、重新展开恢复默认）、args 非法与无参数降级、折叠态失败徽标、复制按钮；例外保持（spawn 表格 + 角色后缀、ask_question JSON args、args 为空/非法时不出现子项）、spinner
+- `apps/web/src/lib/format-bash-command.test.ts`：`&&`/`||`/`|`/`;` 断行缩进、引号与转义内不处理、单个 `&` 不处理、原始多行保留、空命令与空行折叠
+- `apps/web/src/components/ToolCallCard.test.tsx`（bash 部分）：参数表格（command/timeout 行）、命令断行缩进、hljs 语法高亮 token、复制命令按钮、非 bash 工具仍为 JSON
 - `apps/web/src/components/ToolResultView.test.tsx`：内容渲染、空输出占位、失败样式、200 行截断（提示位置）、恰好 200 行不截断
 - `apps/web/src/components/ReadResultView.test.tsx`：正文渲染、空内容、失败样式、pi 续读提示口径、200 行截断
 - `apps/web/src/components/DiffViewer.test.tsx`：write/edit 明细渲染、>150 行截断提示、无折叠控件
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（214 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（244 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
 
 注：`ReadResultView` 仍保留 `isError` 样式分支（防御层）；当前生产路径下失败 read 由 `FileRow` 的错误分支直接渲染错误原因，不会传入 `ReadResultView`。
 

@@ -1,8 +1,14 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, LoaderCircle, Wrench } from 'lucide-react';
+import hljs from 'highlight.js/lib/core';
+import bash from 'highlight.js/lib/languages/bash';
 import ToolResultView from './ToolResultView';
+import { formatBashCommand } from '../lib/format-bash-command';
 import { isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
+
+// 只注册 bash 语言（工具参数里的命令高亮），避免引入 highlight.js 全量语言包
+hljs.registerLanguage('bash', bash);
 
 /**
  * 单个工具调用卡片（非文件类）。
@@ -49,6 +55,31 @@ const SCHEMES = {
   },
 } as const;
 
+/** 复制到剪贴板并短暂显示「已复制」；卸载时清理复位定时器（避免卸载后 setState） */
+function useCopyToClipboard(resetMs = 1500) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+  }, []);
+  const copy = (text: string | null | undefined) => {
+    if (text == null) return;
+    try {
+      // 剪贴板不可用（权限/非安全上下文/测试环境）时静默忽略
+      void navigator.clipboard?.writeText(text).catch(() => {});
+    } catch {
+      // navigator.clipboard 不存在时同步抛错
+    }
+    setCopied(true);
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      setCopied(false);
+      timerRef.current = null;
+    }, resetMs);
+  };
+  return { copied, copy };
+}
+
 export interface ToolCallCardProps {
   msg: ChatMessageDTO;
   expanded: boolean;
@@ -78,12 +109,9 @@ function ToolCallCard({
   // 子项折叠态（组件内展示态）：执行参数默认收起、结果默认展开
   const [argsOpen, setArgsOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(true);
-  const [copiedResult, setCopiedResult] = useState(false);
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // 卸载时清理「已复制」复位定时器：避免组件卸载后 setState（也会污染测试的全局环境）
-  useEffect(() => () => {
-    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
-  }, []);
+  // 复制态（结果 / bash 命令各自独立）
+  const resultCopy = useCopyToClipboard();
+  const commandCopy = useCopyToClipboard();
   // 每次重新展开卡片时恢复默认（参数收起 / 结果展开）：
   // 用 useLayoutEffect 在绘制前完成，避免快速收起再展开时闪现上一次的子项状态
   useLayoutEffect(() => {
@@ -109,21 +137,17 @@ function ToolCallCard({
     toolName === 'ask_question' && !resultIsError ? 'pending' : cardStatus;
   const scheme = SCHEMES[status];
 
-  const handleCopyResult = () => {
-    if (resultContent == null) return;
+  // bash：命令格式化 + 语法高亮（「执行参数」子项用表格展示；复制用原始命令）
+  const bashCommand = useMemo(() => {
+    if (toolName !== 'bash' || !parsedArgs || typeof parsedArgs.command !== 'string') return null;
+    const raw = parsedArgs.command;
+    const formatted = formatBashCommand(raw);
     try {
-      // 剪贴板不可用（权限/非安全上下文/测试环境）时静默忽略
-      void navigator.clipboard?.writeText(resultContent).catch(() => {});
+      return { raw, formatted, html: hljs.highlight(formatted, { language: 'bash' }).value };
     } catch {
-      // navigator.clipboard 不存在时同步抛错
+      return { raw, formatted, html: null };
     }
-    setCopiedResult(true);
-    if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
-    copyTimerRef.current = setTimeout(() => {
-      setCopiedResult(false);
-      copyTimerRef.current = null;
-    }, 1500);
-  };
+  }, [toolName, parsedArgs]);
 
   return (
     <div className="flex justify-start items-start w-full min-w-0">
@@ -213,7 +237,47 @@ function ToolCallCard({
                       </button>
                       {argsOpen && (
                         <div data-testid="tool-args-content" className="px-3 pb-2 pl-6">
-                          {argsStr ? (
+                          {toolName === 'bash' && parsedArgs ? (
+                            <>
+                              <div className="flex items-center justify-end mb-1">
+                                <button
+                                  type="button"
+                                  data-testid="bash-command-copy"
+                                  onClick={() => commandCopy.copy(bashCommand?.raw)}
+                                  className="text-[10px] font-mono text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer"
+                                  title="复制原始命令（可直接执行）"
+                                >
+                                  {commandCopy.copied ? '已复制' : '复制命令'}
+                                </button>
+                              </div>
+                              <table data-testid="bash-args-table" className="w-full text-[11px] font-mono leading-relaxed">
+                                <tbody>
+                                  {Object.entries(parsedArgs).map(([key, value]) => (
+                                    <tr key={key} className={`border-b last:border-b-0 ${scheme.borderSoft}`}>
+                                      <td className={`font-semibold pr-3 py-1 align-top whitespace-nowrap ${scheme.key}`}>
+                                        {key}
+                                      </td>
+                                      <td className={`py-1 align-top break-words ${scheme.content}`}>
+                                        {key === 'command' && bashCommand ? (
+                                          <pre className="whitespace-pre overflow-x-auto">
+                                            {bashCommand.html ? (
+                                              <code dangerouslySetInnerHTML={{ __html: bashCommand.html }} />
+                                            ) : (
+                                              bashCommand.formatted
+                                            )}
+                                          </pre>
+                                        ) : typeof value === 'object' && value !== null ? (
+                                          JSON.stringify(value)
+                                        ) : (
+                                          String(value)
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </>
+                          ) : argsStr ? (
                             <pre className={`text-[11px] font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed ${scheme.content}`}>
                               {argsStr}
                             </pre>
@@ -276,12 +340,12 @@ function ToolCallCard({
                             data-testid="tool-result-copy"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleCopyResult();
+                              resultCopy.copy(resultContent);
                             }}
                             className="ml-auto text-[10px] font-mono text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer shrink-0"
                             title="复制结果"
                           >
-                            {copiedResult ? '已复制' : '复制'}
+                            {resultCopy.copied ? '已复制' : '复制'}
                           </button>
                         )}
                       </div>

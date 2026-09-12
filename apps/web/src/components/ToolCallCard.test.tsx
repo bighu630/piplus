@@ -370,14 +370,15 @@ describe('ToolCallCard 状态着色边界', () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
     click(header());
     click(argsToggle());
-    expect(argsContent()!.querySelector('pre')!.className).toContain('text-emerald-900');
+    // bash 走表格：第 2 个单元格为参数值
+    expect(argsContent()!.querySelectorAll('td')[1].className).toContain('text-emerald-900');
   });
 
   test('失败卡展开后参数内容为 rose 深色', () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: x'} />);
     click(header());
     click(argsToggle());
-    expect(argsContent()!.querySelector('pre')!.className).toContain('text-rose-900');
+    expect(argsContent()!.querySelectorAll('td')[1].className).toContain('text-rose-900');
   });
 
   test('spawn 表格键名用 key 档（700，保证对比度）', () => {
@@ -389,5 +390,61 @@ describe('ToolCallCard 状态着色边界', () => {
     );
     click(header());
     expect(expandedArea()!.querySelector('td')!.className).toContain('text-emerald-700');
+  });
+});
+
+describe('ToolCallCard bash 参数表格与命令格式化', () => {
+  test('bash 执行参数用表格展示（command / timeout 行）', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi', timeout: 300 })} />);
+    click(header());
+    click(argsToggle());
+
+    const table = container!.querySelector('[data-testid="bash-args-table"]')!;
+    const rows = table.querySelectorAll('tr');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('command');
+    expect(rows[0].textContent).toContain('echo hi');
+    expect(rows[1].textContent).toContain('timeout');
+    expect(rows[1].textContent).toContain('300');
+  });
+
+  test('命令断行缩进（&& 链）', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'cd /app && npm run build' })} />);
+    click(header());
+    click(argsToggle());
+
+    const pre = container!.querySelector('[data-testid="bash-args-table"] pre')!;
+    expect(pre.textContent).toBe('cd /app\n  && npm run build');
+  });
+
+  test('命令语法高亮（hljs token）', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'if [ -f x ]; then echo yes; fi' })} />);
+    click(header());
+    click(argsToggle());
+
+    const code = container!.querySelector('[data-testid="bash-args-table"] code')!;
+    expect(code).not.toBeNull();
+    expect(code.querySelector('.hljs-keyword')).not.toBeNull();
+  });
+
+  test('复制命令按钮：复制后显示「已复制」', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'cd /app && npm run build' })} />);
+    click(header());
+    click(argsToggle());
+
+    const btn = container!.querySelector('[data-testid="bash-command-copy"]')!;
+    expect(btn.textContent).toBe('复制命令');
+
+    click(btn);
+    expect(container!.querySelector('[data-testid="bash-command-copy"]')!.textContent).toBe('已复制');
+  });
+
+  test('非 bash 工具保持 JSON 原文（无表格）', () => {
+    render(<Harness msg={toolCallMsg('grep', { pattern: 'foo', path: 'src' })} />);
+    click(header());
+    click(argsToggle());
+
+    expect(container!.querySelector('[data-testid="bash-args-table"]')).toBeNull();
+    expect(argsContent()!.querySelector('pre')!.textContent).toContain('"pattern"');
   });
 });
