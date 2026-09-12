@@ -6,6 +6,7 @@ import {
   formatReadLineRange,
   isFileToolCall,
   collectCoveredToolResultIds,
+  collectMergedToolCallGroups,
   isToolErrorMessage,
   parseToolArgsJson,
   parseWriteEditDiff,
@@ -390,5 +391,89 @@ describe('collectCoveredToolResultIds', () => {
 
   test('调用无对应结果时不收集', () => {
     expect(collectCoveredToolResultIds([msg({ id: 'c1', tool_name: 'write', tool_call_id: 't1-1' })]).size).toBe(0);
+  });
+});
+
+describe('collectMergedToolCallGroups', () => {
+  const okResult = (id: string, toolName: string, callId: string) =>
+    msg({ id, role: 'tool', message_kind: 'tool', tool_name: toolName, tool_call_id: callId, content_text: 'ok' });
+
+  test('连续相邻的同一工具成功调用合并为一组', () => {
+    const messages = [
+      msg({ id: 'e1-tool-0', tool_name: 'bash', tool_call_id: 't1' }),
+      okResult('r1', 'bash', 't1'),
+      msg({ id: 'e1-tool-1', tool_name: 'bash', tool_call_id: 't2' }),
+      okResult('r2', 'bash', 't2'),
+      msg({ id: 'e1-tool-2', tool_name: 'bash', tool_call_id: 't3' }),
+      okResult('r3', 'bash', 't3'),
+    ];
+    const { groups, memberIds } = collectMergedToolCallGroups(messages);
+
+    expect(groups.size).toBe(1);
+    const group = groups.get('e1-tool-0')!;
+    expect(group.toolName).toBe('bash');
+    expect(group.calls.map((c) => c.id)).toEqual(['e1-tool-0', 'e1-tool-1', 'e1-tool-2']);
+    expect([...memberIds].sort()).toEqual(['e1-tool-0', 'e1-tool-1', 'e1-tool-2']);
+  });
+
+  test('跨 assistant 消息的连续同工具调用也合并', () => {
+    const messages = [
+      msg({ id: 'e1-tool-0', tool_name: 'bash', tool_call_id: 't1' }),
+      okResult('r1', 'bash', 't1'),
+      msg({ id: 'e2-tool-0', tool_name: 'bash', tool_call_id: 't2' }),
+      okResult('r2', 'bash', 't2'),
+    ];
+    const { groups, memberIds } = collectMergedToolCallGroups(messages);
+
+    expect(groups.get('e1-tool-0')!.calls).toHaveLength(2);
+    expect(memberIds.has('e2-tool-0')).toBe(true);
+  });
+
+  test('中间出现其它工具或普通消息则断开', () => {
+    const messages = [
+      msg({ id: 'c1', tool_name: 'bash', tool_call_id: 't1' }),
+      okResult('r1', 'bash', 't1'),
+      msg({ id: 'c2', tool_name: 'grep', tool_call_id: 't2' }),
+      okResult('r2', 'grep', 't2'),
+      msg({ id: 'u1', role: 'user', message_kind: 'normal', content_text: 'hi' }),
+      msg({ id: 'c3', tool_name: 'bash', tool_call_id: 't3' }),
+      okResult('r3', 'bash', 't3'),
+    ];
+    expect(collectMergedToolCallGroups(messages).groups.size).toBe(0);
+  });
+
+  test('失败的调用不参与合并（并作为断点）', () => {
+    const messages = [
+      msg({ id: 'c1', tool_name: 'bash', tool_call_id: 't1' }),
+      okResult('r1', 'bash', 't1'),
+      msg({ id: 'c2', tool_name: 'bash', tool_call_id: 't2' }),
+      msg({ id: 'r2', role: 'tool', message_kind: 'tool', tool_name: 'bash', tool_call_id: 't2', content_text: 'Error: fail' }),
+      msg({ id: 'c3', tool_name: 'bash', tool_call_id: 't3' }),
+      okResult('r3', 'bash', 't3'),
+    ];
+    expect(collectMergedToolCallGroups(messages).groups.size).toBe(0);
+  });
+
+  test('结果未回（运行中）不参与合并', () => {
+    const messages = [
+      msg({ id: 'c1', tool_name: 'bash', tool_call_id: 't1' }),
+      okResult('r1', 'bash', 't1'),
+      msg({ id: 'c2', tool_name: 'bash', tool_call_id: 't2' }),
+    ];
+    expect(collectMergedToolCallGroups(messages).groups.size).toBe(0);
+  });
+
+  test('文件类与例外工具不参与合并', () => {
+    const messages = [
+      msg({ id: 'w1', tool_name: 'write', tool_call_id: 't1' }),
+      okResult('r1', 'write', 't1'),
+      msg({ id: 'w2', tool_name: 'write', tool_call_id: 't2' }),
+      okResult('r2', 'write', 't2'),
+      msg({ id: 's1', tool_name: 'spawn_session', tool_call_id: 't3' }),
+      okResult('r3', 'spawn_session', 't3'),
+      msg({ id: 's2', tool_name: 'spawn_session', tool_call_id: 't4' }),
+      okResult('r4', 'spawn_session', 't4'),
+    ];
+    expect(collectMergedToolCallGroups(messages).groups.size).toBe(0);
   });
 });

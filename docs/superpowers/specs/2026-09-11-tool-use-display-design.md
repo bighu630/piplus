@@ -11,7 +11,8 @@
 3. **状态着色（工具调用视为一个整体）**：整组全部成功 → 绿色卡片；有任一失败 → 红色卡片（失败行额外标红并显示「失败」）；仍在运行（结果未回）→ 保持琥珀色。
 4. **失败原因默认展开**在对应行内（点击该行仍可收起）；write/edit/read 的结果（成功与失败）均不再渲染独立结果卡片。
 5. **普通工具（bash/grep/find/ls 等）**：一条调用一张卡片，**卡片本身按执行结果着色**（成功绿 / 失败红 / 结果未回琥珀，与文件聚合卡片同口径）；头部点击展开后为两个可折叠子项——「执行参数」（默认收起）与「结果」（默认展开，成功/失败标识）；结果不再渲染独立卡片。`ask_question`（交互型工具，结果即用户答案）保持中性琥珀并与例外展示一致。
-6. **独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片、`spawn_session` / `send_message_to_session` 的紫色摘要卡片，以及**调用不在当前视图内的孤立结果**降级卡片（分页边界，避免信息丢失）。前两类工具卡片本身也保持既有展示。
+6. **连续同工具调用合并**：连续相邻（跨 assistant 消息也算）、**同一工具、且成功**的普通调用合并为一张卡片，头部右侧显示 `×N`；展开后为 N 组「执行参数 + 结果」（参数默认收起、结果默认展开），**组间以分割线 + 间隙隔开**。失败的调用不参与合并（单独渲染，保持失败卡片）；`read`/`write`/`edit` 保持同回合多文件卡片；`ask_question` / `spawn_session` / `send_message_to_session` 不参与合并。
+7. **独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片、`spawn_session` / `send_message_to_session` 的紫色摘要卡片，以及**调用不在当前视图内的孤立结果**降级卡片（分页边界，避免信息丢失）。前两类工具卡片本身也保持既有展示。
 7. **bash 的「执行参数」**用**表格**展示（`command` / `timeout` 等键值行），其中 `command` 的值做**命令格式化**：在顶层分隔符（`&&` / `||` / `|` / `;`）处断行缩进 + bash 语法高亮；表格右上角提供「复制命令」按钮（复制**原始命令**，保证可直接执行）。其它工具仍为 JSON 原文。
 8. 工具结果统一截断标准：**200 行**（read 内容与普通工具结果同一口径），容器内滚动，截断提示在滚动容器外。
 9. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
@@ -96,6 +97,12 @@ interface ToolCallCardProps {
 
 **`lib/format-bash-command.ts`**：`formatBashCommand(command)` —— 顶层分隔符（`&&` / `||` / `|` / `;`）处断行并缩进，引号（`' " \``）与反斜杠转义内的分隔符不处理，单个 `&`（后台任务）不处理；保留原始换行与行首缩进、折叠首尾空行。仅用于**展示**（不加续行符，不保证可直接粘贴执行；执行请用「复制命令」复制的原始命令）。
 
+**`MergedToolCallsCard.tsx`**：连续同工具调用的合并卡片 —— 头部 chevron + 工具名 + `×N`（`data-testid="merged-tool-header"` / `merged-tool-count`），点击展开/收起整组；展开后每组一个 `ToolCallBody`（`data-testid="merged-tool-entry"`，组间 `border-t` + `mt-1` 形成分割间隙）。合并组只含成功调用 → 恒为 `ok` 配色。分组由 `collectMergedToolCallGroups(displayMessages)` 给出（跳过结果消息，遇到其它工具/普通消息或不可合并调用即断开）。
+
+**`ToolCallBody.tsx`**：从 ToolCallCard 抽出的「展开区主体」（执行参数 + 结果两个子项，含 bash 表格/高亮/复制与结果复制），由 ToolCallCard 与 MergedToolCallsCard 共用；子项折叠态由组件内部维护，调用方通过**条件挂载**在重新展开时恢复默认。
+
+**`lib/tool-call-scheme.ts`**：状态配色表（`TOOL_CALL_SCHEMES`）抽出，供 ToolCallCard / ToolCallBody / MergedToolCallsCard 共用（原分散在 ToolCallCard 内）。
+
 **`ToolResultView.tsx`**：通用工具结果文本（统一截断 200 行 + 滚动、截断提示在滚动容器外、失败 rose / 成功中性色、空输出占位）。
 
 **独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片（AskQuestionCard）、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（Markdown 渲染）、以及孤立结果（调用不在当前视图内）的降级结果卡片。
@@ -132,7 +139,7 @@ interface ToolCallCardProps {
 - 部分失败：同组内可能部分成功部分失败（并行调用），整卡按“有任一失败即红色”（失败优先于 pending）着色，失败行单独标红
 - 独立结果卡片与工具卡片的失败配色统一为 rose（TabChat 原 red 已对齐）；`ToolResultView` 截断提示边框用中性 slate，避免绿/红卡内出现琥珀线
 - 状态徽标（失败/成功标签）统一 700 档（rose-700 / emerald-700），图标保持 600 档
-- 已知技术债（未在本轮处理）：状态调色板在 `ToolCallCard` / `FileToolGroupCard` / `TabChat` 各有一份（已统一色值，后续可抽 `lib/toolStatusScheme`）；`hasResult` 口径在文件卡片（结果消息存在）与工具卡片（`content_text` 非 null）略有差异
+- 已知技术债：状态调色板中 `ToolCallCard` / `ToolCallBody` / `MergedToolCallsCard` 已共用 `lib/tool-call-scheme.ts`；`FileToolGroupCard` 与 `TabChat` 仍各有自己的配色表（色值已统一）；`hasResult` 口径在文件卡片（结果消息存在）与工具卡片（`content_text` 非 null）略有差异
 - 失败行默认展开；点「收起全部」（或单文件组的头部）会把失败行一并收起，再点「展开全部」恢复
 - 键盘可达性：文件行与头部均带 `role="button"` + `tabIndex=0`，支持 Enter/Space 切换（单文件组无按钮时同样可用）
 - 已知启发式限制：pi 的 `isError` 在 pi-client 侧被转为 `Error: ` 前缀，前端据此判定；若成功 read 的文件正文以 `Error` 开头会被误判为失败（罕见），彻底修复需在 pi-client/shared 透传 `is_error`
@@ -140,6 +147,8 @@ interface ToolCallCardProps {
 ## 测试
 
 - `apps/web/src/lib/tool-summary.test.ts`：write 行数（普通/空/末尾换行）、edit 的 details.diff 解析与 args 回退、行号范围 4 种情形、result 匹配（含 toolCallId 精确配对与序数回退）、`isFileToolCall` / `buildFileToolGroups` / `parseToolArgsJson` / `splitReadContent`
+- `apps/web/src/lib/tool-summary.test.ts`（合并分组）：连续同工具成功 → 1 组、跨 assistant 消息合并、其它工具/普通消息断开、失败与运行中不参与、文件类与例外工具不参与
+- `apps/web/src/components/MergedToolCallsCard.test.tsx`：头部 ×N、默认收起、展开为 N 组（参数收起/结果展开）、组间分割与间隙、每组参数独立展开、重新展开恢复默认、键盘可达、running spinner
 - `apps/web/src/lib/diff.test.ts`：行级 diff 的末尾换行口径与 truncateDiff 截断边界
 - `apps/web/src/components/FileToolGroupCard.test.tsx`（happy-dom + React 19，参照 `AskQuestionCard.test.tsx`）：
   1. 多行文件列表 + 卡片级**只有一个**总控按钮（计数断言）；单文件组不显示按钮、点行/头部仍可展开
@@ -156,7 +165,7 @@ interface ToolCallCardProps {
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（246 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（260 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
 
 注：`ReadResultView` 仍保留 `isError` 样式分支（防御层）；当前生产路径下失败 read 由 `FileRow` 的错误分支直接渲染错误原因，不会传入 `ReadResultView`。
 

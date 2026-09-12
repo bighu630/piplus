@@ -334,3 +334,71 @@ export function collectCoveredToolResultIds(visibleMessages: ChatMessageDTO[]): 
   }
   return covered;
 }
+
+export interface MergedToolCallGroup {
+  /** 组内首个调用 id（渲染锚点 + 卡片展开状态 key） */
+  id: string;
+  toolName: string;
+  calls: ChatMessageDTO[];
+}
+
+/**
+ * 收集「连续相邻、同一工具、成功」的普通工具调用（长度 ≥ 2）用于合并展示。
+ *
+ * - 排除文件类（write/edit/read，已由文件聚合卡片处理）与例外工具（STANDALONE_RESULT_TOOLS）
+ * - 失败的调用不参与合并（单独渲染，保持失败卡片展示）；运行中/结果未回同样不参与
+ * - 中间出现其它工具或普通消息则断开
+ */
+export function collectMergedToolCallGroups(visibleMessages: ChatMessageDTO[]): {
+  groups: Map<string, MergedToolCallGroup>;
+  memberIds: Set<string>;
+} {
+  const groups = new Map<string, MergedToolCallGroup>();
+  const memberIds = new Set<string>();
+
+  const isMergeable = (msg: ChatMessageDTO): boolean => {
+    if (msg.message_kind !== 'tool_call') return false;
+    const name = msg.tool_name ?? '';
+    if (name === '') return false;
+    if (isFileToolCall(msg)) return false;
+    if (STANDALONE_RESULT_TOOLS.has(name)) return false;
+    const result = findToolResultMessage(visibleMessages, msg.id, name, msg.tool_call_id);
+    return result !== null && !isToolErrorMessage(result.content_text);
+  };
+
+  // 消息流里调用与结果是交替出现的（call, result, call, result…）：
+  // 结果消息不算「打断」，其它工具调用 / 普通消息才算
+  const isToolResultMessage = (m: ChatMessageDTO) => m.message_kind === 'tool' || m.role === 'tool';
+
+  let i = 0;
+  while (i < visibleMessages.length) {
+    const msg = visibleMessages[i];
+    if (!isMergeable(msg)) {
+      i++;
+      continue;
+    }
+    const toolName = msg.tool_name as string;
+    const run: ChatMessageDTO[] = [msg];
+    let j = i + 1;
+    while (j < visibleMessages.length) {
+      const next = visibleMessages[j];
+      if (isToolResultMessage(next)) {
+        j++;
+        continue;
+      }
+      if (isMergeable(next) && next.tool_name === toolName) {
+        run.push(next);
+        j++;
+        continue;
+      }
+      break;
+    }
+    if (run.length > 1) {
+      groups.set(run[0].id, { id: run[0].id, toolName, calls: run });
+      for (const call of run) memberIds.add(call.id);
+    }
+    i = j;
+  }
+
+  return { groups, memberIds };
+}

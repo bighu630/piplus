@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import ToolCallCard from './ToolCallCard';
 import FileToolGroupCard from './FileToolGroupCard';
+import MergedToolCallsCard from './MergedToolCallsCard';
 import MarkdownRenderer from './MarkdownRenderer';
 import ContextUsageRing from './ContextUsageRing';
 import Lightbox from 'yet-another-react-lightbox';
@@ -26,7 +27,7 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
-import { buildFileToolGroups, collectCoveredToolResultIds, findToolResultMessage, isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
+import { buildFileToolGroups, collectCoveredToolResultIds, collectMergedToolCallGroups, findToolResultMessage, isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -668,6 +669,9 @@ function TabChat({
   const { groups: fileToolGroups, memberIds: fileToolMemberIds } = buildFileToolGroups(displayMessages);
   // 已被工具卡片承载的结果 id（文件聚合卡片 / 普通工具「结果」子项）：用于隐藏独立结果卡片（孤立结果不隐藏）
   const coveredToolResultIds = collectCoveredToolResultIds(displayMessages);
+  // 连续相邻、同一工具、成功的普通调用合并为一张卡片（文件类与例外工具不参与）
+  const { groups: mergedToolGroups, memberIds: mergedToolMemberIds } =
+    collectMergedToolCallGroups(displayMessages);
 
   // 运行中的工具调用 id：聚合卡片（整行 spinner）与单卡片共用同一判定
   const runningToolIds = new Set<string>();
@@ -714,6 +718,23 @@ function TabChat({
                 expandedIds={expandedToolIds}
                 onToggleOne={toggleToolExpanded}
                 onToggleAll={toggleAllToolFiles}
+                runningIds={runningToolIds}
+              />
+            );
+          }
+
+          // ═══ 连续同工具的普通调用合并卡片（头部 ×N，展开为多组「参数 + 结果」）═══
+          if (mergedToolMemberIds.has(msg.id)) {
+            const group = mergedToolGroups.get(msg.id);
+            if (!group) return null;
+            return (
+              <MergedToolCallsCard
+                key={group.id}
+                toolName={group.toolName}
+                calls={group.calls}
+                messages={messages}
+                expanded={expandedToolIds.has(group.id)}
+                onToggle={toggleToolExpanded}
                 runningIds={runningToolIds}
               />
             );
