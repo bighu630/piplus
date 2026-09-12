@@ -347,7 +347,7 @@ export interface MergedToolCallGroup {
  *
  * - 排除文件类（write/edit/read，已由文件聚合卡片处理）与例外工具（STANDALONE_RESULT_TOOLS）
  * - 失败的调用不参与合并（单独渲染，保持失败卡片展示）；运行中/结果未回同样不参与
- * - 中间出现其它工具或普通消息则断开
+ * - 属于当前工具的结果消息不打断（call/result 在消息流中交替）；其它工具的结果、其它工具调用、普通消息都断开
  */
 export function collectMergedToolCallGroups(visibleMessages: ChatMessageDTO[]): {
   groups: Map<string, MergedToolCallGroup>;

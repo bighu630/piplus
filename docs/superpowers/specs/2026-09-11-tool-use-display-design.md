@@ -97,7 +97,7 @@ interface ToolCallCardProps {
 
 **`lib/format-bash-command.ts`**：`formatBashCommand(command)` —— 顶层分隔符（`&&` / `||` / `|` / `;`）处断行并缩进，引号（`' " \``）与反斜杠转义内的分隔符不处理，单个 `&`（后台任务）不处理；保留原始换行与行首缩进、折叠首尾空行。仅用于**展示**（不加续行符，不保证可直接粘贴执行；执行请用「复制命令」复制的原始命令）。
 
-**`MergedToolCallsCard.tsx`**：连续同工具调用的合并卡片（合并组只含成功调用，因此不存在 running 态，不渲染 spinner） —— 头部 chevron + 工具名 + `×N`（`data-testid="merged-tool-header"` / `merged-tool-count`），点击展开/收起整组；展开后每组一个 `ToolCallBody`（`data-testid="merged-tool-entry"`，组间 `border-t` + `mt-1` 形成分割间隙）。合并组只含成功调用 → 恒为 `ok` 配色。分组由 `collectMergedToolCallGroups(displayMessages)` 给出（跳过结果消息，遇到其它工具/普通消息或不可合并调用即断开）。
+**`MergedToolCallsCard.tsx`**：连续同工具调用的合并卡片（合并组只含成功调用，因此不存在 running 态，不渲染 spinner） —— 头部 chevron + 工具名 + `×N`（`data-testid="merged-tool-header"` / `merged-tool-count`），点击展开/收起整组；展开后每组一个 `ToolCallBody`（`data-testid="merged-tool-entry"`，组间 `border-t` + `mt-1` 形成分割间隙）。合并组只含成功调用 → 恒为 `ok` 配色。分组由 `collectMergedToolCallGroups(messages)` 给出（跳过**属于当前工具**的结果消息；遇到其它工具/普通消息或不可合并调用即断开）。
 
 **`ToolCallBody.tsx`**：从 ToolCallCard 抽出的「展开区主体」（执行参数 + 结果两个子项，含 bash 表格/高亮/复制与结果复制），由 ToolCallCard 与 MergedToolCallsCard 共用；子项折叠态由组件内部维护，调用方通过**条件挂载**在重新展开时恢复默认。
 
@@ -107,7 +107,7 @@ interface ToolCallCardProps {
 
 **独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片（AskQuestionCard）、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（Markdown 渲染）、以及孤立结果（调用不在当前视图内）的降级结果卡片。
 
-**结果承载判定**：`collectCoveredToolResultIds(displayMessages)` 收集「已由工具卡片承载」的结果 id（文件类 → 聚合卡片；普通工具 → 「结果」子项），排除 `STANDALONE_RESULT_TOOLS`（ask_question / spawn_session / send_message_to_session）；命中集合的结果不再渲染独立卡片，未命中（孤立结果 / 例外工具）继续走独立卡片。
+**结果承载判定**：`collectCoveredToolResultIds(messages)` 收集「已由工具卡片承载」的结果 id（文件类 → 聚合卡片；普通工具 → 「结果」子项），排除 `STANDALONE_RESULT_TOOLS`（ask_question / spawn_session / send_message_to_session）；命中集合的结果不再渲染独立卡片，未命中（孤立结果 / 例外工具）继续走独立卡片。
 
 **「结果」子项细节**：头部在失败时附「失败」徽标（折叠态可见）；子项标题提供复制按钮（`navigator.clipboard`，剪贴板不可用时静默忽略，卸载时清理复位定时器）。
 
@@ -119,7 +119,7 @@ interface ToolCallCardProps {
 
 ### 4. 改造 `apps/web/src/components/TabChat.tsx`
 
-- 渲染前调用 `buildFileToolGroups(displayMessages)`：命中 `memberIds` 的消息交由 `FileToolGroupCard` 渲染（仅组内首条位置），其余走原有分支（非文件类 tool_call → `ToolCallCard`）
+- 渲染前调用 `buildFileToolGroups(messages)`：命中 `memberIds` 的消息交由 `FileToolGroupCard` 渲染（仅组内首条位置），其余走原有分支（非文件类 tool_call → `ToolCallCard`）
 - `expandedToolIds` 语义：已展开的调用 id（文件行独立展开与单卡片展开共用）；新增 `toggleAllToolFiles(ids, expand)` 供聚合卡片总控
 - 预先计算 `runningToolIds`（聚合卡片与单卡片共用同一判定），避免逐卡片重算
 
