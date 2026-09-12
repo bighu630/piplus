@@ -110,8 +110,9 @@ docker build \
   随后 `ENV APP_VERSION=$APP_VERSION` 交给 `apps/web/vite.config.ts`，在构建期写入前端常量
   `__APP_VERSION__`（由 `apps/web/src/components/Sidebar.tsx` 展示）。
 
-因此 `.env` 里的 `APP_VERSION` 不属于上面「环境变量说明」里的 compose 变量表：它只对「从源码构建」
-这一条路径有意义，且必须用上面的 `--build-arg` 显式传入 —— `docker build` 不会读 `.env`。
+具体到本仓库：**不要把 `APP_VERSION` 写进 `.env`** —— `deployment/docker/.env.example`
+已不再提供这一行，写死的版本号必然随发版过期。
+它只对「从源码构建」这一条路径有意义，且必须用上面的 `--build-arg` 显式传入 —— `docker build` 不会读 `.env`。
 拉取镜像部署时它完全无效，要看当前运行版本请查镜像 tag（`docker compose images`、`docker inspect`），
 真实来源是 git tag。
 
