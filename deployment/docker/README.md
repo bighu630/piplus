@@ -6,7 +6,7 @@
 
 - 已安装 Docker
 - 已安装 Docker Compose（`docker compose`）
-- 可访问 Docker Hub（首次构建需要拉取 `oven/bun:1.4.2-alpine` 基础镜像）
+- 可访问 Docker Hub（拉取预构建镜像 `iambighu/piplus`；从源码构建时还需要 `oven/bun:1.4.2-alpine` 基础镜像）
 
 ## 基础镜像与 lockfile
 
@@ -38,10 +38,10 @@ PIPLUS_CONFIG_DIR=/home/your-user/.config/piplus
 
 ## 启动
 
-在项目根目录执行：
+`docker-compose.yml` 使用 Docker Hub 上的**预构建镜像** `iambighu/piplus:latest`（没有 `build:` 段），compose 只拉取、不在本地构建。在项目根目录执行：
 
 ```bash
-docker compose up -d --build
+docker compose pull && docker compose up -d
 ```
 
 启动后，容器会：
@@ -49,6 +49,19 @@ docker compose up -d --build
 - 监听 `3000` 端口
 - 由 API 同时提供 HTTP API、WebSocket 和前端静态资源
 - 以 root 用户运行（家目录 `/root`，与 pi 默认行为一致）
+
+## 从源码构建（可选）
+
+需要从本仓库源码出镜像时，直接用 `docker build`（compose 不再承担构建）：
+
+```bash
+docker build \
+  --build-arg APP_VERSION=$(jq -r '.version' apps/desktop/package.json) \
+  -t iambighu/piplus:latest .
+```
+
+镜像名/tag 与 compose 中的 `image:` 一致，构建完直接 `docker compose up -d` 即可用本地镜像。
+若想让 compose 自己构建，可在 `docker-compose.yml` 的 `piplus` 服务里加一行 `build: .`（可选，不需要时保持注释）。
 
 ## 数据挂载
 

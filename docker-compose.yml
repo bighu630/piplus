@@ -1,6 +1,8 @@
 services:
   piplus:
-    image: iambighu/piplus:0.2.9
+    # 预构建镜像（CI 在打 tag 时同时推送 :<version> 与 :latest），compose 只拉取、不构建；
+    # 想从源码构建见 deployment/docker/README.md「从源码构建」
+    image: iambighu/piplus:latest
     environment:
       HOME: /root
       API_HOST: 0.0.0.0
