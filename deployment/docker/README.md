@@ -6,7 +6,16 @@
 
 - 已安装 Docker
 - 已安装 Docker Compose（`docker compose`）
-- 可访问 Docker Hub（首次构建需要拉取 `oven/bun` 基础镜像）
+- 可访问 Docker Hub（首次构建需要拉取 `oven/bun:1.4.2-alpine` 基础镜像）
+
+## 基础镜像与 lockfile
+
+`Dockerfile` 基于 `oven/bun:1.4.2-alpine`（bun 1.4.2 + Alpine 3.22）。**不要改成 `latest` 或其他未固定版本**：
+
+- 构建上下文中的 `bun.lock` 是 `lockfileVersion: 2`（bun 1.4.0 起）。bun < 1.4.0 会报 `Unknown lockfile version` 并**静默忽略 lockfile**，导致镜像内依赖脱离锁文件约束。
+- 构建命令为 `bun install --frozen-lockfile`：存在 `bun.lock` 但内容与 `package.json` 不一致时构建**直接失败**，而不是静默漂移。更新依赖后请同步提交 `bun.lock`。
+- `bun.lock` 已纳入版本控制：fresh clone / CI 构建都能拿到 lockfile，`--frozen-lockfile` 因此才真正生效（该提交先于本 Dockerfile 改动合入）。
+- 升级 bun 时同步修改 `Dockerfile` 的镜像 tag 与本节的版本号，并确认新版本能解析现有 `lockfileVersion`。
 
 ## 配置
 
