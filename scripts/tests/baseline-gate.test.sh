@@ -358,6 +358,22 @@ for h in pre-merge-commit pre-push; do
   if [ -x "$REAL_ROOT/.githooks/$h" ]; then ok "D7 $h 存在且可执行"; else bad "D7 $h 缺失或不可执行"; fi
 done
 
+# D8/D9：非 git 环境。Docker 构建上下文通常不含 .git（.dockerignore 排除），
+# 而根 package.json 的 prepare 会在 bun install 时调用本脚本 ——
+# 回归背景：这种情况下 exit 1 会让 `bun install` 直接失败，Dockerfile 第 5 步构建中断。
+D_NOGIT="$WORK/no-git"
+mkdir -p "$D_NOGIT/scripts"
+cp "$REAL_ROOT/scripts/setup-hooks.sh" "$D_NOGIT/scripts/setup-hooks.sh"
+cp -r "$REAL_ROOT/.githooks" "$D_NOGIT/.githooks"
+
+( cd "$D_NOGIT" && bash scripts/setup-hooks.sh ) >"$LOGS/d8.txt" 2>&1
+assert_exit_zero "D8 非 git 环境安装模式返回 0（prepare 不再中断 bun install）" "$?"
+assert_contains "D8 打印跳过提示" "跳过" "$(cat "$LOGS/d8.txt")"
+
+( cd "$D_NOGIT" && bash scripts/setup-hooks.sh --check ) >"$LOGS/d9.txt" 2>&1
+assert_exit_nonzero "D9 非 git 环境 --check 仍返回非 0（不掩盖未安装）" "$?"
+assert_contains "D9 --check 说明原因" "不在 git 仓库内" "$(cat "$LOGS/d9.txt")"
+
 # ---------------------------------------------------------------------------
 printf '\n========================================\n'
 printf '通过 %s 项，失败 %s 项\n' "$PASS" "$FAIL"
