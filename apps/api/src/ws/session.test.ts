@@ -11,6 +11,11 @@ function createMockSocket() {
   };
 }
 
+/** 给 mock socket 打上认证握手写入的 __userId，模拟已认证连接。 */
+function withUser<T extends object>(socket: T, userId: string): T {
+  return Object.assign(socket, { __userId: userId });
+}
+
 describe('ws session hub', () => {
   test('delivers global events to all sockets regardless of subscription', () => {
     const hub = registerSocket();
@@ -118,6 +123,41 @@ describe('ws session hub', () => {
     // detach 后 broadcast 不应抛错也不应投递
     hub.sendToSession('s1', createChatStreamFrame('s1', 'delta', 'stream_1', 'msg_1', 'x'));
     expect(socket.sent).toHaveLength(0);
+  });
+
+  // ===== sendToUser：ask_question 跨会话通知的数据通路 =====
+  // 前端任何时刻只订阅当前激活会话，旧的 sendToSession 会让切走后的提问通知丢失；
+  // sendToUser 按登录用户投递且不受订阅限制，同时仍隔离其他用户。
+
+  test('sendToUser reaches every connection of that user even without a subscription', () => {
+    const hub = registerSocket();
+    const subscribed = withUser(createMockSocket(), 'u1');
+    const unsubscribed = withUser(createMockSocket(), 'u1');
+    const otherUser = withUser(createMockSocket(), 'u2');
+    hub.attach(subscribed);
+    hub.attach(unsubscribed);
+    hub.attach(otherUser);
+    hub.handleClientMessage(subscribed, {
+      kind: 'client',
+      type: 'subscribe_session',
+      payload: { session_id: 's1' },
+    });
+
+    hub.sendToUser('u1', createEvent('ask_question_pending', { questionId: 'q1' }, { session_id: 's1' }));
+
+    expect(subscribed.sent).toHaveLength(1); // 已订阅 → 收到
+    expect(unsubscribed.sent).toHaveLength(1); // 未订阅 → 也收到（本次修复的核心）
+    expect(otherUser.sent).toHaveLength(0); // 跨用户 → 不泄露
+  });
+
+  test('sendToUser with empty userId delivers nothing (no broadcast to anonymous sockets)', () => {
+    const hub = registerSocket();
+    const anonymous = createMockSocket(); // 未认证连接没有 __userId
+    hub.attach(anonymous);
+
+    hub.sendToUser('', createEvent('ask_question_pending', { questionId: 'q1' }, { session_id: 's1' }));
+
+    expect(anonymous.sent).toHaveLength(0);
   });
 });
 

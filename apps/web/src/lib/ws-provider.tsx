@@ -2,10 +2,10 @@ import React, { createContext, useContext, useEffect, useRef, useState, useCallb
 import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO, AskQuestionPendingPayload } from '@piplus/shared';
 import { isAskQuestionPending } from '@piplus/shared';
 import { createWorkspaceSocket } from './ws-client';
-import { getAskPending } from './api';
+import { getAllAskPending, getAskPending } from './api';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthSession, useAuthStatus } from './hooks';
-import { sendSystemNotification } from './notification';
+import { sendSystemNotification, systemNotificationsEnabled } from './notification';
 import { findSessionNode, updateNodeRuntimeStatus } from './tree-utils';
 import {
   INITIAL_CHAT_STREAM_SNAPSHOT,
@@ -43,10 +43,6 @@ const NOTIFIABLE_ROLE_KEYS = new Set(['planner', 'feature_lead', 'bugfix_lead'])
 // 停止状态兜底超时：后端保证 ~15s 内复位 idle，前端 30s 双保险，超时未收敛则清除本地 stopping 并刷新真实状态
 const STOPPING_FALLBACK_TIMEOUT_MS = 30_000;
 
-function systemNotificationsEnabled(): boolean {
-  try { return localStorage.getItem('pi-system-notifications') === 'true'; } catch { return false; }
-}
-
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [localRuntimeStatusBySession, setLocalRuntimeStatusBySession] = useState<Record<string, RuntimeStatus>>({});
@@ -60,6 +56,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const askingPendingMapRef = useRef<Record<string, AskQuestionPendingPayload>>({});
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
   const stoppingFallbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const reconcileInFlightRef = useRef<Promise<void> | null>(null);
 
   // 登录态：与 App.tsx 同源（auth status/session 查询）。WS 建连 effect 依赖它：
   // 4401 登出后 isLoggedIn 变 false → 关闭死连接；重新登录后变 true → 用新 token 重建连接。
@@ -67,6 +64,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const authStatusQuery = useAuthStatus();
   const authSessionQuery = useAuthSession();
   const isLoggedIn = authStatusQuery.data?.requiresPassword === false || Boolean(authSessionQuery.data?.ok);
+  // 补偿请求存在 in-flight 窗口：登出后晚到的响应不得再把旧 pending 写回 map。
+  const isLoggedInRef = useRef(isLoggedIn);
+  isLoggedInRef.current = isLoggedIn;
 
   // Refs for latest values used in closures
   const selectedSessionIdRef = useRef<string | null>(null);
@@ -126,6 +126,53 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /**
+   * 合并一批待回答 ask_question：只对 map 中**尚不存在**的 questionId 写入并分发。
+   * 实时事件（WS）与补偿拉取（HTTP）共用此入口，保证：
+   * - 同一提问不会重复通知/重复写入（补偿与实时事件交错到达时也安全）
+   * - 补偿拉回的历史 pending 能像实时事件一样触发通知（订阅者收到同形状 payload）
+   */
+  const publishAskPending = useCallback((payloads: AskQuestionPendingPayload[]) => {
+    const next = { ...askingPendingMapRef.current };
+    const fresh: AskQuestionPendingPayload[] = [];
+    for (const payload of payloads) {
+      if (!payload?.questionId || next[payload.questionId]) continue;
+      next[payload.questionId] = payload;
+      fresh.push(payload);
+    }
+    if (fresh.length === 0) return;
+    askingPendingMapRef.current = next;
+    setAskingPendingMap(next);
+    for (const payload of fresh) {
+      askQuestionPendingListenersRef.current.forEach(cb => cb(payload));
+    }
+  }, []);
+
+  /**
+   * 全局补偿：拉取当前用户全部会话的待回答 ask_question。
+   * ask_question_pending 已按用户定向推送（不依赖会话订阅），但断线期间产生的事件仍会错过，
+   * 因此在「挂载 / WS 重连(onOpen) / 窗口重新聚焦 / 标签页重新可见」各拉一次补齐。
+   * 不做定时轮询；短时间内的多次触发（如反复 alt-tab）合并到同一个 in-flight 请求。
+   */
+  const reconcileAskPending = useCallback((): Promise<void> => {
+    const inFlight = reconcileInFlightRef.current;
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      try {
+        const res = await getAllAskPending();
+        // 登出后晚到的响应丢弃：否则会把上一个登录会话的 pending 重新写回 map
+        if (!isLoggedInRef.current) return;
+        publishAskPending(res?.pending ?? []);
+      } catch {
+        // 未登录 / 离线 / 服务不可达：忽略，下次重连或聚焦时再补
+      } finally {
+        reconcileInFlightRef.current = null;
+      }
+    })();
+    reconcileInFlightRef.current = run;
+    return run;
+  }, [publishAskPending]);
+
   // Main WS connection effect — 随登录态重建（登出关闭旧连接，重新登录以新 token 新建）
   useEffect(() => {
     if (!isLoggedIn) {
@@ -133,6 +180,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       socketRef.current?.close();
       socketRef.current = null;
       prevSubscribedSessionRef.current = null;
+      // 待回答 map 属于上一个登录会话：补偿是 merge-only 不会自愈，
+      // 不清空会让换号后残留标题计数/琥珀标记，因此随登出一起重置。
+      askingPendingMapRef.current = {};
+      setAskingPendingMap({});
       setConnected(false);
       return;
     }
@@ -151,10 +202,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           if (isAskQuestionPending(message)) {
             const payload = message.payload;
             if (payload?.questionId) {
-              askingPendingMapRef.current = { ...askingPendingMapRef.current, [payload.questionId]: payload };
-              setAskingPendingMap({ ...askingPendingMapRef.current });
+              publishAskPending([payload]);
             }
-            askQuestionPendingListenersRef.current.forEach(cb => cb(payload));
           }
 
           // ═══ Chat stream events ═══
@@ -394,6 +443,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' || activeTabRef.current === 'doce' ? 'files' : activeTabRef.current === 'terminal' ? 'terminal' : 'chat',
         });
         socket.ping();
+        void reconcileAskPending();
         if (selectedSessionIdRef.current) {
           socket.subscribeSession(selectedSessionIdRef.current);
           prevSubscribedSessionRef.current = selectedSessionIdRef.current;
@@ -419,6 +469,24 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       stoppingFallbackTimersRef.current.clear();
     };
   }, [isLoggedIn]); // 登录态变化时重建连接
+
+  // 补偿拉取触发点：挂载 / 窗口重新聚焦 / 标签页重新可见。
+  // WS 重连（onOpen）在连接回调里单独触发，这里覆盖「连接一直正常但页面被切走」的场景。
+  // 不做定时轮询：只在能到达用户的时刻各拉一次。
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    void reconcileAskPending();
+    const onFocus = () => { void reconcileAskPending(); };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void reconcileAskPending();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [isLoggedIn, reconcileAskPending]);
 
   const subscribeToStream = useCallback((cb: (stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => void): (() => void) => {
     streamListenersRef.current.add(cb);

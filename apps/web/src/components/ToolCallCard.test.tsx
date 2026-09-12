@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import React, { useState } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -6,9 +6,9 @@ import { Window } from 'happy-dom';
 import type { ChatMessageDTO } from '@piplus/shared';
 import ToolCallCard from './ToolCallCard';
 
-// tool call 卡片展示验收测试。
-// 结构约定：头部只有 chevron + 工具名（点击切换）；write/edit/read 在头部下方常显文件摘要行，
-// 行内与「展开全部/收起全部」按钮均可切换；其它工具保持原交互（头部点开 args、无摘要无按钮）。
+// 单条工具调用卡片（非文件类）验收测试：
+// - 展开后两个可折叠子项：「执行参数」默认收起、「结果」默认展开（成功/失败/运行中）
+// - 例外保持现状：spawn_session / send_message_to_session（args 表格）、ask_question（JSON args）
 
 const originalWindow = globalThis.window;
 const originalDocument = globalThis.document;
@@ -56,12 +56,6 @@ afterEach(() => {
   container = null;
 });
 
-function findButton(text: string): HTMLButtonElement | null {
-  return [...(container!.querySelectorAll('button') as unknown as HTMLButtonElement[])].find(
-    (b) => b.textContent?.trim() === text,
-  ) ?? null;
-}
-
 function click(el: Element | null) {
   act(() => {
     (el as HTMLButtonElement).click();
@@ -81,16 +75,13 @@ function toolCallMsg(toolName: string, args: Record<string, unknown> | string): 
   };
 }
 
-/** 受控 expanded 状态包装，用于验证点击切换。 */
 function Harness({
   msg,
-  resultDetails,
   resultContent,
   roleSuffix,
   running,
 }: {
   msg: ChatMessageDTO;
-  resultDetails?: unknown;
   resultContent?: string | null;
   roleSuffix?: string | null;
   running?: boolean;
@@ -101,7 +92,6 @@ function Harness({
       msg={msg}
       expanded={expanded}
       onToggle={() => setExpanded((v) => !v)}
-      resultDetails={resultDetails}
       resultContent={resultContent}
       roleSuffix={roleSuffix}
       running={running}
@@ -110,289 +100,363 @@ function Harness({
 }
 
 const header = () => container!.querySelector('[data-testid="tool-call-header"]');
-const meta = () => container!.querySelector('[data-testid="tool-call-meta"]');
 const expandedArea = () => container!.querySelector('[data-testid="tool-call-expanded"]');
-const diffLines = () => [...container!.querySelectorAll('[data-testid="diff-line"]')];
-const diffLinesOfType = (type: string) =>
-  diffLines().filter((el) => el.getAttribute('data-line-type') === type);
+const argsToggle = () => container!.querySelector('[data-testid="tool-args-toggle"]');
+const argsContent = () => container!.querySelector('[data-testid="tool-args-content"]');
+const resultToggle = () => container!.querySelector('[data-testid="tool-result-toggle"]');
+const resultContent = () => container!.querySelector('[data-testid="tool-result-content"]');
+const resultStatus = () => container!.querySelector('[data-testid="tool-result-status"]');
 
-describe('ToolCallCard write 卡片', () => {
-  test('默认收起：头部只有工具名（无按钮），下方摘要行显示文件与 +N', () => {
-    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one\ntwo\nthree' })} />);
+describe('ToolCallCard 普通工具（两个子项）', () => {
+  test('默认收起；点击头部展开后出现「执行参数」与「结果」两个子项', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
 
-    expect(header()!.textContent).toContain('write');
-    expect(header()!.textContent).not.toContain('src/a.ts');
-    expect(meta()).not.toBeNull();
-    expect(meta()!.textContent).toContain('src/a.ts');
-    expect(meta()!.textContent).toContain('+3');
     expect(expandedArea()).toBeNull();
-    expect(diffLines()).toHaveLength(0);
-    expect(findButton('展开全部')).not.toBeNull();
-    expect(findButton('收起全部')).toBeNull();
-  });
-
-  test('点击头部展开显示 diff 明细，按钮变「收起全部」；再点击收起', () => {
-    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one\ntwo\nthree' })} />);
 
     click(header());
 
     expect(expandedArea()).not.toBeNull();
-    expect(diffLines()).toHaveLength(3);
-    expect(diffLinesOfType('add')).toHaveLength(3);
-    expect(findButton('收起全部')).not.toBeNull();
+    expect(argsToggle()!.textContent).toContain('执行参数');
+    expect(resultToggle()!.textContent).toContain('结果');
+  });
 
+  test('执行参数默认收起，点击后显示 args，再点击收起', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
     click(header());
 
-    expect(expandedArea()).toBeNull();
-    expect(findButton('展开全部')).not.toBeNull();
+    expect(argsContent()).toBeNull();
+
+    click(argsToggle());
+    expect(argsContent()!.textContent).toContain('echo hi');
+
+    click(argsToggle());
+    expect(argsContent()).toBeNull();
   });
 
-  test('点击文件摘要行同样切换展开', () => {
-    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one' })} />);
+  test('结果默认展开：显示内容与「成功」标识', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
 
-    click(meta());
-
-    expect(expandedArea()).not.toBeNull();
+    expect(resultStatus()!.textContent).toBe('成功');
+    expect(resultContent()).not.toBeNull();
+    expect(resultContent()!.textContent).toContain('hi');
   });
 
-  test('点击「展开全部」按钮切换，且不触发双重切换', () => {
-    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'one' })} />);
+  test('失败结果：红色「失败」标识 + 错误内容', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
+    click(header());
 
-    click(findButton('展开全部'));
-
-    expect(expandedArea()).not.toBeNull();
-    expect(findButton('收起全部')).not.toBeNull();
-
-    click(findButton('收起全部'));
-
-    expect(expandedArea()).toBeNull();
-    expect(findButton('展开全部')).not.toBeNull();
+    expect(resultStatus()!.textContent).toBe('失败');
+    expect(resultContent()!.querySelector('pre')!.className).toContain('text-rose-700');
+    expect(resultContent()!.textContent).toContain('exit code 1');
   });
 
-  test('空内容显示 +0', () => {
-    render(<Harness msg={toolCallMsg('write', { path: 'src/empty.ts', content: '' })} />);
-    expect(meta()!.textContent).toContain('+0');
+  test('结果未回：显示「运行中」与执行中占位', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
+    click(header());
+
+    expect(resultStatus()!.textContent).toBe('运行中');
+    expect(resultContent()!.textContent).toContain('执行中');
   });
 
-  test('末尾换行内容：头部 +N 与展开明细行数一致（不多出空行）', () => {
-    render(<Harness msg={toolCallMsg('write', { path: 'src/a.ts', content: 'a\nb\n' })} />);
+  test('结果子项可收起', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+    expect(resultContent()).not.toBeNull();
 
-    expect(meta()!.textContent).toContain('+2');
-    click(meta());
-    expect(diffLines()).toHaveLength(2);
-    expect(diffLinesOfType('add')).toHaveLength(2);
+    click(resultToggle());
+    expect(resultContent()).toBeNull();
   });
 
-  test('缺少 path 时显示占位符但保留行数', () => {
-    render(<Harness msg={toolCallMsg('write', { content: 'a\nb' })} />);
-    expect(meta()!.textContent).toContain('(未提供路径)');
-    expect(meta()!.textContent).toContain('+2');
+  test('重新展开主卡片时子项恢复默认（参数收起、结果展开）', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+    click(argsToggle()); // 参数展开
+    click(resultToggle()); // 结果收起
+    expect(argsContent()).not.toBeNull();
+    expect(resultContent()).toBeNull();
+
+    click(header()); // 收起主卡片
+    click(header()); // 重新展开
+
+    expect(argsContent()).toBeNull();
+    expect(resultContent()).not.toBeNull();
   });
 });
 
-describe('ToolCallCard edit 卡片', () => {
-  test('默认收起，摘要行优先用结果 details.diff 显示 +N -N', () => {
-    render(
-      <Harness
-        msg={toolCallMsg('edit', { path: 'src/c.ts', edits: [{ oldText: 'x', newText: 'y' }] })}
-        resultDetails={{ diff: '+1  const a = 1;\n+2  const b = 2;\n-1  const x = 0;' }}
-      />,
-    );
-
-    expect(expandedArea()).toBeNull();
-    expect(meta()!.textContent).toContain('src/c.ts');
-    expect(meta()!.textContent).toContain('+2');
-    expect(meta()!.textContent).toContain('-1');
-  });
-
-  test('无 details 时回退 args 行级 diff', () => {
-    render(
-      <Harness
-        msg={toolCallMsg('edit', { path: 'src/d.ts', edits: [{ oldText: 'a\nb', newText: 'a\nc' }] })}
-      />,
-    );
-
-    expect(meta()!.textContent).toContain('+1');
-    expect(meta()!.textContent).toContain('-1');
-  });
-
-  test('纯删除只显示 -N（不出现 +0）', () => {
-    render(<Harness msg={toolCallMsg('edit', { path: 'src/e.ts', edits: [{ oldText: 'a\nb', newText: '' }] })} />);
-
-    expect(meta()!.textContent).not.toContain('+0');
-    expect(meta()!.textContent).toContain('-2');
-  });
-
-  test('展开后渲染 edit diff 明细（+/- 行）', () => {
-    render(
-      <Harness
-        msg={toolCallMsg('edit', { path: 'src/f.ts', edits: [{ oldText: 'a\nb', newText: 'a\nc' }] })}
-      />,
-    );
-
-    click(meta());
-    expect(diffLinesOfType('add')).toHaveLength(1);
-    expect(diffLinesOfType('delete')).toHaveLength(1);
-  });
-});
-
-describe('ToolCallCard read 卡片', () => {
-  test('默认收起，摘要行显示读取的文件与行号范围', () => {
-    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts', offset: 100, limit: 50 })} />);
-
-    expect(header()!.textContent).toContain('read');
-    expect(expandedArea()).toBeNull();
-    expect(meta()!.textContent).toContain('src/big.ts');
-    const range = container!.querySelector('[data-testid="tool-call-line-range"]');
-    expect(range!.textContent).toBe('100-149');
-  });
-
-  test('无 offset/limit 时只显示文件、不显示行号', () => {
-    render(<Harness msg={toolCallMsg('read', { path: 'src/small.ts' })} />);
-
-    expect(meta()!.textContent).toContain('src/small.ts');
-    expect(container!.querySelector('[data-testid="tool-call-line-range"]')).toBeNull();
-  });
-
-  test('仅 offset 显示 100+', () => {
-    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts', offset: 100 })} />);
-    expect(container!.querySelector('[data-testid="tool-call-line-range"]')!.textContent).toBe('100+');
-  });
-
-  test('仅 limit 显示 1-50', () => {
-    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts', limit: 50 })} />);
-    expect(container!.querySelector('[data-testid="tool-call-line-range"]')!.textContent).toBe('1-50');
-  });
-
-  test('展开显示读取到的内容（不带行号）', () => {
-    render(
-      <Harness
-        msg={toolCallMsg('read', { path: 'src/big.ts', offset: 100, limit: 2 })}
-        resultContent={'const a = 1;\nconst b = 2;'}
-      />,
-    );
-
-    click(meta());
-
-    expect(expandedArea()).not.toBeNull();
-    const pre = expandedArea()!.querySelector('pre')!;
-    // 严格相等：内容原样（无行号前缀、无额外行）
-    expect(pre.textContent).toBe('const a = 1;\nconst b = 2;');
-    // 行号只出现在摘要 range
-    expect(container!.querySelector('[data-testid="tool-call-line-range"]')!.textContent).toBe('100-101');
-  });
-
-  test('read 无 args 但有结果内容时仍可展开显示', () => {
-    render(<Harness msg={toolCallMsg('read', '')} resultContent={'only content'} />);
-
-    expect(meta()).toBeNull();
-    click(header());
-    expect(expandedArea()!.textContent).toContain('only content');
-  });
-
-  test('空内容显示占位', () => {
-    render(<Harness msg={toolCallMsg('read', { path: 'src/empty.ts' })} resultContent={''} />);
-    click(meta());
-    expect(expandedArea()!.textContent).toContain('（空内容）');
-    expect(expandedArea()!.querySelector('pre')).toBeNull();
-  });
-
-  test('read 失败文本用错误样式', () => {
-    render(
-      <Harness
-        msg={toolCallMsg('read', { path: 'src/missing.ts' })}
-        resultContent={'Error: ENOENT: no such file or directory'}
-      />,
-    );
-    click(meta());
-    expect(expandedArea()!.querySelector('pre')!.className).toContain('text-rose-700');
-  });
-
-  test('无结果内容时回退展示 args', () => {
-    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts', offset: 100, limit: 50 })} />);
-
-    click(meta());
-
-    expect(expandedArea()!.textContent).toContain('"offset": 100');
-  });
-
-  test('超长内容截断到 500 行并提示', () => {
-    const content = Array.from({ length: 620 }, (_, i) => `line ${i}`).join('\n');
-    render(<Harness msg={toolCallMsg('read', { path: 'src/huge.ts' })} resultContent={content} />);
-
-    click(meta());
-
-    const pre = expandedArea()!.querySelector('pre')!;
-    expect(pre.textContent!.split('\n')).toHaveLength(500);
-    expect(expandedArea()!.textContent).toContain('仅显示前 500 行（共 620 行）');
-    // 截断提示在滚动容器之外，无需滚到底部即可看到
-    const scroller = expandedArea()!.querySelector('.max-h-96')!;
-    expect(scroller.textContent).not.toContain('仅显示前');
-  });
-
-  test('pi 续读提示行单独展示且不计入正文行数', () => {
-    const content = 'l1\nl2\n\n[Showing lines 1-2 of 900. Use offset=3 to continue.]';
-    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts' })} resultContent={content} />);
-
-    click(meta());
-
-    expect(expandedArea()!.querySelector('pre')!.textContent).toBe('l1\nl2');
-    expect(expandedArea()!.textContent).toContain('[Showing lines 1-2 of 900. Use offset=3 to continue.]');
-    expect(expandedArea()!.textContent).not.toContain('仅显示前');
-  });
-
-  test('正文 501 行 + 续读提示：只按正文计数且保留 pi 提示', () => {
-    const body = Array.from({ length: 501 }, (_, i) => `line ${i}`).join('\n');
-    const content = `${body}\n\n[Showing lines 1-501 of 900. Use offset=502 to continue.]`;
-    render(<Harness msg={toolCallMsg('read', { path: 'src/big.ts' })} resultContent={content} />);
-
-    click(meta());
-
-    expect(expandedArea()!.textContent).toContain('仅显示前 500 行（共 501 行）');
-    expect(expandedArea()!.textContent).toContain('Use offset=502 to continue.');
-  });
-});
-
-describe('ToolCallCard 其它工具与降级', () => {
-  test('bash 无摘要行、无按钮，点击头部展开 args', () => {
-    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} />);
-
-    expect(meta()).toBeNull();
-    expect(findButton('展开全部')).toBeNull();
-    expect(findButton('收起全部')).toBeNull();
-    expect(expandedArea()).toBeNull();
-
-    click(header());
-    expect(expandedArea()!.textContent).toContain('echo hi');
-  });
-
-  test('spawn_session：角色后缀在头部，无摘要行，点击头部展开 args 表格', () => {
+describe('ToolCallCard 例外工具保持现状', () => {
+  test('spawn_session：角色后缀 + args 表格（无子项）', () => {
     render(
       <Harness
         msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'do work' })}
         roleSuffix="worker"
+        resultContent={'{"summary":"done"}'}
       />,
     );
 
     expect(header()!.textContent).toContain('spawn_session (worker)');
-    expect(meta()).toBeNull();
-    expect(expandedArea()).toBeNull();
 
     click(header());
+
     expect(expandedArea()!.querySelector('table')).not.toBeNull();
     expect(expandedArea()!.textContent).toContain('do work');
+    expect(argsToggle()).toBeNull();
+    expect(resultToggle()).toBeNull();
   });
 
-  test('args JSON 非法时降级展示原始文本', () => {
-    render(<Harness msg={toolCallMsg('write', '{invalid json')} />);
+  test('ask_question：JSON args（无子项）', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} />);
 
-    expect(meta()).toBeNull();
     click(header());
-    expect(expandedArea()!.textContent).toContain('{invalid json');
+
+    expect(expandedArea()!.textContent).toContain('"question"');
+    expect(argsToggle()).toBeNull();
   });
 
-  test('running 时渲染 spinner', () => {
+  test('args JSON 非法：展开「执行参数」显示原始文本', () => {
+    render(<Harness msg={toolCallMsg('bash', '{invalid json')} />);
+    click(header());
+    click(argsToggle());
+
+    expect(argsContent()!.textContent).toContain('{invalid json');
+  });
+
+  test('无 args：执行参数子项显示「（无参数）」', () => {
+    render(<Harness msg={toolCallMsg('bash', '')} />);
+    click(header());
+    click(argsToggle());
+
+    expect(argsContent()!.textContent).toContain('（无参数）');
+  });
+
+  test('运行中：头部右侧渲染 spinner', () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
     expect(container!.querySelector('.animate-spin')).not.toBeNull();
+  });
+});
+
+describe('ToolCallCard 失败可见性与例外边界', () => {
+  test('折叠态即可看到「失败」徽标', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
+
+    // 未展开也应可见
+    expect(expandedArea()).toBeNull();
+    expect(container!.querySelector('[data-testid="tool-call-error-badge"]')!.textContent).toBe('失败');
+  });
+
+  test('成功结果不显示头部失败徽标', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'true' })} resultContent={'ok'} />);
+    expect(container!.querySelector('[data-testid="tool-call-error-badge"]')).toBeNull();
+  });
+
+  test('结果子项提供复制按钮且点击不崩溃', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+
+    const copyBtn = container!.querySelector('[data-testid="tool-result-copy"]')!;
+    expect(copyBtn.textContent).toBe('复制');
+
+    click(copyBtn);
+
+    // 点击后显示「已复制」（剪贴板不可用时也复位 UI 状态）；且结果子项未被误收起
+    expect(container!.querySelector('[data-testid="tool-result-copy"]')!.textContent).toBe('已复制');
+    expect(resultContent()).not.toBeNull();
+  });
+
+  test('例外工具 args 为空：显示「（无参数）」且不出现两个子项', () => {
+    render(<Harness msg={toolCallMsg('ask_question', '')} resultContent={'{"answer":"x"}'} />);
+    click(header());
+
+    expect(expandedArea()!.textContent).toContain('（无参数）');
+    expect(argsToggle()).toBeNull();
+    expect(resultToggle()).toBeNull();
+  });
+
+  test('例外工具 args 非法：回退原始文本且不出现两个子项', () => {
+    render(<Harness msg={toolCallMsg('spawn_session', '{broken')} />);
+    click(header());
+
+    expect(expandedArea()!.textContent).toContain('{broken');
+    expect(argsToggle()).toBeNull();
+    expect(resultToggle()).toBeNull();
+  });
+
+  test('ask_question 携带 resultContent 也不显示结果子项（结果走专用卡片）', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
+    click(header());
+
+    expect(expandedArea()!.textContent).toContain('"question"');
+    expect(resultToggle()).toBeNull();
+  });
+});
+
+describe('ToolCallCard 状态着色', () => {
+  test('成功：卡片绿色', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    expect(container!.querySelector('.bg-emerald-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-rose-50')).toBeNull();
+    expect(container!.querySelector('.bg-amber-50')).toBeNull();
+  });
+
+  test('失败：卡片红色', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
+    expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-emerald-50')).toBeNull();
+  });
+
+  test('结果未回（运行中）：保持琥珀色', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
+    expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-emerald-50')).toBeNull();
+    expect(container!.querySelector('.bg-rose-50')).toBeNull();
+  });
+
+  test('ask_question 保持中性琥珀（交互型工具，结果即用户答案）', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
+    expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
+    expect(container!.querySelector('.bg-emerald-50')).toBeNull();
+  });
+
+  test('spawn_session 成功同样变绿（例外仅指结果展示位置）', () => {
+    render(
+      <Harness
+        msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })}
+        resultContent={'{"summary":"done"}'}
+      />,
+    );
+    expect(container!.querySelector('.bg-emerald-50')).not.toBeNull();
+  });
+
+  test('失败时头部与展开区同色系', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: x'} />);
+
+    click(header());
+    expect(expandedArea()!.className).toContain('border-rose-200');
+    expect(header()!.querySelector('svg')!.getAttribute('class')).toContain('text-rose-600');
+  });
+});
+
+describe('ToolCallCard 状态着色边界', () => {
+  test('ask_question 错误态：红色卡片 + 失败徽标（不因交互型而保持琥珀）', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'Error: 参数非法'} />);
+
+    expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="tool-call-error-badge"]')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="tool-call-card"]')!.getAttribute('data-status')).toBe('error');
+  });
+
+  test('ask_question 成功态：保持琥珀，data-status=pending', () => {
+    render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
+
+    expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
+    expect(container!.querySelector('[data-testid="tool-call-card"]')!.getAttribute('data-status')).toBe('pending');
+  });
+
+  test('spawn_session 失败：红色卡片', () => {
+    render(
+      <Harness msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })} resultContent={'Error: spawn failed'} />,
+    );
+    expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
+  });
+
+  test('卡片带 data-status 与 dark token', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    const card = container!.querySelector('[data-testid="tool-call-card"]')!;
+    expect(card.getAttribute('data-status')).toBe('ok');
+    expect(card.className).toContain('dark:bg-emerald-950/30');
+  });
+
+  test('展开后的参数内容与卡片同色系', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
+    click(header());
+    click(argsToggle());
+    // bash 走表格：第 2 个单元格为参数值
+    expect(argsContent()!.querySelectorAll('td')[1].className).toContain('text-emerald-900');
+  });
+
+  test('失败卡展开后参数内容为 rose 深色', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: x'} />);
+    click(header());
+    click(argsToggle());
+    expect(argsContent()!.querySelectorAll('td')[1].className).toContain('text-rose-900');
+  });
+
+  test('spawn 表格键名用 key 档（700，保证对比度）', () => {
+    render(
+      <Harness
+        msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })}
+        resultContent={'{"summary":"done"}'}
+      />,
+    );
+    click(header());
+    expect(expandedArea()!.querySelector('td')!.className).toContain('text-emerald-700');
+  });
+});
+
+describe('ToolCallCard bash 参数表格与命令格式化', () => {
+  test('bash 执行参数用表格展示（command / timeout 行）', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'echo hi', timeout: 300 })} />);
+    click(header());
+    click(argsToggle());
+
+    const table = container!.querySelector('[data-testid="bash-args-table"]')!;
+    const rows = table.querySelectorAll('tr');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].textContent).toContain('command');
+    expect(rows[0].textContent).toContain('echo hi');
+    expect(rows[1].textContent).toContain('timeout');
+    expect(rows[1].textContent).toContain('300');
+  });
+
+  test('命令断行缩进（&& 链）', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'cd /app && npm run build' })} />);
+    click(header());
+    click(argsToggle());
+
+    const pre = container!.querySelector('[data-testid="bash-args-table"] pre')!;
+    expect(pre.textContent).toBe('cd /app\n  && npm run build');
+  });
+
+  test('命令语法高亮（hljs token）', () => {
+    render(<Harness msg={toolCallMsg('bash', { command: 'if [ -f x ]; then echo yes; fi' })} />);
+    click(header());
+    click(argsToggle());
+
+    const code = container!.querySelector('[data-testid="bash-args-table"] code')!;
+    expect(code).not.toBeNull();
+    expect(code.querySelector('[class^="hljs-"]')).not.toBeNull();
+  });
+
+  test('复制命令按钮：写入剪贴板的是原始命令（非格式化文本）', () => {
+    const writeSpy = spyOn(navigator.clipboard, 'writeText');
+    render(<Harness msg={toolCallMsg('bash', { command: 'cd /app && npm run build' })} />);
+    click(header());
+    click(argsToggle());
+
+    const btn = container!.querySelector('[data-testid="bash-command-copy"]')!;
+    expect(btn.textContent).toBe('复制命令');
+
+    click(btn);
+    expect(container!.querySelector('[data-testid="bash-command-copy"]')!.textContent).toBe('已复制');
+    expect(writeSpy).toHaveBeenCalledWith('cd /app && npm run build');
+    writeSpy.mockRestore();
+  });
+
+  test('bash 缺 command 字段：不渲染复制按钮，参数表仍展示', () => {
+    render(<Harness msg={toolCallMsg('bash', { timeout: 300 })} />);
+    click(header());
+    click(argsToggle());
+
+    expect(container!.querySelector('[data-testid="bash-command-copy"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="bash-args-table"]')!.textContent).toContain('timeout');
+  });
+
+  test('非 bash 工具保持 JSON 原文（无表格）', () => {
+    render(<Harness msg={toolCallMsg('grep', { pattern: 'foo', path: 'src' })} />);
+    click(header());
+    click(argsToggle());
+
+    expect(container!.querySelector('[data-testid="bash-args-table"]')).toBeNull();
+    expect(argsContent()!.querySelector('pre')!.textContent).toContain('"pattern"');
   });
 });

@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Window } from 'happy-dom';
-import { WebSocketProvider, useWebSocketConnected } from './ws-provider';
+import { WebSocketProvider, useWebSocket, useWebSocketConnected } from './ws-provider';
 import { TOKEN_STORAGE_KEY } from './auth-session';
 
 // 验收场景（reviewer 🔴）：4401 登出停摆后，用户重新登录必须能重建 WS 连接
@@ -62,6 +62,10 @@ function jsonResponse(body: unknown) {
   return { ok: true, json: async () => body } as unknown as Response;
 }
 
+// 补偿拉取（GET /api/v1/ask-pending）的可控响应与调用计数
+let askPendingResponse: Array<Record<string, unknown>> = [];
+let askPendingCalls = 0;
+
 const flush = () => new Promise((resolve) => setTimeout(resolve, 15));
 
 describe('WebSocketProvider reconnect after re-login', () => {
@@ -95,6 +99,10 @@ describe('WebSocketProvider reconnect after re-login', () => {
       if (url.includes('/api/v1/auth/status')) return jsonResponse({ requiresPassword: true });
       if (url.includes('/api/v1/auth/check')) return jsonResponse({ ok: true, user: { id: 'local-user', name: 'local' } });
       if (url.includes('/api/v1/auth/refresh')) return { ok: false } as unknown as Response;
+      if (url.includes('/api/v1/ask-pending')) {
+        askPendingCalls += 1;
+        return jsonResponse({ pending: askPendingResponse });
+      }
       return { ok: false } as unknown as Response;
     }) as typeof fetch;
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -215,5 +223,108 @@ describe('WebSocketProvider reconnect after re-login', () => {
       payload: { token: 'tok-fresh' },
     });
     expect(connectedValues.at(-1)).toBe(true);
+  });
+
+  // 嵌套 describe：继承父级 beforeAll/afterAll/beforeEach/afterEach 与全局变量（window/document/root/container）
+  describe('ask_question 补偿拉取', () => {
+    beforeEach(() => {
+      askPendingResponse = [];
+      askPendingCalls = 0;
+    });
+
+    /** 渲染 provider 并收集每次渲染看到的 askingPendingMap。 */
+    function renderWithPendingMap(): { maps: Array<Record<string, unknown>> } {
+      const maps: Array<Record<string, unknown>> = [];
+      function Probe() {
+        const ctx = useWebSocket() as unknown as { askingPendingMap: Record<string, unknown> };
+        maps.push(ctx.askingPendingMap);
+        return null;
+      }
+      queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+      container = (globalThis.document as Document).createElement('div');
+      (globalThis.document as Document).body.appendChild(container);
+      root = createRoot(container);
+      act(() => {
+        root!.render(
+          <QueryClientProvider client={queryClient}>
+            <WebSocketProvider>
+              <Probe />
+            </WebSocketProvider>
+          </QueryClientProvider>,
+        );
+      });
+      return { maps };
+    }
+
+    test('挂载/重连时拉取全局 ask-pending 并合并进 askingPendingMap（断线期间错过事件的补偿）', async () => {
+      askPendingResponse = [{ questionId: 'q1', sessionId: 's1', question: '断线期间错过的提问' }];
+      const { maps } = renderWithPendingMap();
+
+      await act(async () => {
+        await flush();
+        await flush();
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      await act(async () => {
+        socket.open();
+        await flush();
+        await flush();
+      });
+
+      expect(askPendingCalls).toBeGreaterThanOrEqual(1);
+      expect(maps.at(-1)!.q1).toMatchObject({ questionId: 'q1', sessionId: 's1' });
+    });
+
+    test('实时事件与补偿重叠：同一 questionId 只保留一份，不重复写入', async () => {
+      askPendingResponse = [{ questionId: 'q1', sessionId: 's1', question: '同一条' }];
+      const { maps } = renderWithPendingMap();
+
+      await act(async () => {
+        await flush();
+        await flush();
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      await act(async () => {
+        socket.open();
+        socket.dispatch('message', {
+          data: JSON.stringify({
+            kind: 'event',
+            type: 'ask_question_pending',
+            timestamp: new Date().toISOString(),
+            scope: { session_id: 's1' },
+            payload: { questionId: 'q1', sessionId: 's1', question: '同一条' },
+          }),
+        } as unknown as MessageEvent);
+        await flush();
+        await flush();
+      });
+
+      expect(Object.keys(maps.at(-1)!)).toEqual(['q1']);
+    });
+
+    test('登出（4401）清空 askingPendingMap：换号后不残留标题计数/琥珀标记', async () => {
+      askPendingResponse = [{ questionId: 'q1', sessionId: 's1', question: '待回答' }];
+      const { maps } = renderWithPendingMap();
+
+      await act(async () => {
+        await flush();
+        await flush();
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      await act(async () => {
+        socket.open();
+        await flush();
+        await flush();
+      });
+      expect(Object.keys(maps.at(-1)!)).toEqual(['q1']);
+
+      await act(async () => {
+        socket.dispatch('close', { code: 4401 });
+        await flush();
+        await flush();
+      });
+
+      expect(maps.at(-1)).toEqual({});
+    });
   });
 });

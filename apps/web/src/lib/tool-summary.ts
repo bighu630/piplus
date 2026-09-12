@@ -221,3 +221,184 @@ export function findToolResultMessage(
   }
   return null;
 }
+
+/** write/edit/read：会与文件交互、需要聚合展示的三类工具调用 */
+export function isFileToolCall(msg: ChatMessageDTO): boolean {
+  return msg.message_kind === 'tool_call'
+    && (msg.tool_name === 'write' || msg.tool_name === 'edit' || msg.tool_name === 'read');
+}
+
+/** 从 tool_call 消息 id 还原所属 assistant 消息 id（pi-client history 生成规则：`${entryId}-tool-${i}`） */
+export function assistantEntryId(msgId: string): string {
+  return msgId.replace(/-tool-\d+$/, '');
+}
+
+export interface FileToolGroup {
+  /** 组内第一条调用的 id：既作组 id，也决定该组在消息流中的渲染位置 */
+  id: string;
+  calls: ChatMessageDTO[];
+}
+
+/**
+ * 把「同一条 assistant 消息内的 write/edit/read 调用」聚合为组：
+ * 同一回合的多次文件操作在一张卡片里以多行文件列表展示（每行可独立展开，卡片级只有一个总控按钮）。
+ * 调用方在渲染时：组渲染在 groups.get(msg.id) 命中的位置，memberIds 中的其它消息跳过。
+ */
+export function buildFileToolGroups(messages: ChatMessageDTO[]): {
+  groups: Map<string, FileToolGroup>;
+  memberIds: Set<string>;
+} {
+  const byEntry = new Map<string, ChatMessageDTO[]>();
+  for (const msg of messages) {
+    if (!isFileToolCall(msg)) continue;
+    const entryId = assistantEntryId(msg.id);
+    const list = byEntry.get(entryId);
+    if (list) list.push(msg);
+    else byEntry.set(entryId, [msg]);
+  }
+
+  const groups = new Map<string, FileToolGroup>();
+  const memberIds = new Set<string>();
+  for (const calls of byEntry.values()) {
+    const first = calls[0];
+    groups.set(first.id, { id: first.id, calls });
+    for (const call of calls) memberIds.add(call.id);
+  }
+  return { groups, memberIds };
+}
+
+/** 解析 tool_args_json：返回格式化文本与对象形式（无法解析时 argsStr 为原始文本，parsedArgs 为 null） */
+export function parseToolArgsJson(raw: string | null | undefined): {
+  argsStr: string;
+  parsedArgs: Record<string, unknown> | null;
+} {
+  if (!raw) return { argsStr: '', parsedArgs: null };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const str = JSON.stringify(parsed, null, 2);
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { argsStr: str, parsedArgs: parsed as Record<string, unknown> };
+    }
+    return { argsStr: str, parsedArgs: null };
+  } catch {
+    return { argsStr: raw, parsedArgs: null };
+  }
+}
+
+/**
+ * 工具结果展示上限（read 内容与普通工具结果统一标准）：
+ * pi 单次最多读 2000 行 / 输出可达数十 KB，截断避免展开时渲染过多 DOM。
+ */
+export const TOOL_RESULT_MAX_LINES = 200;
+
+/** pi 在结果末尾追加的续读/截断提示行（形如 `[Showing lines 1-501 of 900. ...]`），单独展示且不计入正文行数 */
+const READ_NOTICE_PATTERN = /^\[(?:Showing lines|Line \d+ is |\d+ more lines in file)/;
+
+/** 拆分 read 结果：正文与 pi 尾部提示（提示不参与行数统计与截断） */
+export function splitReadContent(content: string): { body: string; notice: string | null } {
+  const idx = content.lastIndexOf('\n\n[');
+  if (idx === -1) return { body: content, notice: null };
+  const candidate = content.slice(idx + 2);
+  if (READ_NOTICE_PATTERN.test(candidate)) {
+    return { body: content.slice(0, idx), notice: candidate.trim() };
+  }
+  return { body: content, notice: null };
+}
+
+/** result 文本以 Error 开头视为失败（pi-client 对 isError 结果加的前缀；全仓库统一口径） */
+export function isToolErrorMessage(text: string | null | undefined): boolean {
+  return /^error/i.test((text ?? '').trim());
+}
+
+/** 结果走独立卡片的工具（结构化答案卡片 / 子会话摘要卡片），不参与「卡片内结果」承载 */
+const STANDALONE_RESULT_TOOLS = new Set(['ask_question', 'spawn_session', 'send_message_to_session']);
+
+/**
+ * 收集「已由工具卡片承载」的结果消息 id。
+ *
+ * - 文件类（write/edit/read）：结果由文件聚合卡片承载
+ * - 普通工具（bash/grep/等）：结果由 ToolCallCard 的「结果」子项承载
+ * - 例外（ask_question / spawn_session / send_message_to_session）与其孤立结果不进集合，仍走独立卡片
+ *
+ * 对视图内每个调用用与 findToolResultMessage 相同的配对口径（toolCallId 精确优先、序数回退）
+ * 反查其绑定结果；分页边界下调用不在视图内的孤立结果不会进入集合，调用方应降级渲染原结果卡片。
+ */
+export function collectCoveredToolResultIds(visibleMessages: ChatMessageDTO[]): Set<string> {
+  const covered = new Set<string>();
+  for (const msg of visibleMessages) {
+    if (msg.message_kind !== 'tool_call') continue;
+    const toolName = msg.tool_name || 'unknown';
+    if (STANDALONE_RESULT_TOOLS.has(toolName)) continue;
+    const result = findToolResultMessage(visibleMessages, msg.id, toolName, msg.tool_call_id);
+    if (result) covered.add(result.id);
+  }
+  return covered;
+}
+
+export interface MergedToolCallGroup {
+  /** 组内首个调用 id（渲染锚点 + 卡片展开状态 key） */
+  id: string;
+  toolName: string;
+  calls: ChatMessageDTO[];
+}
+
+/**
+ * 收集「连续相邻、同一工具、成功」的普通工具调用（长度 ≥ 2）用于合并展示。
+ *
+ * - 排除文件类（write/edit/read，已由文件聚合卡片处理）与例外工具（STANDALONE_RESULT_TOOLS）
+ * - 失败的调用不参与合并（单独渲染，保持失败卡片展示）；运行中/结果未回同样不参与
+ * - 属于当前工具的结果消息不打断（call/result 在消息流中交替）；其它工具的结果、其它工具调用、普通消息都断开
+ */
+export function collectMergedToolCallGroups(visibleMessages: ChatMessageDTO[]): {
+  groups: Map<string, MergedToolCallGroup>;
+  memberIds: Set<string>;
+} {
+  const groups = new Map<string, MergedToolCallGroup>();
+  const memberIds = new Set<string>();
+
+  const isMergeable = (msg: ChatMessageDTO): boolean => {
+    if (msg.message_kind !== 'tool_call') return false;
+    const name = msg.tool_name ?? '';
+    if (name === '') return false;
+    if (isFileToolCall(msg)) return false;
+    if (STANDALONE_RESULT_TOOLS.has(name)) return false;
+    const result = findToolResultMessage(visibleMessages, msg.id, name, msg.tool_call_id);
+    return result !== null && !isToolErrorMessage(result.content_text);
+  };
+
+  let i = 0;
+  while (i < visibleMessages.length) {
+    const msg = visibleMessages[i];
+    if (!isMergeable(msg)) {
+      i++;
+      continue;
+    }
+    const toolName = msg.tool_name as string;
+    const run: ChatMessageDTO[] = [msg];
+    let j = i + 1;
+    while (j < visibleMessages.length) {
+      const next = visibleMessages[j];
+      // 消息流里调用与结果交替出现（call, result, call, result…）：
+      // 「属于当前工具」的结果消息不算打断；其它工具的结果 / 调用 / 普通消息都算断开
+      const isCurrentToolResult =
+        (next.message_kind === 'tool' || next.role === 'tool') && (next.tool_name ?? '') === toolName;
+      if (isCurrentToolResult) {
+        j++;
+        continue;
+      }
+      if (isMergeable(next) && next.tool_name === toolName) {
+        run.push(next);
+        j++;
+        continue;
+      }
+      break;
+    }
+    if (run.length > 1) {
+      groups.set(run[0].id, { id: run[0].id, toolName, calls: run });
+      for (const call of run) memberIds.add(call.id);
+    }
+    i = j;
+  }
+
+  return { groups, memberIds };
+}

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 // 超时时长按次解析（createPending 时读 PIPLUS_ASK_QUESTION_TIMEOUT_MS），
 // beforeEach 设置即可生效，无模块加载时序依赖
-import { answerQuestion, executeAskQuestion, pendingQuestions } from './ask-question';
+import { answerQuestion, createPending, executeAskQuestion, listAllPending, listPendingForSession, pendingQuestions } from './ask-question';
 
 const ORIGINAL_TIMEOUT = process.env.PIPLUS_ASK_QUESTION_TIMEOUT_MS;
 
@@ -114,5 +114,35 @@ describe('executeAskQuestion', () => {
 
   test('缺参数（无 question/options/questions）→ 抛错', async () => {
     await expect(executeAskQuestion({}, { sessionId: 'sess_bad' })).rejects.toThrow('ask_question 需要提供');
+  });
+});
+
+describe('listAllPending / listPendingForSession', () => {
+  test('listAllPending 跨会话返回全部；listPendingForSession 只返回本会话（问卷形状一致）', () => {
+    const { questionId: single } = createPending('sess_a', { question: '单题?', options: ['A', 'B'] });
+    const { questionId: questionnaire } = createPending('sess_b', {
+      questions: [
+        { question: 'Q1?', options: ['1', '2'], label: '第一步', multiSelect: true },
+        { question: 'Q2?', options: ['3'] },
+      ],
+    });
+
+    const all = listAllPending();
+    expect(all.map((p) => p.questionId).sort()).toEqual([single, questionnaire].sort());
+
+    const singlePayload = all.find((p) => p.questionId === single)!;
+    expect(singlePayload).toMatchObject({ sessionId: 'sess_a', question: '单题?', options: ['A', 'B'] });
+
+    const questionnairePayload = all.find((p) => p.questionId === questionnaire)!;
+    expect(questionnairePayload.sessionId).toBe('sess_b');
+    expect(questionnairePayload.questions).toEqual([
+      { question: 'Q1?', options: ['1', '2'], multiSelect: true, label: '第一步' },
+      { question: 'Q2?', options: ['3'], multiSelect: false, label: undefined },
+    ]);
+
+    // 会话内列举仍只返回本会话
+    expect(listPendingForSession('sess_a').map((p) => p.questionId)).toEqual([single]);
+    expect(listPendingForSession('sess_b').map((p) => p.questionId)).toEqual([questionnaire]);
+    expect(listPendingForSession('sess_none')).toEqual([]);
   });
 });

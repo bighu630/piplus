@@ -17,6 +17,8 @@ import {
   GitMerge,
 } from 'lucide-react';
 import ToolCallCard from './ToolCallCard';
+import FileToolGroupCard from './FileToolGroupCard';
+import MergedToolCallsCard from './MergedToolCallsCard';
 import MarkdownRenderer from './MarkdownRenderer';
 import ContextUsageRing from './ContextUsageRing';
 import Lightbox from 'yet-another-react-lightbox';
@@ -25,7 +27,7 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
-import { findToolResultMessage } from '../lib/tool-summary';
+import { buildFileToolGroups, collectCoveredToolResultIds, collectMergedToolCallGroups, findToolResultMessage, isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -236,6 +238,18 @@ function TabChat({
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // 文件聚合卡片的总控：一次展开/收起组内全部文件
+  const toggleAllToolFiles = useCallback((ids: string[], expand: boolean) => {
+    setExpandedToolIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (expand) next.add(id);
+        else next.delete(id);
+      }
       return next;
     });
   }, []);
@@ -651,6 +665,33 @@ function TabChat({
     return ids;
   }, [isRunning, displayMessages]);
 
+  // 工具调用的三类分组/索引（纯函数）：
+  // - 文件聚合卡片（同回合 write/edit/read）
+  // - 已被卡片承载的结果 id（用于隐藏独立结果卡片）
+  // - 连续同工具的成功调用合并组
+  // 依赖 messages（引用稳定）而非每次渲染新建的 displayMessages：流式重渲染时避免重复全量扫描
+  const { groups: fileToolGroups, memberIds: fileToolMemberIds } = useMemo(
+    () => buildFileToolGroups(messages),
+    [messages],
+  );
+  const coveredToolResultIds = useMemo(() => collectCoveredToolResultIds(messages), [messages]);
+  const { groups: mergedToolGroups, memberIds: mergedToolMemberIds } = useMemo(
+    () => collectMergedToolCallGroups(messages),
+    [messages],
+  );
+
+  // 运行中的工具调用 id：聚合卡片（整行 spinner）与单卡片共用同一判定
+  const runningToolIds = new Set<string>();
+  for (const m of displayMessages) {
+    if (m.message_kind !== 'tool_call') continue;
+    const mToolName = m.tool_name || 'unknown';
+    const mIndex = messages.findIndex((mm) => mm.id === m.id);
+    const mInCurrentRun = currentRunStartIdxRef.current !== null && mIndex >= currentRunStartIdxRef.current;
+    if ((isRunning && mInCurrentRun && isToolCallPending(m.id, mToolName, messages)) || trailingToolCallIds.has(m.id)) {
+      runningToolIds.add(m.id);
+    }
+  }
+
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative overflow-x-hidden">
       {/* Messages */}
@@ -672,6 +713,39 @@ function TabChat({
         )}
 
         {displayMessages.map((msg) => {
+          // ═══ 文件工具聚合卡片：同回合的 write/edit/read 合并为一张卡片（多行文件列表，每行可独立展开）═══
+          if (fileToolMemberIds.has(msg.id)) {
+            const group = fileToolGroups.get(msg.id);
+            if (!group) return null;
+            return (
+              <FileToolGroupCard
+                key={group.id}
+                calls={group.calls}
+                messages={messages}
+                expandedIds={expandedToolIds}
+                onToggleOne={toggleToolExpanded}
+                onToggleAll={toggleAllToolFiles}
+                runningIds={runningToolIds}
+              />
+            );
+          }
+
+          // ═══ 连续同工具的普通调用合并卡片（头部 ×N，展开为多组「参数 + 结果」）═══
+          if (mergedToolMemberIds.has(msg.id)) {
+            const group = mergedToolGroups.get(msg.id);
+            if (!group) return null;
+            return (
+              <MergedToolCallsCard
+                key={group.id}
+                toolName={group.toolName}
+                calls={group.calls}
+                messages={messages}
+                expanded={expandedToolIds.has(group.id)}
+                onToggle={toggleToolExpanded}
+              />
+            );
+          }
+
           const isUser = msg.role === 'user';
           const isToolCall = msg.message_kind === 'tool_call';
           const isTool = msg.message_kind === 'tool' || msg.role === 'tool';
@@ -703,22 +777,8 @@ function TabChat({
           if (isToolCall) {
             const toolName = msg.tool_name || 'unknown';
 
-            const msgIndex = messages.findIndex((m) => m.id === msg.id);
-            const isInCurrentRun = currentRunStartIdxRef.current !== null && msgIndex >= currentRunStartIdxRef.current;
-            const isThisToolRunning = (isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages)) || trailingToolCallIds.has(msg.id);
-
             // ask_question 待回答匹配与 spawn_session 角色后缀仍需解析后的 args；卡片展示交由 ToolCallCard
-            let parsedArgs: Record<string, unknown> | null = null;
-            if (msg.tool_args_json) {
-              try {
-                const parsed: unknown = JSON.parse(msg.tool_args_json);
-                if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                  parsedArgs = parsed as Record<string, unknown>;
-                }
-              } catch {
-                // 解析失败：ToolCallCard 降级展示原始 args 文本
-              }
-            }
+            const { parsedArgs } = parseToolArgsJson(msg.tool_args_json);
             const spawnSessionRole = toolName === 'spawn_session' && typeof parsedArgs?.role === 'string'
               ? parsedArgs.role
               : null;
@@ -767,30 +827,29 @@ function TabChat({
               );
             }
 
-            // write/edit 取 details（精确 diff），read 取结果文本（展开时展示读取内容）
-            const toolResult = findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id);
-
             return (
               <ToolCallCard
                 key={msg.id}
                 msg={msg}
                 expanded={expandedToolIds.has(msg.id)}
                 onToggle={toggleToolExpanded}
-                running={isThisToolRunning}
+                running={runningToolIds.has(msg.id)}
                 roleSuffix={spawnSessionRole}
-                resultDetails={toolResult?.details ?? null}
-                resultContent={toolResult?.content_text ?? null}
+                resultContent={findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id)?.content_text ?? null}
               />
             );
           }
 
-          // Tool result message: compact result card
+          // Tool result message
           if (isTool) {
             const toolName = msg.tool_name || 'unknown';
-            const isError = /^error/i.test(msg.content_text?.trim() ?? '');
-            const summary = msg.content_text
-              ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
-              : '(empty result)';
+
+            // 已被工具卡片承载的结果不渲染独立卡片：
+            // - 文件类（write/edit/read）：文件聚合卡片承载状态与失败原因
+            // - 普通工具（bash/grep 等）：ToolCallCard 的「结果」子项承载
+            // 例外（ask_question / spawn_session / send_message_to_session）与孤立结果（调用不在当前
+            // 视图内，分页边界）继续走独立卡片，避免信息丢失
+            if (coveredToolResultIds.has(msg.id)) return null;
 
             // ═══ ask_question 已回答：渲染结果卡片（单选✓/自己输入/多选逐行/取消warning/问卷逐题）。
             //     优先用透传的 details，缺失时降级为 content text。 ═══
@@ -813,7 +872,12 @@ function TabChat({
               );
             }
 
-            // spawn_session / writeback_to_parent 结果中提取 summary 字段用于 Markdown 渲染
+            // ═══ 独立结果卡片（保持既有展示）：spawn/send 摘要、以及调用不在视图内的孤立结果 ═══
+            const isError = isToolErrorMessage(msg.content_text);
+            const summary = msg.content_text
+              ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
+              : '(empty result)';
+
             let spawnSummary: string | null = null;
             let spawnStatus: string | null = null;
             if ((toolName === 'spawn_session' || toolName === 'send_message_to_session') && msg.content_text && !isError) {
@@ -824,19 +888,19 @@ function TabChat({
                   spawnStatus = typeof parsed.status === 'string' ? parsed.status : null;
                 }
               } catch {
-                // 不是 JSON，保持 compact 渲染
+                // 不是 JSON：按普通结果渲染
               }
             }
 
             const colorScheme = isError
               ? {
-                  bg: 'bg-red-50 dark:bg-red-950/30',
-                  border: 'border-red-200 dark:border-red-800',
-                  borderT: 'border-red-200 dark:border-red-800',
-                  icon: 'text-red-600 dark:text-red-400',
-                  label: 'text-red-800 dark:text-red-300',
-                  text: 'text-red-900 dark:text-red-200',
-                  suffix: 'text-red-600/60 dark:text-red-400/60',
+                  bg: 'bg-rose-50 dark:bg-rose-950/30',
+                  border: 'border-rose-200 dark:border-rose-800',
+                  borderT: 'border-rose-200 dark:border-rose-800',
+                  icon: 'text-rose-600 dark:text-rose-400',
+                  label: 'text-rose-800 dark:text-rose-300',
+                  text: 'text-rose-900 dark:text-rose-200',
+                  suffix: 'text-rose-600/60 dark:text-rose-400/60',
                 }
               : spawnSummary
                 ? {
