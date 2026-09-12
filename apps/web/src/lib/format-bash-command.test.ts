@@ -15,9 +15,18 @@ describe('formatBashCommand', () => {
     expect(formatBashCommand('a || b | c')).toBe(['a', '  || b', '  | c'].join('\n'));
   });
 
-  test('分号断行（含 ;; 分支写法）', () => {
+  test('分号断行；case 终止符 ;; / ;;& / ;& 整体保留', () => {
     expect(formatBashCommand('echo a; echo b')).toBe(['echo a', '  ; echo b'].join('\n'));
-    expect(formatBashCommand('case x in a) y ;; esac')).toBe(['case x in a) y', '  ; esac'].join('\n'));
+    expect(formatBashCommand('case x in a) y ;; esac')).toBe(['case x in a) y', '  ;; esac'].join('\n'));
+    expect(formatBashCommand('case x in a) y ;;& b')).toBe(['case x in a) y', '  ;;& b'].join('\n'));
+    expect(formatBashCommand('case x in a) y ;& b')).toBe(['case x in a) y', '  ;& b'].join('\n'));
+  });
+
+  test("ANSI-C 单引号 $'...'：内部分隔符不处理，内部反斜杠转义生效", () => {
+    expect(formatBashCommand("echo $'a && b'")).toBe("echo $'a && b'");
+    expect(formatBashCommand("echo $'it\\'s && b' && echo done")).toBe(
+      ["echo $'it\\'s && b'", '  && echo done'].join('\n'),
+    );
   });
 
   test('引号内的分隔符不处理', () => {

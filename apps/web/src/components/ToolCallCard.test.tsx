@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import React, { useState } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -424,10 +424,11 @@ describe('ToolCallCard bash 参数表格与命令格式化', () => {
 
     const code = container!.querySelector('[data-testid="bash-args-table"] code')!;
     expect(code).not.toBeNull();
-    expect(code.querySelector('.hljs-keyword')).not.toBeNull();
+    expect(code.querySelector('[class^="hljs-"]')).not.toBeNull();
   });
 
-  test('复制命令按钮：复制后显示「已复制」', () => {
+  test('复制命令按钮：写入剪贴板的是原始命令（非格式化文本）', () => {
+    const writeSpy = spyOn(navigator.clipboard, 'writeText');
     render(<Harness msg={toolCallMsg('bash', { command: 'cd /app && npm run build' })} />);
     click(header());
     click(argsToggle());
@@ -437,6 +438,17 @@ describe('ToolCallCard bash 参数表格与命令格式化', () => {
 
     click(btn);
     expect(container!.querySelector('[data-testid="bash-command-copy"]')!.textContent).toBe('已复制');
+    expect(writeSpy).toHaveBeenCalledWith('cd /app && npm run build');
+    writeSpy.mockRestore();
+  });
+
+  test('bash 缺 command 字段：不渲染复制按钮，参数表仍展示', () => {
+    render(<Harness msg={toolCallMsg('bash', { timeout: 300 })} />);
+    click(header());
+    click(argsToggle());
+
+    expect(container!.querySelector('[data-testid="bash-command-copy"]')).toBeNull();
+    expect(container!.querySelector('[data-testid="bash-args-table"]')!.textContent).toContain('timeout');
   });
 
   test('非 bash 工具保持 JSON 原文（无表格）', () => {

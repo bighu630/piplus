@@ -5,12 +5,17 @@
  * - 引号（' " `）与反斜杠转义内的分隔符不处理，避免破坏语义
  * - 单个 `&`（后台任务）不作为分隔符
  * - 只做展示，**不添加续行符**：格式化结果不保证可直接粘贴执行；需要执行请复制原始命令
+ *
+ * 已知展示限制（仅影响可读性；复制始终使用原始命令）：
+ * - 命令替换 `$(...)`、`case` 模式列表中的 `|`、heredoc 正文、`#` 注释内的分隔符也会被断行
+ * - 未闭合引号：保守处理（不进入引号外的断行逻辑）
  */
 export function formatBashCommand(command: string): string {
   const INDENT = '  ';
   const lines: string[] = [];
   let current = '';
   let inSingle = false;
+  let inAnsiSingle = false; // $'...'（ANSI-C quoting：内部反斜杠参与转义）
   let inDouble = false;
   let inBacktick = false;
   let escaped = false;
@@ -29,9 +34,23 @@ export function formatBashCommand(command: string): string {
       escaped = false;
       continue;
     }
-    if (ch === '\\' && !inSingle) {
+    // 转义：普通单引号内是字面量；$'...'、双引号、反引号与裸命令中参与转义
+    if (ch === '\\' && (inAnsiSingle || !inSingle)) {
       current += ch;
       escaped = true;
+      continue;
+    }
+
+    // $'...' 起始（ANSI-C quoting）
+    if (!inSingle && !inDouble && !inBacktick && !inAnsiSingle && ch === '$' && command[i + 1] === "'") {
+      inAnsiSingle = true;
+      current += "$'";
+      i++;
+      continue;
+    }
+    if (inAnsiSingle) {
+      if (ch === "'") inAnsiSingle = false;
+      current += ch;
       continue;
     }
 
@@ -72,9 +91,17 @@ export function formatBashCommand(command: string): string {
       continue;
     }
     if (ch === ';') {
-      // `;;` / `;&` 等 case 分支写法一并跳过
-      while (command[i + 1] === ';') i++;
-      breakLine(';');
+      // case 终止符（`;;` / `;&` / `;;&`）整体保留，避免展示时被改写
+      let operator = ';';
+      while (command[i + 1] === ';') {
+        operator += ';';
+        i++;
+      }
+      if (command[i + 1] === '&') {
+        operator += '&';
+        i++;
+      }
+      breakLine(operator);
       continue;
     }
 

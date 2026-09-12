@@ -7,7 +7,7 @@ import ToolResultView from './ToolResultView';
 import { formatBashCommand } from '../lib/format-bash-command';
 import { isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
 
-// 只注册 bash 语言（工具参数里的命令高亮），避免引入 highlight.js 全量语言包
+// 只注册 bash 语言（工具参数里的命令高亮）；显式依赖 lib/core + bash，避免绑定全量语言包
 hljs.registerLanguage('bash', bash);
 
 /**
@@ -138,8 +138,9 @@ function ToolCallCard({
   const scheme = SCHEMES[status];
 
   // bash：命令格式化 + 语法高亮（「执行参数」子项用表格展示；复制用原始命令）
+  // 仅在参数子项展开时计算：bash 命令可能数十 KB（heredoc），收起态无需 format + highlight
   const bashCommand = useMemo(() => {
-    if (toolName !== 'bash' || !parsedArgs || typeof parsedArgs.command !== 'string') return null;
+    if (!argsOpen || toolName !== 'bash' || !parsedArgs || typeof parsedArgs.command !== 'string') return null;
     const raw = parsedArgs.command;
     const formatted = formatBashCommand(raw);
     try {
@@ -147,7 +148,7 @@ function ToolCallCard({
     } catch {
       return { raw, formatted, html: null };
     }
-  }, [toolName, parsedArgs]);
+  }, [argsOpen, toolName, parsedArgs]);
 
   return (
     <div className="flex justify-start items-start w-full min-w-0">
@@ -239,16 +240,18 @@ function ToolCallCard({
                         <div data-testid="tool-args-content" className="px-3 pb-2 pl-6">
                           {toolName === 'bash' && parsedArgs ? (
                             <>
-                              <div className="flex items-center justify-end mb-1">
-                                <button
-                                  type="button"
-                                  data-testid="bash-command-copy"
-                                  onClick={() => commandCopy.copy(bashCommand?.raw)}
-                                  className="text-[10px] font-mono text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer"
-                                  title="复制原始命令（可直接执行）"
-                                >
-                                  {commandCopy.copied ? '已复制' : '复制命令'}
-                                </button>
+                              <div className="flex items-center justify-end mb-1 h-4">
+                                {bashCommand && (
+                                  <button
+                                    type="button"
+                                    data-testid="bash-command-copy"
+                                    onClick={() => commandCopy.copy(bashCommand.raw)}
+                                    className="text-[10px] font-mono text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer"
+                                    title="复制原始命令（可直接执行）"
+                                  >
+                                    {commandCopy.copied ? '已复制' : '复制命令'}
+                                  </button>
+                                )}
                               </div>
                               <table data-testid="bash-args-table" className="w-full text-[11px] font-mono leading-relaxed">
                                 <tbody>
