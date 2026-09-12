@@ -9,3 +9,13 @@ apps/api/dist
 apps/web/dist
 apps/desktop
 piplus.sqlite
+
+# 本地环境文件：必须排除，否则 Dockerfile 的 `COPY . .` 会把根目录 .env 烘进镜像。
+# 两个后果：
+#   1) 镜像内可被 `docker run --entrypoint cat` 直接读走 AUTH_SECRET / APP_PASSWORD 等密钥；
+#   2) Bun 运行时会自动加载 CWD 下的 .env，其中的 CORS_ORIGINS 会静默覆盖
+#      PUBLIC_WEB_ORIGIN 的 CORS 判定（即 docker-compose.yml 里刻意规避 env_file 的那条路径）。
+# 只排「本地覆盖文件」，不排 .env.example：那是随仓库分发的模板，必须留在构建上下文里。
+.env
+.env.local
+.env.*.local
