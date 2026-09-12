@@ -97,7 +97,7 @@ interface ToolCallCardProps {
 
 **`lib/format-bash-command.ts`**：`formatBashCommand(command)` —— 顶层分隔符（`&&` / `||` / `|` / `;`）处断行并缩进，引号（`' " \``）与反斜杠转义内的分隔符不处理，单个 `&`（后台任务）不处理；保留原始换行与行首缩进、折叠首尾空行。仅用于**展示**（不加续行符，不保证可直接粘贴执行；执行请用「复制命令」复制的原始命令）。
 
-**`MergedToolCallsCard.tsx`**：连续同工具调用的合并卡片 —— 头部 chevron + 工具名 + `×N`（`data-testid="merged-tool-header"` / `merged-tool-count`），点击展开/收起整组；展开后每组一个 `ToolCallBody`（`data-testid="merged-tool-entry"`，组间 `border-t` + `mt-1` 形成分割间隙）。合并组只含成功调用 → 恒为 `ok` 配色。分组由 `collectMergedToolCallGroups(displayMessages)` 给出（跳过结果消息，遇到其它工具/普通消息或不可合并调用即断开）。
+**`MergedToolCallsCard.tsx`**：连续同工具调用的合并卡片（合并组只含成功调用，因此不存在 running 态，不渲染 spinner） —— 头部 chevron + 工具名 + `×N`（`data-testid="merged-tool-header"` / `merged-tool-count`），点击展开/收起整组；展开后每组一个 `ToolCallBody`（`data-testid="merged-tool-entry"`，组间 `border-t` + `mt-1` 形成分割间隙）。合并组只含成功调用 → 恒为 `ok` 配色。分组由 `collectMergedToolCallGroups(displayMessages)` 给出（跳过结果消息，遇到其它工具/普通消息或不可合并调用即断开）。
 
 **`ToolCallBody.tsx`**：从 ToolCallCard 抽出的「展开区主体」（执行参数 + 结果两个子项，含 bash 表格/高亮/复制与结果复制），由 ToolCallCard 与 MergedToolCallsCard 共用；子项折叠态由组件内部维护，调用方通过**条件挂载**在重新展开时恢复默认。
 
@@ -139,6 +139,7 @@ interface ToolCallCardProps {
 - 部分失败：同组内可能部分成功部分失败（并行调用），整卡按“有任一失败即红色”（失败优先于 pending）着色，失败行单独标红
 - 独立结果卡片与工具卡片的失败配色统一为 rose（TabChat 原 red 已对齐）；`ToolResultView` 截断提示边框用中性 slate，避免绿/红卡内出现琥珀线
 - 状态徽标（失败/成功标签）统一 700 档（rose-700 / emerald-700），图标保持 600 档
+- 分组计算在 TabChat 中以 `useMemo([messages])` 缓存（不依赖每次渲染新建的 `displayMessages`）；消息量继续增大时可进一步建「结果索引」把 O(n²) 扫描降为 O(n)
 - 已知技术债：状态调色板中 `ToolCallCard` / `ToolCallBody` / `MergedToolCallsCard` 已共用 `lib/tool-call-scheme.ts`；`FileToolGroupCard` 与 `TabChat` 仍各有自己的配色表（色值已统一）；`hasResult` 口径在文件卡片（结果消息存在）与工具卡片（`content_text` 非 null）略有差异
 - 失败行默认展开；点「收起全部」（或单文件组的头部）会把失败行一并收起，再点「展开全部」恢复
 - 键盘可达性：文件行与头部均带 `role="button"` + `tabIndex=0`，支持 Enter/Space 切换（单文件组无按钮时同样可用）
@@ -165,7 +166,7 @@ interface ToolCallCardProps {
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（260 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（261 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
 
 注：`ReadResultView` 仍保留 `isError` 样式分支（防御层）；当前生产路径下失败 read 由 `FileRow` 的错误分支直接渲染错误原因，不会传入 `ReadResultView`。
 

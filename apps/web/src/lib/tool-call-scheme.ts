@@ -1,4 +1,4 @@
-/** 工具卡片状态配色（错误红 / 结果未回琥珀 / 成功绿）—— 供 ToolCallCard 与 MergedToolCallsCard 共用 */
+/** 工具卡片状态配色（错误红 / 结果未回琥珀 / 成功绿）—— 供 ToolCallCard / ToolCallBody / MergedToolCallsCard 共用 */
 export const TOOL_CALL_SCHEMES = {
   error: {
     card: 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800',

@@ -366,10 +366,6 @@ export function collectMergedToolCallGroups(visibleMessages: ChatMessageDTO[]): 
     return result !== null && !isToolErrorMessage(result.content_text);
   };
 
-  // 消息流里调用与结果是交替出现的（call, result, call, result…）：
-  // 结果消息不算「打断」，其它工具调用 / 普通消息才算
-  const isToolResultMessage = (m: ChatMessageDTO) => m.message_kind === 'tool' || m.role === 'tool';
-
   let i = 0;
   while (i < visibleMessages.length) {
     const msg = visibleMessages[i];
@@ -382,7 +378,11 @@ export function collectMergedToolCallGroups(visibleMessages: ChatMessageDTO[]): 
     let j = i + 1;
     while (j < visibleMessages.length) {
       const next = visibleMessages[j];
-      if (isToolResultMessage(next)) {
+      // 消息流里调用与结果交替出现（call, result, call, result…）：
+      // 「属于当前工具」的结果消息不算打断；其它工具的结果 / 调用 / 普通消息都算断开
+      const isCurrentToolResult =
+        (next.message_kind === 'tool' || next.role === 'tool') && (next.tool_name ?? '') === toolName;
+      if (isCurrentToolResult) {
         j++;
         continue;
       }

@@ -1,6 +1,6 @@
 import React from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
-import { ChevronDown, ChevronRight, LoaderCircle, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronRight, Wrench } from 'lucide-react';
 import ToolCallBody from './ToolCallBody';
 import { findToolResultMessage } from '../lib/tool-summary';
 import { TOOL_CALL_SCHEMES } from '../lib/tool-call-scheme';
@@ -11,6 +11,7 @@ import { TOOL_CALL_SCHEMES } from '../lib/tool-call-scheme';
  * - 头部：chevron + 工具名 + `×N`（调用次数），点击展开/收起整组
  * - 展开后：每个调用一组「执行参数（默认收起）+ 结果（默认展开）」，组间以分割线隔开
  * - 合并组只包含成功调用 → 恒为成功（绿色）配色；失败调用由 ToolCallCard 单独渲染
+ *   （因此不存在「运行中」态，无需 spinner）
  */
 export interface MergedToolCallsCardProps {
   toolName: string;
@@ -19,20 +20,11 @@ export interface MergedToolCallsCardProps {
   messages: ChatMessageDTO[];
   expanded: boolean;
   onToggle: (id: string) => void;
-  runningIds: Set<string>;
 }
 
-function MergedToolCallsCard({
-  toolName,
-  calls,
-  messages,
-  expanded,
-  onToggle,
-  runningIds,
-}: MergedToolCallsCardProps) {
+function MergedToolCallsCard({ toolName, calls, messages, expanded, onToggle }: MergedToolCallsCardProps) {
   const scheme = TOOL_CALL_SCHEMES.ok;
   const anchor = calls[0];
-  const anyRunning = calls.some((call) => runningIds.has(call.id));
 
   return (
     <div className="flex justify-start items-start w-full min-w-0">
@@ -91,11 +83,6 @@ function MergedToolCallsCard({
                 </div>
               ))}
           </div>
-          {anyRunning && (
-            <div className="ml-2 pt-2 shrink-0">
-              <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
-            </div>
-          )}
         </div>
         <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
           {new Date(anchor.created_at).toLocaleTimeString()}
@@ -105,4 +92,4 @@ function MergedToolCallsCard({
   );
 }
 
-export default React.memo(MergedToolCallsCard);
+export default MergedToolCallsCard;

@@ -108,15 +108,7 @@ const threeResults = [
 
 const messages = [...threeCalls(), ...threeResults];
 
-function Harness({
-  calls,
-  msgs,
-  runningIds,
-}: {
-  calls: ChatMessageDTO[];
-  msgs: ChatMessageDTO[];
-  runningIds?: Set<string>;
-}) {
+function Harness({ calls, msgs }: { calls: ChatMessageDTO[]; msgs: ChatMessageDTO[] }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <MergedToolCallsCard
@@ -125,7 +117,6 @@ function Harness({
       messages={msgs}
       expanded={expanded}
       onToggle={() => setExpanded((v) => !v)}
-      runningIds={runningIds ?? new Set()}
     />
   );
 }
@@ -159,6 +150,10 @@ describe('MergedToolCallsCard', () => {
     expect(resultContents()).toHaveLength(3);
     expect(resultContents()[0].textContent).toContain('out 1');
     expect(resultContents()[2].textContent).toContain('out 3');
+
+    // 合并组内仍走共享 body：bash 参数为表格
+    click(argsToggles()[0]);
+    expect(container!.querySelector('[data-testid="bash-args-table"]')).not.toBeNull();
   });
 
   test('组间以分割线与间隙隔开（首组无间隙）', () => {
@@ -203,11 +198,6 @@ describe('MergedToolCallsCard', () => {
 
     pressKey(header(), ' ');
     expect(entries()).toHaveLength(0);
-  });
-
-  test('running 调用渲染 spinner', () => {
-    render(<Harness calls={threeCalls()} msgs={messages} runningIds={new Set(['c2'])} />);
-    expect(container!.querySelector('.animate-spin')).not.toBeNull();
   });
 
   test('×2 合并组同样工作', () => {

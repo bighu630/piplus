@@ -463,6 +463,41 @@ describe('collectMergedToolCallGroups', () => {
     expect(collectMergedToolCallGroups(messages).groups.size).toBe(0);
   });
 
+  test('断点之后仍能继续成组（前段/后段各成一组）', () => {
+    const messages = [
+      msg({ id: 'b1', tool_name: 'bash', tool_call_id: 't1' }),
+      okResult('r1', 'bash', 't1'),
+      msg({ id: 'b2', tool_name: 'bash', tool_call_id: 't2' }),
+      okResult('r2', 'bash', 't2'),
+      msg({ id: 'g1', tool_name: 'grep', tool_call_id: 't3' }),
+      okResult('r3', 'grep', 't3'),
+      msg({ id: 'b3', tool_name: 'bash', tool_call_id: 't4' }),
+      okResult('r4', 'bash', 't4'),
+      msg({ id: 'b4', tool_name: 'bash', tool_call_id: 't5' }),
+      okResult('r5', 'bash', 't5'),
+    ];
+    const { groups, memberIds } = collectMergedToolCallGroups(messages);
+
+    expect(groups.size).toBe(2);
+    expect([...groups.values()].map((g) => g.calls.map((c) => c.id))).toEqual([
+      ['b1', 'b2'],
+      ['b3', 'b4'],
+    ]);
+    expect(memberIds.has('b3')).toBe(true);
+    expect(memberIds.has('g1')).toBe(false);
+  });
+
+  test('其它工具的孤立结果同样作为断点', () => {
+    const messages = [
+      msg({ id: 'b1', tool_name: 'bash', tool_call_id: 't1' }),
+      okResult('r1', 'bash', 't1'),
+      okResult('orphan', 'grep', 'tg'),
+      msg({ id: 'b2', tool_name: 'bash', tool_call_id: 't2' }),
+      okResult('r2', 'bash', 't2'),
+    ];
+    expect(collectMergedToolCallGroups(messages).groups.size).toBe(0);
+  });
+
   test('文件类与例外工具不参与合并', () => {
     const messages = [
       msg({ id: 'w1', tool_name: 'write', tool_call_id: 't1' }),

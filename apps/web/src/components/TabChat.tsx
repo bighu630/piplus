@@ -665,13 +665,20 @@ function TabChat({
     return ids;
   }, [isRunning, displayMessages]);
 
-  // 同一条 assistant 消息内的 write/edit/read 调用聚合为一张卡片（多行文件列表，卡片级一个总控按钮）
-  const { groups: fileToolGroups, memberIds: fileToolMemberIds } = buildFileToolGroups(displayMessages);
-  // 已被工具卡片承载的结果 id（文件聚合卡片 / 普通工具「结果」子项）：用于隐藏独立结果卡片（孤立结果不隐藏）
-  const coveredToolResultIds = collectCoveredToolResultIds(displayMessages);
-  // 连续相邻、同一工具、成功的普通调用合并为一张卡片（文件类与例外工具不参与）
-  const { groups: mergedToolGroups, memberIds: mergedToolMemberIds } =
-    collectMergedToolCallGroups(displayMessages);
+  // 工具调用的三类分组/索引（纯函数）：
+  // - 文件聚合卡片（同回合 write/edit/read）
+  // - 已被卡片承载的结果 id（用于隐藏独立结果卡片）
+  // - 连续同工具的成功调用合并组
+  // 依赖 messages（引用稳定）而非每次渲染新建的 displayMessages：流式重渲染时避免重复全量扫描
+  const { groups: fileToolGroups, memberIds: fileToolMemberIds } = useMemo(
+    () => buildFileToolGroups(messages),
+    [messages],
+  );
+  const coveredToolResultIds = useMemo(() => collectCoveredToolResultIds(messages), [messages]);
+  const { groups: mergedToolGroups, memberIds: mergedToolMemberIds } = useMemo(
+    () => collectMergedToolCallGroups(messages),
+    [messages],
+  );
 
   // 运行中的工具调用 id：聚合卡片（整行 spinner）与单卡片共用同一判定
   const runningToolIds = new Set<string>();
@@ -735,7 +742,6 @@ function TabChat({
                 messages={messages}
                 expanded={expandedToolIds.has(group.id)}
                 onToggle={toggleToolExpanded}
-                runningIds={runningToolIds}
               />
             );
           }
