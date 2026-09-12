@@ -148,15 +148,15 @@ interface ToolCallCardProps {
   4. 状态着色与失败展开：全部成功绿色卡片；结果未回琥珀色（pending，不宣称成功）；失败红色卡片（优先级高于运行中）+ 失败行默认展开错误原因 + 点击可收起；部分失败时仅失败行标红；全部收起/展开与失败行联动；失败的 edit/read 不渲染 diff 或 read 内容（只显示错误原因）
   5. read 行：行号范围 chip、独立展开内容、无结果回退 args；edit 行：details.diff 精确 ±、diff 明细渲染
 - `apps/web/src/components/ToolCallCard.test.tsx`：普通工具两个子项（执行参数默认收起 / 结果默认展开、成功/失败/运行中标识、子项可收起、重新展开恢复默认）、args 非法与无参数降级、折叠态失败徽标、复制按钮；例外保持（spawn 表格 + 角色后缀、ask_question JSON args、args 为空/非法时不出现子项）、spinner
-- `apps/web/src/lib/format-bash-command.test.ts`：`&&`/`||`/`|`/`;` 断行缩进、引号与转义内不处理、单个 `&` 不处理、原始多行保留、空命令与空行折叠
-- `apps/web/src/components/ToolCallCard.test.tsx`（bash 部分）：参数表格（command/timeout 行）、命令断行缩进、hljs 语法高亮 token、复制命令按钮、非 bash 工具仍为 JSON
+- `apps/web/src/lib/format-bash-command.test.ts`：`&&`/`||`/`|`/`;` 断行缩进、引号与转义内不处理、`$'...'`（ANSI-C quoting）、`;;`/`;&`/`;;&` 保留、单个 `&` 不处理、原始多行保留、空命令与空行折叠
+- `apps/web/src/components/ToolCallCard.test.tsx`（bash 部分）：参数表格（command/timeout 行）、命令断行缩进、hljs 语法高亮 token、复制命令按钮（spy 断言写入原始命令）、缺 command 字段、非 bash 工具仍为 JSON
 - `apps/web/src/components/ToolResultView.test.tsx`：内容渲染、空输出占位、失败样式、200 行截断（提示位置）、恰好 200 行不截断
 - `apps/web/src/components/ReadResultView.test.tsx`：正文渲染、空内容、失败样式、pi 续读提示口径、200 行截断
 - `apps/web/src/components/DiffViewer.test.tsx`：write/edit 明细渲染、>150 行截断提示、无折叠控件
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（244 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（246 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
 
 注：`ReadResultView` 仍保留 `isError` 样式分支（防御层）；当前生产路径下失败 read 由 `FileRow` 的错误分支直接渲染错误原因，不会传入 `ReadResultView`。
 
