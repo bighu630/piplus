@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, FileCode, LoaderCircle, Wrench } from 'lucide-react';
 import DiffViewer from './DiffViewer';
+import FilePathLabel from './FilePathLabel';
 import ReadResultView from './ReadResultView';
 import {
   findToolResultMessage,
@@ -119,12 +120,10 @@ const FileRow = React.memo(function FileRow({
           <ChevronRight className={`w-3 h-3 shrink-0 ${iconTone}`} />
         )}
         <FileCode className={`w-3.5 h-3.5 shrink-0 ${iconTone}`} />
-        <span
-          className={`text-[11px] font-mono truncate max-w-[300px] ${tone}`}
-          title={path ?? undefined}
-        >
-          {path ?? '(未提供路径)'}
-        </span>
+        <FilePathLabel
+          path={path ?? '(未提供路径)'}
+          className={`text-[11px] font-mono ${tone}`}
+        />
         {writeEditSummary && !isError && (
           <>
             {(writeEditSummary.added > 0 || writeEditSummary.removed === 0) && (

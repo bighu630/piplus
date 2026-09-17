@@ -16,7 +16,7 @@
 7. **bash 的「执行参数」**用**表格**展示（`command` / `timeout` 等键值行），其中 `command` 的值做**命令格式化**：在顶层分隔符（`&&` / `||` / `|` / `;`）处断行缩进 + bash 语法高亮；表格右上角提供「复制命令」按钮（复制**原始命令**，保证可直接执行）。其它工具仍为 JSON 原文。
 8. 工具结果统一截断标准：**200 行**（read 内容与普通工具结果同一口径），容器内滚动，截断提示在滚动容器外。
 9. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
-10. 文件路径保持单行截断，鼠标悬停（`title`）看完整。
+10. **过长文件路径省略前面**：目录前缀可省略（省略号在左，保留靠近文件名的尾部目录），**文件名始终优先完整显示**；鼠标悬停（`title`）看完整路径。
 
 ## 数据来源（已核实代码事实）
 
@@ -101,6 +101,8 @@ interface ToolCallCardProps {
 
 **`ToolCallBody.tsx`**：从 ToolCallCard 抽出的「展开区主体」（执行参数 + 结果两个子项，含 bash 表格/高亮/复制与结果复制），由 ToolCallCard 与 MergedToolCallsCard 共用；子项折叠态由组件内部维护，调用方通过**条件挂载**在重新展开时恢复默认。
 
+**`FilePathLabel.tsx`**：文件路径标签（文件行使用）—— 拆成「目录前缀」与「文件名」两段：目录前缀 `min-w-0 + overflow-hidden + text-ellipsis + [direction:rtl] + text-left`（省略号落在**左侧**，即省略开头、保留尾部目录），文件名 `shrink-0`（优先完整，仅自身超宽时尾部省略）；`title` 提供完整路径。
+
 **`lib/tool-call-scheme.ts`**：状态配色表（`TOOL_CALL_SCHEMES`）抽出，供 ToolCallCard / ToolCallBody / MergedToolCallsCard 共用（原分散在 ToolCallCard 内）。
 
 **`ToolResultView.tsx`**：通用工具结果文本（统一截断 200 行 + 滚动、截断提示在滚动容器外、失败 rose / 成功中性色、空输出占位）。
@@ -150,6 +152,7 @@ interface ToolCallCardProps {
 
 - `apps/web/src/lib/tool-summary.test.ts`：write 行数（普通/空/末尾换行）、edit 的 details.diff 解析与 args 回退、行号范围 4 种情形、result 匹配（含 toolCallId 精确配对与序数回退）、`isFileToolCall` / `buildFileToolGroups` / `parseToolArgsJson` / `splitReadContent`
 - `apps/web/src/lib/tool-summary.test.ts`（合并分组）：连续同工具成功 → 1 组、跨 assistant 消息合并、其它工具/普通消息断开、失败与运行中不参与、文件类与例外工具不参与
+- `apps/web/src/components/FilePathLabel.test.tsx`：目录/文件名拆分、rtl 省略方向、文件名不收缩、title 全路径、纯文件名与根目录文件、自定义目录宽度
 - `apps/web/src/components/MergedToolCallsCard.test.tsx`：头部 ×N、默认收起、展开为 N 组（参数收起/结果展开）、组间分割与间隙、每组参数独立展开、重新展开恢复默认、键盘可达、running spinner
 - `apps/web/src/lib/diff.test.ts`：行级 diff 的末尾换行口径与 truncateDiff 截断边界
 - `apps/web/src/components/FileToolGroupCard.test.tsx`（happy-dom + React 19，参照 `AskQuestionCard.test.tsx`）：
