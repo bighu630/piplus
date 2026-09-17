@@ -2,11 +2,112 @@ import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
 import { projects, sessions } from '@piplus/db/schema';
 import { eq } from 'drizzle-orm';
+import { execFileSync } from 'node:child_process';
 import { appendFile, access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { getDbPath } from '../../../db-context';
 import { execGit, resolveProjectDir } from '../project-fs';
+
+/**
+ * Shell-free git invocation. Required for every argument that is free-form user text
+ * (commit/tag messages, user identity, tokens): `execSync` interpolation lets
+ * `$(...)`, backticks and quotes escape into the shell.
+ */
+function execGitFileArgs(cwd: string, args: string[], timeoutMs?: number): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf-8',
+    maxBuffer: 10 * 1024 * 1024,
+    ...(timeoutMs ? { timeout: timeoutMs } : {}),
+  }).toString();
+}
+
+/**
+ * Remote to push to, resolved by git rather than hard-coded:
+ * `branch.<current>.remote` → `remote.pushDefault` → first configured remote.
+ */
+function resolveGitRemote(cwd: string): string | null {
+  const tryConfig = (key: string): string | null => {
+    try {
+      return execGitFileArgs(cwd, ['config', '--get', key]).trim() || null;
+    } catch {
+      return null;
+    }
+  };
+
+  try {
+    const current = execGitFileArgs(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+    if (current && current !== 'HEAD') {
+      const fromBranch = tryConfig(`branch.${current}.remote`);
+      if (fromBranch) return fromBranch;
+    }
+  } catch {
+    // detached HEAD or a repository without commits — fall through to the other sources
+  }
+
+  const pushDefault = tryConfig('remote.pushDefault');
+  if (pushDefault) return pushDefault;
+
+  try {
+    const first = execGitFileArgs(cwd, ['remote'])
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)[0];
+    return first ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * name → sha for every tag on the remote. Annotated tags make `ls-remote` print an extra
+ * `refs/tags/<name>^{}` line (the dereferenced commit); it is skipped so each tag appears once
+ * and its sha matches the local `%(objectname)` — the comparison that defines "unpushed".
+ */
+function listRemoteTagShas(cwd: string, remote: string, timeoutMs?: number): Map<string, string> {
+  // `--` terminates options so a remote whose name looks like a flag cannot change the command.
+  const out = execGitFileArgs(cwd, ['ls-remote', '--tags', '--', remote], timeoutMs);
+  const shas = new Map<string, string>();
+  for (const line of out.split('\n')) {
+    const [sha, ref] = line.split('\t');
+    if (!sha || !ref) continue;
+    if (ref.endsWith('^{}')) continue;
+    if (!ref.startsWith('refs/tags/')) continue;
+    shas.set(ref.slice('refs/tags/'.length), sha.trim());
+  }
+  return shas;
+}
+
+/** Local tag name → object sha, using the same `%(objectname)` value as the list endpoint. */
+function listLocalTagShas(cwd: string): Map<string, string> {
+  // A literal tab cannot appear in a ref name, so it is a safe separator for tag names
+  // (`git tag --format` does not expand `%x09`, so the tab is embedded in the argv string).
+  const out = execGitFileArgs(cwd, ['tag', '--list', '--format=%(refname:lstrip=2)\t%(objectname)']);
+  const shas = new Map<string, string>();
+  for (const line of out.split('\n')) {
+    const [name, sha] = line.split('\t');
+    if (name && sha) shas.set(name.trim(), sha.trim());
+  }
+  return shas;
+}
+
+/**
+ * trim → drop a leading `refs/tags/` → validate. A leading `-` is rejected as well: it would be
+ * parsed as a git option (`git tag -f`, `git push --force`) and could move/overwrite tags.
+ */
+function validateTagName(
+  raw: unknown,
+): { name: string } | { error: { code: 'EMPTY_TAG_NAME' | 'INVALID_TAG_NAME'; message: string } } {
+  const name = String(raw ?? '').trim().replace(/^refs\/tags\//, '');
+  if (!name) {
+    return { error: { code: 'EMPTY_TAG_NAME', message: 'Tag name is required' } };
+  }
+  if (name.startsWith('-') || !/^[a-zA-Z0-9._\-/]+$/.test(name)) {
+    return { error: { code: 'INVALID_TAG_NAME', message: 'Tag name contains invalid characters' } };
+  }
+  return { name };
+}
 
 /** True when HEAD is not on a branch (git symbolic-ref fails on a detached HEAD). */
 function isDetachedHead(cwd: string): boolean {
@@ -101,9 +202,9 @@ export function registerGitRoutes(app: Hono) {
       const opts: string[] = [];
       if (cfg.token) {
         const encoded = Buffer.from(`token:${cfg.token}`).toString('base64');
-        opts.push('-c', `http.extraheader="AUTHORIZATION: Basic ${encoded}"`);
+        opts.push('-c', `http.extraheader=AUTHORIZATION: Basic ${encoded}`);
       }
-      const stdout = execGit(cwd, ...opts, 'push');
+      const stdout = execGitFileArgs(cwd, [...opts, 'push']);
       return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim() || 'Everything up-to-date.' });
     } catch (err: unknown) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
@@ -126,12 +227,14 @@ export function registerGitRoutes(app: Hono) {
     const cwd = resolved.cwd;
 
     try {
-      execGit(cwd, 'add -A');
+      execGitFileArgs(cwd, ['add', '-A']);
       const cfg = JSON.parse(resolved.gitConfigJson || '{}');
       const opts: string[] = [];
-      if (cfg.userName) opts.push('-c', `user.name="${cfg.userName}"`);
-      if (cfg.userEmail) opts.push('-c', `user.email="${cfg.userEmail}"`);
-      const stdout = execGit(cwd, ...opts, `commit -m "${message.replace(/"/g, '\\"')}"`);
+      if (cfg.userName) opts.push('-c', `user.name=${cfg.userName}`);
+      if (cfg.userEmail) opts.push('-c', `user.email=${cfg.userEmail}`);
+      // argv form: the message and identity never pass through a shell, so `$(...)`, backticks
+      // and quotes stay literal commit-message bytes instead of being executed.
+      const stdout = execGitFileArgs(cwd, [...opts, 'commit', '-m', message]);
       return c.json({ session_id: sessionId, cwd, result: 'ok', stdout: stdout.trim() });
     } catch (err: unknown) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
@@ -294,13 +397,13 @@ export function registerGitRoutes(app: Hono) {
 
       const output = execGit(
         cwd,
-        `tag --list --sort=-creatordate --format='%(refname:lstrip=2)|||%(objecttype)|||%(creatordate:short)|||%(subject)'`,
+        `tag --list --sort=-creatordate --format='%(refname:lstrip=2)|||%(objecttype)|||%(creatordate:short)|||%(subject)|||%(objectname)'`,
       );
       const tags = output
         .split('\n')
         .filter(Boolean)
         .map((line: string) => {
-          const [name = '', objecttype = '', date = '', subject = ''] = line.split('|||');
+          const [name = '', objecttype = '', date = '', subject = '', sha = ''] = line.split('|||');
           const tagName = name.trim();
           return {
             name: tagName,
@@ -308,6 +411,9 @@ export function registerGitRoutes(app: Hono) {
             is_annotated: objecttype.trim() === 'tag',
             date: date.trim(),
             subject: subject.trim(),
+            // annotated tag → tag object sha; lightweight tag → commit sha. Both equal what
+            // `git ls-remote --tags <remote>` advertises for `refs/tags/<name>`.
+            sha: sha.trim(),
           };
         })
         .filter((tag) => Boolean(tag.name));
@@ -316,6 +422,220 @@ export function registerGitRoutes(app: Hono) {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: { code: 'GIT_ERROR', message } }, 500);
+    }
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git/tags:
+   *   post:
+   *     summary: 在 HEAD 上创建 Git 标签
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 根据是否提供 message 创建附注标签或轻量标签。名称经过校验，命令不经 shell。
+   *     responses:
+   *       200:
+   *         description: 创建成功。
+   *       400:
+   *         description: 标签名为空或含非法字符。
+   *       500:
+   *         description: Git 创建失败（如标签已存在）。
+   */
+  app.post('/api/v1/sessions/:sessionId/git/tags', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+
+    const parsed = validateTagName((body as { name?: unknown }).name);
+    if ('error' in parsed) return c.json({ error: parsed.error }, 400);
+    const name = parsed.name;
+    const message = String((body as { message?: unknown }).message ?? '').trim();
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    try {
+      // argv form keeps the free-form tag message away from the shell.
+      const argv = message ? ['tag', '-a', name, '-m', message] : ['tag', name];
+      const stdout = execGitFileArgs(cwd, argv);
+      return c.json({
+        session_id: sessionId,
+        cwd,
+        result: 'ok',
+        stdout: stdout.trim(),
+        name,
+        annotated: Boolean(message),
+      });
+    } catch (err: unknown) {
+      const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
+      return c.json(
+        {
+          session_id: sessionId,
+          cwd,
+          result: 'error',
+          stderr,
+          name,
+          error: { code: 'TAG_CREATE_FAILED', message: stderr },
+        },
+        500,
+      );
+    }
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git/remote-tags:
+   *   get:
+   *     summary: 获取远程 Git 标签状态
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 读取远程 tag 列表用于计算「未推送」状态。远程不可用时降级返回 remote_ok=false。
+   *     responses:
+   *       200:
+   *         description: 查询完成（远程不可用时 remote_ok 为 false）。
+   */
+  app.get('/api/v1/sessions/:sessionId/git/remote-tags', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    // Remote state is best effort: the Git page must keep rendering, so every failure (no
+    // remote, network, auth) degrades to `remote_ok: false` instead of a 500.
+    const remote = resolveGitRemote(cwd);
+    if (!remote) {
+      return c.json({
+        session_id: sessionId,
+        cwd,
+        remote_ok: false,
+        remote: null,
+        error: 'No git remote is configured',
+        tags: [],
+      });
+    }
+
+    try {
+      const shas = listRemoteTagShas(cwd, remote, 10_000);
+      const tags = [...shas.entries()]
+        .map(([name, sha]) => ({ name, sha }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return c.json({ session_id: sessionId, cwd, remote_ok: true, remote, error: null, tags });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ session_id: sessionId, cwd, remote_ok: false, remote, error: message, tags: [] });
+    }
+  });
+
+  /**
+   * @swagger
+   * /api/v1/sessions/{sessionId}/git/tags/push:
+   *   post:
+   *     summary: 推送 Git 标签到远程
+   *     tags: [Sessions, Git]
+   *     security:
+   *       - bearerAuth: []
+   *     description: 推送指定标签；names 省略时只推送与远程 sha 不一致的标签。永不使用 --force。
+   *     responses:
+   *       200:
+   *         description: 推送成功或无需推送。
+   *       400:
+   *         description: 无可用 remote 或标签名非法。
+   *       500:
+   *         description: 推送失败（如远程已存在同名标签且不一致）。
+   */
+  app.post('/api/v1/sessions/:sessionId/git/tags/push', async (c) => {
+    const userId = (c as any).get('userId') as string;
+    const sessionId = decodeURIComponent(c.req.param('sessionId'));
+    const body = await c.req.json().catch(() => ({}));
+    const rawNames = (body as { names?: unknown }).names;
+
+    // An explicit list is validated up front; an empty/absent list means "all unpushed tags".
+    let requested: string[] | null = null;
+    if (Array.isArray(rawNames) && rawNames.length > 0) {
+      requested = [];
+      for (const raw of rawNames) {
+        const parsed = validateTagName(raw);
+        if ('error' in parsed) return c.json({ error: parsed.error }, 400);
+        requested.push(parsed.name);
+      }
+      // Duplicates would produce repeated refspecs, which git rejects for the same ref.
+      requested = [...new Set(requested)];
+    } else if (rawNames !== undefined && rawNames !== null && !Array.isArray(rawNames)) {
+      // A malformed shape must not silently expand to "push every unpushed tag".
+      return c.json({ error: { code: 'INVALID_NAMES', message: 'names must be an array of tag names' } }, 400);
+    }
+
+    const resolved = resolveProjectDir(c, userId, sessionId);
+    if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
+    const cwd = resolved.cwd;
+
+    const remote = resolveGitRemote(cwd);
+    if (!remote) {
+      return c.json({ error: { code: 'NO_REMOTE', message: 'No git remote is configured' } }, 400);
+    }
+
+    try {
+      let toPush: string[];
+      if (requested) {
+        toPush = requested;
+      } else {
+        // "Unpushed" = the remote is missing the tag or advertises a different object sha.
+        const localShas = listLocalTagShas(cwd);
+        const remoteShas = listRemoteTagShas(cwd, remote, 10_000);
+        toPush = [...localShas.entries()]
+          .filter(([name, sha]) => remoteShas.get(name) !== sha)
+          .map(([name]) => name)
+          .sort();
+      }
+
+      if (toPush.length === 0) {
+        return c.json({
+          session_id: sessionId,
+          cwd,
+          result: 'ok',
+          stdout: 'Everything up-to-date.',
+          pushed: [],
+          remote,
+        });
+      }
+
+      const cfg = JSON.parse(resolved.gitConfigJson || '{}');
+      const opts: string[] = [];
+      if (cfg.token) {
+        const encoded = Buffer.from(`token:${cfg.token}`).toString('base64');
+        opts.push('-c', `http.extraheader=AUTHORIZATION: Basic ${encoded}`);
+      }
+      const refspecs = toPush.map((name) => `refs/tags/${name}:refs/tags/${name}`);
+      // A tag refspec needs an explicit remote; no --force, so a conflicting remote tag makes
+      // git reject the update instead of silently overwriting it. `--` keeps a remote whose
+      // name looks like an option (e.g. `--force`) from being parsed as one.
+      const stdout = execGitFileArgs(cwd, [...opts, 'push', '--', remote, ...refspecs]);
+      return c.json({
+        session_id: sessionId,
+        cwd,
+        result: 'ok',
+        stdout: stdout.trim() || 'Everything up-to-date.',
+        pushed: toPush,
+        remote,
+      });
+    } catch (err: unknown) {
+      const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr ?? err.message) : String(err);
+      return c.json(
+        {
+          session_id: sessionId,
+          cwd,
+          result: 'error',
+          stderr,
+          pushed: [],
+          remote,
+          error: { code: 'TAG_PUSH_FAILED', message: stderr },
+        },
+        500,
+      );
     }
   });
 
