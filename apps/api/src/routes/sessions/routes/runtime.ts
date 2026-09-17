@@ -7,7 +7,7 @@ import { eq } from 'drizzle-orm';
 import { getDbPath } from '../../../db-context';
 import { socketHub } from '../../../ws/server';
 import { createEvent } from '../../../ws/protocol';
-import { createAuditService, clearIdleRuntimeCleanup } from '@piplus/domain';
+import { createAuditService, clearIdleRuntimeCleanup, finalizeSessionStop } from '@piplus/domain';
 import { nextMessageTime, log } from '../shared';
 
 /** stop / archive（原注册顺序位于 files/git 路由之前，由 routes/index.ts 先行调用本函数保持顺序）。 */
@@ -48,6 +48,18 @@ export function registerSessionControlRoutes(app: Hono, piClient: PiClient) {
     const now = nextMessageTime();
     await db.update(sessions).set({ runtimeStatus: 'stopping', lastStopAt: now, updatedAt: now }).where(eq(sessions.id, sessionId));
     socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: 'stopping' }, { project_id: session.projectId, session_id: sessionId }));
+    // 收尾：等 agent 真正停止（带超时），无论结果都收敛回 idle，避免永久卡 stopping。
+    void finalizeSessionStop({
+      db,
+      piClient,
+      sessionId,
+      projectId: session.projectId,
+      onRuntimeStatusChange: async ({ sessionId: sId, projectId }) => {
+        socketHub.sendToSession(sId, createEvent('session.runtime_status_changed', { runtime_status: 'idle' }, { project_id: projectId, session_id: sId }));
+      },
+    }).catch((err) => {
+      log.warn('session stop finalization failed', { sessionId, error: String(err) });
+    });
     return c.json({ session_id: sessionId, status: 'stopping' }, 202);
   });
 

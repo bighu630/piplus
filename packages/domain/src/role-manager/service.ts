@@ -570,6 +570,47 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
       await db.update(sessions).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(sessions.id, parentSessionId));
       await touchProject(db, child.projectId);
 
+      // Auto-wake idle parent (best-effort)：writeback 落库后若父会话 idle 则拉起新一轮 run 消费内容。
+      // planner 的 writeback 工具已在 runtime 层过滤（见 runtime.ts buildAllToolDefs），不会循环。
+      try {
+        const [parent] = await db.select().from(sessions).where(eq(sessions.id, parentSessionId)).limit(1);
+        if (!parent) return { parentSessionId, messageId };
+        // 已归档/非 active 的父会话跳过（status 列 notNull，直接比较；null/其他值均不等于 'active'）
+        if (parent.status !== 'active') return { parentSessionId, messageId };
+        // running/stopping 不拉起：wait=true 场景由 wait 循环消费；重复拉起由原子认领去重
+        if (parent.runtimeStatus !== 'idle') return { parentSessionId, messageId };
+
+        const summaryText = input.summary ?? '';
+        const blocksPart = input.blocks ? `\n\n${JSON.stringify(input.blocks, null, 2)}` : '';
+        const content = `${summaryText}${blocksPart}`.trim();
+        // 空 summary 且无 blocks：无内容可消费，跳过自动拉起（避免发起空 run）
+        if (!content) return { parentSessionId, messageId };
+
+        const userId = (child as any).createdBy ?? (parent as any).createdBy;
+        if (!userId) return { parentSessionId, messageId };
+
+        // 动态 import 避免 service ↔ runtime 循环依赖（runtime → extensions/registry → service 是静态环）
+        const { wakeSessionWithContent } = await import('../session/runtime');
+
+        // 与强杀补投递共用同一实现：原子 idle→running 认领保证幂等（并发重复拉起抛
+        // session_busy 由 helper 吞掉），其他错误只 warn 不向外抛 —— writeback 本身
+        // 已成功落库，不应因拉起失败而让子会话报错。
+        const wakeResult = await wakeSessionWithContent({
+          db: db as any,
+          piClient: piClient as any,
+          sessionId: parentSessionId,
+          userId,
+          content,
+          requestId: `wb_${messageId}`,
+          reason: 'writeback-auto-wake',
+        });
+        if (wakeResult === 'started') {
+          console.log('[role-manager] parent auto-woken', { parentSessionId, messageId });
+        }
+      } catch (err) {
+        console.warn('[role-manager] auto-wake check failed', { parentSessionId, err: String(err) });
+      }
+
       return { parentSessionId, messageId };
     },
   };

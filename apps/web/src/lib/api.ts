@@ -117,6 +117,40 @@ export function getAuthStatus() {
   return request<{ requiresPassword: boolean }>('/api/v1/auth/status');
 }
 
+export function getAskPending(sessionId: string) {
+  return request<{ pending: Array<{ questionId: string; sessionId: string; question?: string; options?: string[]; multiSelect?: boolean; label?: string; questions?: Array<{ question: string; options: string[]; multiSelect?: boolean; label?: string }> }> }>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/ask-pending`);
+}
+
+/**
+ * 全局待回答 ask_question（跨会话，仅当前用户创建的会话）。
+ * 用于挂载 / WS 重连 / 窗口重新聚焦时补偿断线期间错过的 ask_question_pending 实时事件。
+ * 形状与单会话接口一致：WS 事件携带的 AskQuestionPendingPayload 数组。
+ */
+export function getAllAskPending() {
+  return request<{ pending: Array<{ questionId: string; sessionId: string; question?: string; options?: string[]; multiSelect?: boolean; label?: string; questions?: Array<{ question: string; options: string[]; multiSelect?: boolean; label?: string }> }> }>('/api/v1/ask-pending');
+}
+
+/**
+ * 回填 ask_question 的待回答问题（单选/多选/自己输入/问卷/取消）。
+ * body 与后端 answerQuestion 约定一致：{ questionId, answer | answers, wasCustom?, customAnswers?, cancelled? }。
+ */
+export function answerAskQuestion(
+  sessionId: string,
+  body: {
+    questionId: string;
+    answer?: string | string[] | null;
+    answers?: unknown[];
+    wasCustom?: boolean;
+    customAnswers?: string[];
+    cancelled?: boolean;
+  },
+) {
+  return request<{ ok: boolean }>(`/api/v1/sessions/${encodeURIComponent(sessionId)}/ask-answer`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 export function getModelsStatus() {
   return request<{ ok: boolean; count: number; models: ModelInfo[] }>('/api/v1/models/status');
 }
@@ -341,16 +375,82 @@ export function addGitignore(sessionId: string, path: string) {
   );
 }
 
+export type GitRefType = 'branch' | 'tag';
+
 export function getGitBranches(sessionId: string) {
-  return request<{ session_id: string; cwd: string; current_branch: string; branches: Array<{ name: string; is_current: boolean; is_worktree: boolean; worktree_path: string | null }>; session_worktree_path: string | null }>(
+  return request<{ session_id: string; cwd: string; current_branch: string; branches: Array<{ name: string; is_current: boolean; is_worktree: boolean; worktree_path: string | null }>; session_worktree_path: string | null; detached: boolean; detached_ref: string | null }>(
     `/api/v1/sessions/${sessionId}/git/branches`,
   );
 }
 
-export function gitCheckout(sessionId: string, branch: string) {
+export function getGitTags(sessionId: string) {
+  return request<{
+    session_id: string;
+    cwd: string;
+    detached: boolean;
+    tags: Array<{ name: string; is_current: boolean; is_annotated: boolean; date: string; subject: string; sha: string }>;
+  }>(`/api/v1/sessions/${sessionId}/git/tags`);
+}
+
+/**
+ * Create a tag at HEAD. A non-empty `message` produces an annotated tag, otherwise a lightweight one.
+ * Git failures (e.g. a duplicate name) come back as a non-2xx response, so `request()` rejects with
+ * git's stderr in `Error#message` — surface that directly in the UI.
+ */
+export function createGitTag(sessionId: string, name: string, message?: string) {
+  return request<{
+    session_id: string;
+    cwd: string;
+    result: 'ok' | 'error';
+    stdout?: string;
+    stderr?: string;
+    name: string;
+    annotated: boolean;
+  }>(`/api/v1/sessions/${sessionId}/git/tags`, {
+    method: 'POST',
+    body: JSON.stringify({ name, message }),
+  });
+}
+
+/**
+ * Push tags to the resolved remote. Omitting `names` pushes every tag that is missing from (or
+ * different from) the remote. Failures reject with git's stderr in `Error#message`.
+ */
+export function pushGitTags(sessionId: string, names?: string[]) {
+  return request<{
+    session_id: string;
+    cwd: string;
+    result: 'ok' | 'error';
+    stdout?: string;
+    stderr?: string;
+    pushed: string[];
+    remote: string;
+  }>(`/api/v1/sessions/${sessionId}/git/tags/push`, {
+    method: 'POST',
+    body: JSON.stringify(names ? { names } : {}),
+  });
+}
+
+/**
+ * Read the remote's tag list so the UI can flag tags that have not been pushed.
+ * The endpoint degrades gracefully: when no remote exists or the network fails it still
+ * resolves with 200 and `remote_ok: false`, so callers must check `remote_ok`.
+ */
+export function getRemoteTags(sessionId: string) {
+  return request<{
+    session_id: string;
+    cwd: string;
+    remote_ok: boolean;
+    remote: string | null;
+    error: string | null;
+    tags: Array<{ name: string; sha: string }>;
+  }>(`/api/v1/sessions/${sessionId}/git/remote-tags`);
+}
+
+export function gitCheckout(sessionId: string, ref: string, type: GitRefType = 'branch') {
   return request<GitActionResult & { branch: string }>(
     `/api/v1/sessions/${sessionId}/git/checkout`,
-    { method: 'POST', body: JSON.stringify({ branch }) },
+    { method: 'POST', body: JSON.stringify({ ref, type }) },
   );
 }
 

@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
-import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO } from '@piplus/shared';
+import type { ChatImageContentBlockDTO, ChatMessageContentBlockDTO, ChatMessageDTO, AskQuestionPendingPayload } from '@piplus/shared';
+import { answerAskQuestion } from '../lib/api';
 import type { SessionMessageImageAttachment } from '../lib/api';
+import AskQuestionCard, { type AskQuestionAnswerPayload, type AskQuestionResultDetails } from './AskQuestionCard';
 import {
   Copy,
   Check,
@@ -10,11 +12,13 @@ import {
   Wrench,
   ChevronDown,
   ChevronRight,
-  Terminal,
   Archive,
   GitMerge,
 } from 'lucide-react';
-import DiffViewer from './DiffViewer';
+import ToolCallCard from './ToolCallCard';
+import ToolResultCard from './ToolResultCard';
+import FileToolGroupCard from './FileToolGroupCard';
+import MergedToolCallsCard from './MergedToolCallsCard';
 import MarkdownRenderer from './MarkdownRenderer';
 import ContextUsageRing from './ContextUsageRing';
 import Lightbox from 'yet-another-react-lightbox';
@@ -23,6 +27,8 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
+import { buildFileToolGroups, collectCoveredToolResultIds, collectMergedToolCallGroups, findToolResultMessage, parseToolArgsJson } from '../lib/tool-summary';
+import { computeVisibleTimestampIds, pickTimestampText } from '../lib/chat-timestamps';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -120,6 +126,8 @@ interface TabChatProps {
   thinkingLevelOptions?: string[];
   onThinkingLevelSelect?: (level: string) => void;
   isMobile?: boolean;
+  /** 「隐藏对话框时间戳」：开启后仅保留会话首尾消息的时间戳（设置变化即时生效） */
+  hideChatTimestamps?: boolean;
 }
 
 function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessageDTO[]): boolean {
@@ -132,6 +140,51 @@ function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessage
     }
   }
   return true;
+}
+
+/**
+ * ask_question 待回答内容签名：用于将 WS ask_question_pending 事件与同内容的
+ * ask_question tool_call 关联（questionId 由后端生成、不在 tool_args 中）。
+ */
+function askQuestionSignature(parts: { question?: string; options?: unknown; multiSelect?: boolean; questions?: unknown }): string {
+  const items = (parts.questions ?? []) as Array<{ question?: string; options?: unknown; multiSelect?: boolean }>;
+  if (Array.isArray(items) && items.length > 0) {
+    return JSON.stringify(items.map((q) => [q?.question, q?.options, q?.multiSelect === true]));
+  }
+  return JSON.stringify([parts.question, parts.options, parts.multiSelect === true]);
+}
+
+/** 从 args（tool_call）或 WS payload（pending）提取用于匹配的内容形状。 */
+function asAskQuestionParts(args: Record<string, unknown>): { question?: string; options?: unknown; multiSelect?: boolean; questions?: unknown } {
+  return {
+    question: typeof args.question === 'string' ? args.question : undefined,
+    options: Array.isArray(args.options) ? args.options : undefined,
+    multiSelect: args.multiSelect === true,
+    questions: Array.isArray(args.questions) ? args.questions : undefined,
+  };
+}
+
+/**
+ * 解析已回答 details：优先取消息上的 details 字段；否则尝试从 content_text 解析 JSON
+ * （部分后端不落 details 时为其内嵌 JSON）；再否则返回 null、由卡片降级为 content text。
+ */
+function parseAskQuestionDetails(msg: ChatMessageDTO): AskQuestionResultDetails | null {
+  const details = (msg as ChatMessageDTO & { details?: unknown }).details;
+  if (details !== null && details !== undefined && typeof details === 'object') {
+    return details as AskQuestionResultDetails;
+  }
+  if (typeof msg.content_text === 'string' && msg.content_text.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(msg.content_text);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) &&
+        ('question' in parsed || 'questions' in parsed || 'answer' in parsed)) {
+        return parsed as AskQuestionResultDetails;
+      }
+    } catch {
+      // 非 JSON：降级为 content text 展示
+    }
+  }
+  return null;
 }
 
 function sanitizeStreamingContent(content: string): string {
@@ -151,86 +204,25 @@ function sanitizeStreamingContent(content: string): string {
   return content;
 }
 
-/** Extract file path and edit content from write/edit tool call args */
-function parseWriteEditArgs(
-  toolName: string,
-  parsedArgs: Record<string, unknown>,
-): { path?: string; oldText?: string; newText: string } | null {
-  if (toolName === 'write') {
-    const path = typeof parsedArgs.path === 'string' ? parsedArgs.path : undefined;
-    const content = typeof parsedArgs.content === 'string' ? parsedArgs.content : '';
-    return { path, newText: content };
+/** 卡片时间戳候选：调用 + 其对应的结果消息。
+ * 末条消息可能是被卡片承载的工具结果（结果本身不单独渲染），若只拿调用参与首尾判断，
+ * 「最后一条消息」的时间戳会随结果一起消失，因此两者一并作为候选。
+ * 注意：只有被卡片承载的结果（coveredResultIds）才计入；
+ * ask_question / spawn_session / send_message_to_session 的结果会单独渲染成结果卡片，
+ * 若也计入会导致同一时间戳在调用卡片与结果卡片上各显示一次。
+ */
+function timestampCandidates(
+  messages: ChatMessageDTO[],
+  calls: ChatMessageDTO[],
+  coveredResultIds: ReadonlySet<string>,
+): ChatMessageDTO[] {
+  const out: ChatMessageDTO[] = [];
+  for (const call of calls) {
+    out.push(call);
+    const result = findToolResultMessage(messages, call.id, call.tool_name || 'unknown', call.tool_call_id);
+    if (result && coveredResultIds.has(result.id)) out.push(result);
   }
-
-  if (toolName === 'edit') {
-    const path = typeof parsedArgs.path === 'string' ? parsedArgs.path : undefined;
-    const edits = parsedArgs.edits;
-    if (Array.isArray(edits) && edits.length > 0) {
-      // Combine all edits into one diff view
-      const oldParts: string[] = [];
-      const newParts: string[] = [];
-      for (const edit of edits) {
-        if (edit && typeof edit === 'object') {
-          const e = edit as Record<string, unknown>;
-          if (typeof e.oldText === 'string') oldParts.push(e.oldText);
-          if (typeof e.newText === 'string') newParts.push(e.newText);
-        }
-      }
-      if (newParts.length > 0) {
-        return {
-          path,
-          oldText: oldParts.join('\n'),
-          newText: newParts.join('\n'),
-        };
-      }
-    }
-    // Fallback: direct oldText/newText in args
-    if (typeof parsedArgs.oldText === 'string' && typeof parsedArgs.newText === 'string') {
-      return {
-        path,
-        oldText: parsedArgs.oldText,
-        newText: parsedArgs.newText,
-      };
-    }
-    return null;
-  }
-
-  return null;
-}
-
-/** Inline component for write/edit diff view inside tool call cards */
-function DiffViewerInline({
-  toolName,
-  parsedArgs,
-  argsStr,
-}: {
-  toolName: string;
-  parsedArgs: Record<string, unknown>;
-  argsStr: string;
-}) {
-  const parsed = React.useMemo(
-    () => parseWriteEditArgs(toolName, parsedArgs),
-    [toolName, parsedArgs],
-  );
-
-  if (!parsed) {
-    return (
-      <div className="px-3 py-2">
-        <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-          {argsStr}
-        </pre>
-      </div>
-    );
-  }
-
-  return (
-    <DiffViewer
-      oldText={parsed.oldText}
-      newText={parsed.newText}
-      filename={parsed.path}
-      viewType={toolName === 'write' ? 'write' : 'edit'}
-    />
-  );
+  return out;
 }
 
 function TabChat({
@@ -261,9 +253,42 @@ function TabChat({
   thinkingLevelOptions,
   onThinkingLevelSelect,
   isMobile,
+  hideChatTimestamps,
 }: TabChatProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
+  // 稳定引用：配合 ToolCallCard 的 React.memo，避免内联闭包导致工具卡片全量重渲染
+  const toggleToolExpanded = useCallback((id: string) => {
+    setExpandedToolIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // 独立结果卡片（spawn/send 摘要、孤立结果）默认展开，这里只记录「被用户收起」的 id
+  const [collapsedResultIds, setCollapsedResultIds] = useState<Set<string>>(new Set());
+  const toggleResultCollapsed = useCallback((id: string) => {
+    setCollapsedResultIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // 文件聚合卡片的总控：一次展开/收起组内全部文件
+  const toggleAllToolFiles = useCallback((ids: string[], expand: boolean) => {
+    setExpandedToolIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (expand) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }, []);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -271,9 +296,26 @@ function TabChat({
   const prevSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
   const prevScrollHeightRef = useRef<number | null>(null);
   const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
-  const { connected: wsConnected, clearStreamRuntimeErrors } = useWebSocket();
+  const [submittedAskIds, setSubmittedAskIds] = useState<Set<string>>(new Set());
+  const [submittingAskId, setSubmittingAskId] = useState<string | null>(null);
+  const [askSubmitError, setAskSubmitError] = useState<string | null>(null);
+  const { connected: wsConnected, clearStreamRuntimeErrors, askingPendingMap, clearAskPending } = useWebSocket() as unknown as {
+    connected: boolean;
+    clearStreamRuntimeErrors: (id: string | null) => void;
+    askingPendingMap: Record<string, AskQuestionPendingPayload>;
+    clearAskPending?: (qid: string) => void;
+  };
+  // 全局 pending（含非活跃会话），切换回来不丢失；本地仅保留 submitted/submitting 交互态
+  const pendingAskMap = askingPendingMap ?? {};
   // 流式快照统一由 ws-provider 按 sessionId 管理（80ms 节流），本组件只消费
   const { phase, streamingContent, streamNote, runtimeErrors } = useChatStream(selectedSessionId ?? null);
+
+  // 提交态按会话隔离：切会话时仅清提交/错误态，全局 pending 由 ws-provider 持久化，回来不丢失
+  useEffect(() => {
+    setSubmittedAskIds(new Set());
+    setSubmittingAskId(null);
+    setAskSubmitError(null);
+  }, [selectedSessionId]);
 
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
@@ -358,6 +400,13 @@ function TabChat({
           created_at: new Date().toISOString(),
         },
       ];
+
+  // 「隐藏对话框时间戳」：开启后仅首尾消息保留时间戳（分组卡片按组内是否含首尾消息判断）
+  // 传 allMessages（而非含空会话占位消息的 displayMessages）：空会话的「暂无消息」占位不显示时间戳
+  const visibleTimestampIds = computeVisibleTimestampIds(allMessages, {
+    enabled: hideChatTimestamps === true,
+    hasMore,
+  });
 
   // 会话内全部图片构成画廊（谷歌相册式）：左右切换浏览本会话所有图片，点击定位到对应 index
   const sessionImageSlides = useMemo(() => {
@@ -580,6 +629,68 @@ function TabChat({
   const showCompactButton = contextPercent !== null && contextPercent > 60;
 
   const isRunning = runtimeStatus === 'running';
+  const isStopping = runtimeStatus === 'stopping';
+  // 等待用户回答（ask_question 阻塞）：与 "正在运行" 同等处理，闪烁灯改为琥珀色
+  // 仅统计当前会话未提交的待回答，提交后即不再视为等待（即使 pending 仍在全局 map 中）
+  const hasWaitingAsk = useMemo(() => {
+    const forThisSession = Object.values(pendingAskMap).filter((p) => !selectedSessionId || p.sessionId === selectedSessionId);
+    return forThisSession.some((p) => !submittedAskIds.has(p.questionId));
+  }, [pendingAskMap, submittedAskIds, selectedSessionId]);
+
+  // 工具结果到达后清理全局 pending，侧边栏琥珀灯熄灭（切换回来不再误判为等待）
+  useEffect(() => {
+    if (!clearAskPending) return;
+    for (const [qid, payload] of Object.entries(pendingAskMap)) {
+      if (selectedSessionId && payload.sessionId && payload.sessionId !== selectedSessionId) continue;
+      // 若对应的 tool_call 已有 tool result（askAnswered），则该提问已完成
+      const sig = askQuestionSignature(asAskQuestionParts(payload as unknown as Record<string, unknown>));
+      const answered = messages.some((m) => {
+        if (m.message_kind !== 'tool_call' || m.tool_name !== 'ask_question' || !m.tool_args_json) return false;
+        if (isToolCallPending(m.id, 'ask_question', messages)) return false;
+        try {
+          const parsed = JSON.parse(m.tool_args_json) as Record<string, unknown>;
+          return askQuestionSignature(asAskQuestionParts(parsed)) === sig;
+        } catch {
+          return false;
+        }
+      });
+      if (answered) {
+        clearAskPending(qid);
+        setSubmittedAskIds((prev) => {
+          if (!prev.has(qid)) return prev;
+          const next = new Set(prev);
+          next.delete(qid);
+          return next;
+        });
+      }
+    }
+  }, [messages, pendingAskMap, selectedSessionId, clearAskPending]);
+
+  // ask_question 提交（POST /api/v1/sessions/:sessionId/ask-answer）与取消。
+  // 提交成功后标记 submitted（卡片显示“已提交”占位），工具结果经轮询到达后自动切换为结果卡片。
+  const handleAskQuestionAnswer = useCallback(
+    async (value: AskQuestionAnswerPayload) => {
+      if (!selectedSessionId) return;
+      setSubmittingAskId(value.questionId);
+      setAskSubmitError(null);
+      try {
+        await answerAskQuestion(selectedSessionId, {
+          questionId: value.questionId,
+          answer: value.answer,
+          answers: value.answers,
+          wasCustom: value.wasCustom,
+          customAnswers: value.customAnswers,
+          cancelled: value.cancelled,
+        });
+        setSubmittedAskIds((prev) => new Set(prev).add(value.questionId));
+      } catch (err) {
+        setAskSubmitError(err instanceof Error ? err.message : '提交失败，请重试');
+      } finally {
+        setSubmittingAskId((prev) => (prev === value.questionId ? null : prev));
+      }
+    },
+    [selectedSessionId],
+  );
 
   // 兜底：如果最后一条消息是工具调用且 session 运行中，末尾连续的 tool_call 一定需要转圈
   const trailingToolCallIds = useMemo(() => {
@@ -596,6 +707,33 @@ function TabChat({
     }
     return ids;
   }, [isRunning, displayMessages]);
+
+  // 工具调用的三类分组/索引（纯函数）：
+  // - 文件聚合卡片（同回合 write/edit/read）
+  // - 已被卡片承载的结果 id（用于隐藏独立结果卡片）
+  // - 连续同工具的成功调用合并组
+  // 依赖 messages（引用稳定）而非每次渲染新建的 displayMessages：流式重渲染时避免重复全量扫描
+  const { groups: fileToolGroups, memberIds: fileToolMemberIds } = useMemo(
+    () => buildFileToolGroups(messages),
+    [messages],
+  );
+  const coveredToolResultIds = useMemo(() => collectCoveredToolResultIds(messages), [messages]);
+  const { groups: mergedToolGroups, memberIds: mergedToolMemberIds } = useMemo(
+    () => collectMergedToolCallGroups(messages),
+    [messages],
+  );
+
+  // 运行中的工具调用 id：聚合卡片（整行 spinner）与单卡片共用同一判定
+  const runningToolIds = new Set<string>();
+  for (const m of displayMessages) {
+    if (m.message_kind !== 'tool_call') continue;
+    const mToolName = m.tool_name || 'unknown';
+    const mIndex = messages.findIndex((mm) => mm.id === m.id);
+    const mInCurrentRun = currentRunStartIdxRef.current !== null && mIndex >= currentRunStartIdxRef.current;
+    if ((isRunning && mInCurrentRun && isToolCallPending(m.id, mToolName, messages)) || trailingToolCallIds.has(m.id)) {
+      runningToolIds.add(m.id);
+    }
+  }
 
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative overflow-x-hidden">
@@ -618,6 +756,44 @@ function TabChat({
         )}
 
         {displayMessages.map((msg) => {
+          // 单条消息的可见时间戳：设置关闭时为 undefined（沿用默认渲染）
+          const timestampText = pickTimestampText(visibleTimestampIds, [msg]);
+
+          // ═══ 文件工具聚合卡片：同回合的 write/edit/read 合并为一张卡片（多行文件列表，每行可独立展开）═══
+          if (fileToolMemberIds.has(msg.id)) {
+            const group = fileToolGroups.get(msg.id);
+            if (!group) return null;
+            return (
+              <FileToolGroupCard
+                key={group.id}
+                calls={group.calls}
+                messages={messages}
+                expandedIds={expandedToolIds}
+                onToggleOne={toggleToolExpanded}
+                onToggleAll={toggleAllToolFiles}
+                runningIds={runningToolIds}
+                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, group.calls, coveredToolResultIds))}
+              />
+            );
+          }
+
+          // ═══ 连续同工具的普通调用合并卡片（头部 ×N，展开为多组「参数 + 结果」）═══
+          if (mergedToolMemberIds.has(msg.id)) {
+            const group = mergedToolGroups.get(msg.id);
+            if (!group) return null;
+            return (
+              <MergedToolCallsCard
+                key={group.id}
+                toolName={group.toolName}
+                calls={group.calls}
+                messages={messages}
+                expanded={expandedToolIds.has(group.id)}
+                onToggle={toggleToolExpanded}
+                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, group.calls, coveredToolResultIds))}
+              />
+            );
+          }
+
           const isUser = msg.role === 'user';
           const isToolCall = msg.message_kind === 'tool_call';
           const isTool = msg.message_kind === 'tool' || msg.role === 'tool';
@@ -637,9 +813,11 @@ function TabChat({
                       {msg.content_text}
                     </div>
                   </div>
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
+                  {timestampText !== null && (
+                    <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+                      {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                    </span>
+                  )}
                 </div>
               </div>
             );
@@ -648,196 +826,119 @@ function TabChat({
           // Tool call message: collapsible card
           if (isToolCall) {
             const toolName = msg.tool_name || 'unknown';
-            const isExpanded = expandedToolIds.has(msg.id);
-            const toggleExpand = () => {
-              setExpandedToolIds((prev) => {
-                const next = new Set(prev);
-                if (next.has(msg.id)) next.delete(msg.id);
-                else next.add(msg.id);
-                return next;
-              });
-            };
 
-            const msgIndex = messages.findIndex((m) => m.id === msg.id);
-            const isInCurrentRun = currentRunStartIdxRef.current !== null && msgIndex >= currentRunStartIdxRef.current;
-            const isThisToolRunning = (isRunning && isInCurrentRun && isToolCallPending(msg.id, toolName, messages)) || trailingToolCallIds.has(msg.id);
-
-            let argsStr = '';
-            let parsedArgs: Record<string, unknown> | null = null;
-            if (msg.tool_args_json) {
-              try {
-                const parsed: unknown = JSON.parse(msg.tool_args_json);
-                argsStr = JSON.stringify(parsed, null, 2);
-                if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                  parsedArgs = parsed as Record<string, unknown>;
-                }
-              } catch {
-                argsStr = msg.tool_args_json;
-              }
-            }
+            // ask_question 待回答匹配与 spawn_session 角色后缀仍需解析后的 args；卡片展示交由 ToolCallCard
+            const { parsedArgs } = parseToolArgsJson(msg.tool_args_json);
             const spawnSessionRole = toolName === 'spawn_session' && typeof parsedArgs?.role === 'string'
               ? parsedArgs.role
               : null;
 
-            return (
-              <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
-                <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                  <div className="flex items-start min-w-0">
-                    <div
-                      className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden transition-colors hover:bg-amber-100/80 dark:hover:bg-amber-900/40"
-                    >
-                    <div className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none" onClick={toggleExpand}>
-                      {isExpanded ? (
-                        <ChevronDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                      ) : (
-                        <ChevronRight className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                      )}
-                      <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-                      <span className="text-xs font-semibold text-amber-800 dark:text-amber-300 font-mono">
-                        {toolName}
-                        {spawnSessionRole ? ` (${spawnSessionRole})` : ''}
+            // ═══ ask_question：待回答时渲染表单卡片（WS pending 事件按内容特征与 tool_call 关联）═══
+            const askAnswered = toolName === 'ask_question' && !isToolCallPending(msg.id, toolName, messages);
+            const askPendingSig =
+              toolName === 'ask_question' && parsedArgs
+                ? askQuestionSignature(asAskQuestionParts(parsedArgs))
+                : null;
+            let askPendingPayload: AskQuestionPendingPayload | null = null;
+            if (askPendingSig) {
+              for (const key of Object.keys(pendingAskMap)) {
+                const p = pendingAskMap[key];
+                if (!p) continue;
+                if (selectedSessionId && p.sessionId && p.sessionId !== selectedSessionId) continue;
+                if (askQuestionSignature(asAskQuestionParts(p as unknown as Record<string, unknown>)) === askPendingSig) {
+                  askPendingPayload = p;
+                  break;
+                }
+              }
+            }
+            const renderAskPendingForm = toolName === 'ask_question' && !askAnswered && askPendingPayload !== null;
+
+            if (renderAskPendingForm) {
+              return (
+                <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+                  <div className="flex flex-col items-start max-w-full flex-1 min-w-0 gap-1">
+                    <AskQuestionCard
+                      mode="pending"
+                      sessionId={selectedSessionId ?? ''}
+                      pending={askPendingPayload!}
+                      disabled={submittingAskId === askPendingPayload!.questionId}
+                      submitted={submittedAskIds.has(askPendingPayload!.questionId)}
+                      onSubmit={handleAskQuestionAnswer}
+                      onCancel={handleAskQuestionAnswer}
+                    />
+                    {askSubmitError && (
+                      <div className="text-[11px] text-red-600 dark:text-red-400 px-1">提交失败：{askSubmitError}</div>
+                    )}
+                    {timestampText !== null && (
+                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
+                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
                       </span>
-                    </div>
-                    {isExpanded && argsStr && (
-                      <div className="border-t border-amber-200 dark:border-amber-800">
-                        {(toolName === 'write' || toolName === 'edit') && parsedArgs ? (
-                          <DiffViewerInline
-                            toolName={toolName}
-                            parsedArgs={parsedArgs}
-                            argsStr={argsStr}
-                          />
-                        ) : (toolName === 'spawn_session' || toolName === 'send_message_to_session') && parsedArgs ? (
-                          <div className="px-3 py-2">
-                            <table className="w-full text-[11px] font-mono leading-relaxed">
-                              <tbody>
-                                {Object.entries(parsedArgs).map(([key, value]) => (
-                                  <tr key={key} className="border-b border-amber-100 dark:border-amber-800/50 last:border-b-0">
-                                    <td className="text-amber-700 dark:text-amber-400 font-semibold pr-3 py-1 align-top whitespace-nowrap">
-                                      {key}
-                                    </td>
-                                    <td className="text-amber-900 dark:text-amber-200 py-1 break-words">
-                                      {typeof value === 'object' && value !== null
-                                        ? JSON.stringify(value)
-                                        : String(value)}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        ) : (
-                          <div className="px-3 py-2">
-                            <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-                              {argsStr}
-                            </pre>
-                          </div>
-                        )
-                      }
-                    </div>
-                  )
-                  }
-                    </div>
-                    {isThisToolRunning && (
-                      <div className="ml-2 pt-2 shrink-0">
-                        <LoaderCircle className="w-4 h-4 text-indigo-500 animate-spin" />
-                      </div>
                     )}
                   </div>
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
                 </div>
-              </div>
+              );
+            }
+
+            const toolResult = findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id);
+
+            return (
+              <ToolCallCard
+                key={msg.id}
+                msg={msg}
+                expanded={expandedToolIds.has(msg.id)}
+                onToggle={toggleToolExpanded}
+                running={runningToolIds.has(msg.id)}
+                roleSuffix={spawnSessionRole}
+                resultContent={toolResult?.content_text ?? null}
+                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, [msg], coveredToolResultIds))}
+              />
             );
           }
 
-          // Tool result message: compact result card
+          // Tool result message
           if (isTool) {
             const toolName = msg.tool_name || 'unknown';
-            const isError = /^error/i.test(msg.content_text?.trim() ?? '');
-            const summary = msg.content_text
-              ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
-              : '(empty result)';
 
-            // spawn_session / writeback_to_parent 结果中提取 summary 字段用于 Markdown 渲染
-            let spawnSummary: string | null = null;
-            let spawnStatus: string | null = null;
-            if ((toolName === 'spawn_session' || toolName === 'send_message_to_session') && msg.content_text && !isError) {
-              try {
-                const parsed = JSON.parse(msg.content_text);
-                if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
-                  spawnSummary = parsed.summary.trim();
-                  spawnStatus = typeof parsed.status === 'string' ? parsed.status : null;
-                }
-              } catch {
-                // 不是 JSON，保持 compact 渲染
-              }
+            // 已被工具卡片承载的结果不渲染独立卡片：
+            // - 文件类（write/edit/read）：文件聚合卡片承载状态与失败原因
+            // - 普通工具（bash/grep 等）：ToolCallCard 的「结果」子项承载
+            // 例外（ask_question / spawn_session / send_message_to_session）与孤立结果（调用不在当前
+            // 视图内，分页边界）继续走独立卡片，避免信息丢失
+            if (coveredToolResultIds.has(msg.id)) return null;
+
+            // ═══ ask_question 已回答：渲染结果卡片（单选✓/自己输入/多选逐行/取消warning/问卷逐题）。
+            //     优先用透传的 details，缺失时降级为 content text。 ═══
+            if (toolName === 'ask_question') {
+              const details = parseAskQuestionDetails(msg);
+              return (
+                <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+                  <div className="flex flex-col items-start max-w-full flex-1 min-w-0 gap-1">
+                    <AskQuestionCard
+                      mode="result"
+                      sessionId={selectedSessionId ?? ''}
+                      details={details}
+                      content={msg.content_text ?? ''}
+                    />
+                    {timestampText !== null && (
+                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
+                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
             }
 
-            const colorScheme = isError
-              ? {
-                  bg: 'bg-red-50 dark:bg-red-950/30',
-                  border: 'border-red-200 dark:border-red-800',
-                  borderT: 'border-red-200 dark:border-red-800',
-                  icon: 'text-red-600 dark:text-red-400',
-                  label: 'text-red-800 dark:text-red-300',
-                  text: 'text-red-900 dark:text-red-200',
-                  suffix: 'text-red-600/60 dark:text-red-400/60',
-                }
-              : spawnSummary
-                ? {
-                    bg: 'bg-indigo-50 dark:bg-indigo-950/30',
-                    border: 'border-indigo-200 dark:border-indigo-800',
-                    borderT: 'border-indigo-200 dark:border-indigo-800',
-                    icon: 'text-indigo-600 dark:text-indigo-400',
-                    label: 'text-indigo-800 dark:text-indigo-300',
-                    text: 'text-indigo-900 dark:text-indigo-200',
-                    suffix: 'text-indigo-600/60 dark:text-indigo-400/60',
-                  }
-                : {
-                    bg: 'bg-emerald-50 dark:bg-emerald-950/30',
-                    border: 'border-emerald-200 dark:border-emerald-800',
-                    borderT: 'border-emerald-200 dark:border-emerald-800',
-                    icon: 'text-emerald-600 dark:text-emerald-400',
-                    label: 'text-emerald-800 dark:text-emerald-300',
-                    text: 'text-emerald-900 dark:text-emerald-200',
-                    suffix: 'text-emerald-600/60 dark:text-emerald-400/60',
-                  };
-
+            // ═══ 独立结果卡片：spawn/send 摘要、以及调用不在视图内的孤立结果 ═══
+            // 默认展开；点击卡片头部收起/再展开（折叠态按消息 id 记录在本组件）
             return (
               <div key={msg.id} className="flex justify-start items-start w-full min-w-0 group">
                 <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                  <div className={`${colorScheme.bg} ${colorScheme.border} rounded-xl overflow-hidden`}>
-                    <div className="px-3 py-2 flex items-center gap-2">
-                      <Terminal className={`w-3.5 h-3.5 ${colorScheme.icon} shrink-0`} />
-                      <span className={`text-xs font-semibold ${colorScheme.label} font-mono`}>
-                        {toolName}
-                      </span>
-                      {spawnSummary && spawnStatus && (
-                        <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
-                          {spawnStatus === 'completed' ? '完成' : spawnStatus}
-                        </span>
-                      )}
-                      {!spawnSummary && (
-                        <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
-                          {isError ? '错误' : '结果'}
-                        </span>
-                      )}
-                    </div>
-                    {spawnSummary ? (
-                      <div className={`border-t ${colorScheme.borderT} px-4 py-3`}>
-                        <div className="text-slate-800 dark:text-slate-200 w-full">
-                          <MarkdownRenderer content={spawnSummary} variant="compact" />
-                        </div>
-                      </div>
-                    ) : msg.content_text ? (
-                      <div className={`border-t ${colorScheme.borderT} px-3 py-2`}>
-                        <div className={`text-[11px] ${colorScheme.text} font-mono whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto`}>
-                          {summary}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
+                  <ToolResultCard
+                    msg={msg}
+                    expanded={!collapsedResultIds.has(msg.id)}
+                    onToggle={toggleResultCollapsed}
+                  />
                   <div className="flex items-center gap-2 mt-1 px-1">
                     {msg.content_text ? (
                       <button
@@ -859,9 +960,11 @@ function TabChat({
                         )}
                       </button>
                     ) : null}
-                    <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono order-1">
-                      {new Date(msg.created_at).toLocaleTimeString()}
-                    </span>
+                    {timestampText !== null && (
+                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 font-mono order-1">
+                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -935,9 +1038,11 @@ function TabChat({
                       )}
                     </button>
                   ) : null}
-                  <span className={`text-[10px] text-slate-400 dark:text-slate-500 font-mono ${isUser ? '' : 'order-1'}`}>
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
+                  {timestampText !== null && (
+                    <span data-testid="message-timestamp" className={`text-[10px] text-slate-400 dark:text-slate-500 font-mono ${isUser ? '' : 'order-1'}`}>
+                      {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -958,8 +1063,19 @@ function TabChat({
           </div>
         )}
 
-        {/* Typing indicator */}
-        {isRunning && !streamingContent && (
+        {/* 等待用户回答（ask_question 阻塞）：与运行中同位置，蓝色闪烁 */}
+        {hasWaitingAsk && isRunning && !streamingContent ? (
+          <div className="flex items-start w-full">
+            <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-blue-700 dark:text-blue-300 font-sans">
+              <div className="flex space-x-1">
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span className="italic pl-1 font-medium">等待用户回答… 请选择或输入后提交</span>
+            </div>
+          </div>
+        ) : isRunning && !streamingContent ? (
           <div className="flex items-start w-full">
             <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-slate-500 dark:text-slate-400 font-sans">
               <div className="flex space-x-1">
@@ -970,6 +1086,16 @@ function TabChat({
               <span className="italic pl-1 text-slate-600 dark:text-slate-300 font-medium">
                 正在生成回复…
               </span>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Stopping indicator */}
+        {isStopping && (
+          <div className="flex items-start w-full">
+            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-amber-700 dark:text-amber-300 font-sans">
+              <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+              <span>正在停止…</span>
             </div>
           </div>
         )}
@@ -1117,6 +1243,8 @@ function TabChat({
         onStop={onStop}
         sending={sending}
         isRunning={isRunning}
+        isStopping={isStopping}
+        isAsking={hasWaitingAsk}
         sendShortcutMode={sendShortcutMode}
         currentModelSupportsImages={currentModelSupportsImages}
         visionRelayEnabled={visionRelayEnabled}

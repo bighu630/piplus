@@ -28,6 +28,7 @@ type SessionMessageEntry = {
     toolName?: string;
     toolCallId?: string;
     isError?: boolean;
+    details?: unknown;
   };
 };
 
@@ -176,6 +177,7 @@ export function readHistory(locator: PiSessionLocator, cursor?: string | null, l
           messageKind: 'tool_call',
           toolName: tc.name,
           toolArgs: tc.arguments ?? {},
+          toolCallId: tc.id,
         });
       }
     } else if (msg.role === 'toolResult') {
@@ -190,6 +192,10 @@ export function readHistory(locator: PiSessionLocator, cursor?: string | null, l
         createdAt: entry.timestamp ?? null,
         messageKind: 'tool',
         toolName,
+        toolCallId: msg.toolCallId,
+        // pi 会话文件中 toolResult 条目携带 details（AskQuestionDetails / QuestionnaireDetails），
+        // 透传给前端供 ask_question 结果卡片渲染结构化答案；缺失时前端降级为 content text。
+        details: msg.details,
       });
     }
   }

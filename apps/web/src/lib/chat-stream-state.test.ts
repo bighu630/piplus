@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test';
 import {
   INITIAL_CHAT_STREAM_SNAPSHOT,
   createThrottledFlusher,
@@ -77,16 +77,25 @@ describe('chat stream state reducer', () => {
   });
 });
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
+// 这些用例断言的是「节流窗口行为」：用假时钟推进时间，而不是真实 sleep 后碰运气。
+// 真实等待会让测试随机器负载抖动（实测：单独跑全过，满载下必挂），
+// 并且无法区分「窗口没到」与「实现没 flush」。
 describe('createThrottledFlusher', () => {
-  test('连续 push 只 flush 最后一次（合并节流）', async () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('连续 push 只 flush 最后一次（合并节流）', () => {
     const flushed: number[] = [];
     const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 5);
     flusher.push(1);
     flusher.push(2);
     flusher.push(3);
-    await wait(30);
+    expect(flushed).toEqual([]); // 窗口未到：一次都不应该 flush
+    jest.advanceTimersByTime(5);
     expect(flushed).toEqual([3]);
     flusher.dispose();
   });
@@ -100,36 +109,38 @@ describe('createThrottledFlusher', () => {
     flusher.dispose();
   });
 
-  test('immediate 打断 pending：立即 flush 后不再有定时器 flush', async () => {
+  test('immediate 打断 pending：立即 flush 后不再有定时器 flush', () => {
     const flushed: number[] = [];
     const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 5);
     flusher.push(1);
     flusher.push(2, true);
     expect(flushed).toEqual([2]);
-    await wait(30);
+    jest.advanceTimersByTime(30);
     expect(flushed).toEqual([2]);
     flusher.dispose();
   });
 
-  test('flush 后再次 push 重新起定时器', async () => {
+  test('flush 后再次 push 重新起定时器', () => {
     const flushed: number[] = [];
     const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 5);
     flusher.push(1);
-    await wait(20);
+    jest.advanceTimersByTime(5);
     expect(flushed).toEqual([1]);
     flusher.push(2);
-    await wait(20);
+    expect(flushed).toEqual([1]); // 第二次 flush 要等新的窗口，而不是沿用旧窗口
+    jest.advanceTimersByTime(5);
     expect(flushed).toEqual([1, 2]);
     flusher.dispose();
   });
 
-  test('dispose 后不再 flush', async () => {
+  test('dispose 后不再 flush，且不残留定时器', () => {
     const flushed: number[] = [];
     const flusher = createThrottledFlusher<number>((v) => flushed.push(v), 5);
     flusher.push(1);
     flusher.dispose();
+    expect(jest.getTimerCount()).toBe(0);
     flusher.push(2);
-    await wait(30);
+    jest.advanceTimersByTime(30);
     expect(flushed).toEqual([]);
   });
 

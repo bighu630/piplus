@@ -1,9 +1,11 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO } from '@piplus/shared';
+import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO, AskQuestionPendingPayload } from '@piplus/shared';
+import { isAskQuestionPending } from '@piplus/shared';
 import { createWorkspaceSocket } from './ws-client';
+import { getAllAskPending, getAskPending } from './api';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthSession, useAuthStatus } from './hooks';
-import { sendSystemNotification } from './notification';
+import { sendSystemNotification, systemNotificationsEnabled } from './notification';
 import { findSessionNode, updateNodeRuntimeStatus } from './tree-utils';
 import {
   INITIAL_CHAT_STREAM_SNAPSHOT,
@@ -13,7 +15,7 @@ import {
   type ChatStreamSnapshot,
 } from './chat-stream-state';
 
-type RuntimeStatus = 'running' | 'idle';
+type RuntimeStatus = 'running' | 'idle' | 'stopping';
 
 interface WebSocketContextValue {
   connected: boolean;
@@ -23,6 +25,12 @@ interface WebSocketContextValue {
   setSessionContext: (sessionId: string | null, projectId: string | null, activeTab: string) => void;
   clearStreamRuntimeErrors: (sessionId: string | null) => void;
   subscribeToMessages: (cb: (msg: any) => void) => () => void;
+  /** 订阅 ask_question_pending：工具发起提问等待回答时回调（含单题与问卷）。 */
+  subscribeToAskQuestionPending: (cb: (payload: AskQuestionPendingPayload) => void) => () => void;
+  /** 全局待回答的 ask_question（按 questionId），跨会话持久，切换回来不丢失 */
+  askingPendingMap: Record<string, AskQuestionPendingPayload>;
+  /** 清理指定 questionId 的待回答（提交后或工具结果到达时） */
+  clearAskPending?: (questionId: string) => void;
   sendRaw: (msg: Record<string, unknown>) => void;
 }
 
@@ -32,9 +40,8 @@ const WebSocketContext = createContext<WebSocketContextValue | null>(null);
 
 const NOTIFIABLE_ROLE_KEYS = new Set(['planner', 'feature_lead', 'bugfix_lead']);
 
-function systemNotificationsEnabled(): boolean {
-  try { return localStorage.getItem('pi-system-notifications') === 'true'; } catch { return false; }
-}
+// 停止状态兜底超时：后端保证 ~15s 内复位 idle，前端 30s 双保险，超时未收敛则清除本地 stopping 并刷新真实状态
+const STOPPING_FALLBACK_TIMEOUT_MS = 30_000;
 
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [connected, setConnected] = useState(false);
@@ -44,7 +51,12 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   // 流式快照：按 sessionId 全局累积，TabChat 卸载/切会话不丢流式内容
   const streamSnapshotsRef = useRef<Record<string, ChatStreamSnapshot>>({});
   const messageListenersRef = useRef<Set<(msg: any) => void>>(new Set());
+  const askQuestionPendingListenersRef = useRef<Set<(payload: AskQuestionPendingPayload) => void>>(new Set());
+  const [askingPendingMap, setAskingPendingMap] = useState<Record<string, AskQuestionPendingPayload>>({});
+  const askingPendingMapRef = useRef<Record<string, AskQuestionPendingPayload>>({});
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
+  const stoppingFallbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const reconcileInFlightRef = useRef<Promise<void> | null>(null);
 
   // 登录态：与 App.tsx 同源（auth status/session 查询）。WS 建连 effect 依赖它：
   // 4401 登出后 isLoggedIn 变 false → 关闭死连接；重新登录后变 true → 用新 token 重建连接。
@@ -52,6 +64,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const authStatusQuery = useAuthStatus();
   const authSessionQuery = useAuthSession();
   const isLoggedIn = authStatusQuery.data?.requiresPassword === false || Boolean(authSessionQuery.data?.ok);
+  // 补偿请求存在 in-flight 窗口：登出后晚到的响应不得再把旧 pending 写回 map。
+  const isLoggedInRef = useRef(isLoggedIn);
+  isLoggedInRef.current = isLoggedIn;
 
   // Refs for latest values used in closures
   const selectedSessionIdRef = useRef<string | null>(null);
@@ -74,6 +89,25 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     if (sessionId && sessionId !== prev) {
       socketRef.current?.subscribeSession(sessionId);
       queryClient.invalidateQueries({ queryKey: ['session', 'messages', sessionId] });
+      // 刷新后重建：WS 事件在刷新前已发送，内存已清，需从后端拉取待回答以重建表单/琥珀灯
+      getAskPending(sessionId)
+        .then((res) => {
+          if (res.pending?.length) {
+            const next = { ...askingPendingMapRef.current };
+            let changed = false;
+            for (const p of res.pending) {
+              if (p.questionId && !next[p.questionId]) {
+                next[p.questionId] = p as AskQuestionPendingPayload;
+                changed = true;
+              }
+            }
+            if (changed) {
+              askingPendingMapRef.current = next;
+              setAskingPendingMap(next);
+            }
+          }
+        })
+        .catch(() => {});
     }
     prevSubscribedSessionRef.current = sessionId;
     socketRef.current?.setContext({
@@ -83,6 +117,62 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     });
   }, [queryClient]);
 
+  // 清除指定 session 的 stopping 兜底定时器（running/idle/stopping 事件到达时调用）
+  const clearStoppingFallback = useCallback((sessionId: string) => {
+    const t = stoppingFallbackTimersRef.current.get(sessionId);
+    if (t) {
+      clearTimeout(t);
+      stoppingFallbackTimersRef.current.delete(sessionId);
+    }
+  }, []);
+
+  /**
+   * 合并一批待回答 ask_question：只对 map 中**尚不存在**的 questionId 写入并分发。
+   * 实时事件（WS）与补偿拉取（HTTP）共用此入口，保证：
+   * - 同一提问不会重复通知/重复写入（补偿与实时事件交错到达时也安全）
+   * - 补偿拉回的历史 pending 能像实时事件一样触发通知（订阅者收到同形状 payload）
+   */
+  const publishAskPending = useCallback((payloads: AskQuestionPendingPayload[]) => {
+    const next = { ...askingPendingMapRef.current };
+    const fresh: AskQuestionPendingPayload[] = [];
+    for (const payload of payloads) {
+      if (!payload?.questionId || next[payload.questionId]) continue;
+      next[payload.questionId] = payload;
+      fresh.push(payload);
+    }
+    if (fresh.length === 0) return;
+    askingPendingMapRef.current = next;
+    setAskingPendingMap(next);
+    for (const payload of fresh) {
+      askQuestionPendingListenersRef.current.forEach(cb => cb(payload));
+    }
+  }, []);
+
+  /**
+   * 全局补偿：拉取当前用户全部会话的待回答 ask_question。
+   * ask_question_pending 已按用户定向推送（不依赖会话订阅），但断线期间产生的事件仍会错过，
+   * 因此在「挂载 / WS 重连(onOpen) / 窗口重新聚焦 / 标签页重新可见」各拉一次补齐。
+   * 不做定时轮询；短时间内的多次触发（如反复 alt-tab）合并到同一个 in-flight 请求。
+   */
+  const reconcileAskPending = useCallback((): Promise<void> => {
+    const inFlight = reconcileInFlightRef.current;
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      try {
+        const res = await getAllAskPending();
+        // 登出后晚到的响应丢弃：否则会把上一个登录会话的 pending 重新写回 map
+        if (!isLoggedInRef.current) return;
+        publishAskPending(res?.pending ?? []);
+      } catch {
+        // 未登录 / 离线 / 服务不可达：忽略，下次重连或聚焦时再补
+      } finally {
+        reconcileInFlightRef.current = null;
+      }
+    })();
+    reconcileInFlightRef.current = run;
+    return run;
+  }, [publishAskPending]);
+
   // Main WS connection effect — 随登录态重建（登出关闭旧连接，重新登录以新 token 新建）
   useEffect(() => {
     if (!isLoggedIn) {
@@ -90,6 +180,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       socketRef.current?.close();
       socketRef.current = null;
       prevSubscribedSessionRef.current = null;
+      // 待回答 map 属于上一个登录会话：补偿是 merge-only 不会自愈，
+      // 不清空会让换号后残留标题计数/琥珀标记，因此随登出一起重置。
+      askingPendingMapRef.current = {};
+      setAskingPendingMap({});
       setConnected(false);
       return;
     }
@@ -101,6 +195,16 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
           // Notify all message subscribers (terminal events, etc.)
           messageListenersRef.current.forEach(cb => cb(message));
+
+          // ═══ ask_question pending ═══
+          // 工具发起提问：全局持久化（含非活跃会话），切换回来不丢失；
+          // 同时通知订阅者，Sidebar 据此将对应会话的绿灯覆为琥珀色。
+          if (isAskQuestionPending(message)) {
+            const payload = message.payload;
+            if (payload?.questionId) {
+              publishAskPending([payload]);
+            }
+          }
 
           // ═══ Chat stream events ═══
           if (message.kind === 'chat_stream' && message.scope?.session_id) {
@@ -168,6 +272,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             queryClient.invalidateQueries({ queryKey: ['tree'] });
 
             if (status === 'running') {
+              if (eventSessionId) {
+                clearStoppingFallback(eventSessionId);
+              }
               if (eventSessionId === currentSessionId) {
                 queryClient.invalidateQueries({ queryKey: ['session', 'messages', currentSessionId] });
               }
@@ -176,7 +283,40 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               }
             }
 
+            if (status === 'stopping') {
+              // 乐观更新侧栏为 stopping，并 arm 30s 兜底：后端保证 ~15s 内复位 idle，
+              // 这里双保险，超时未收敛则清除本地 stopping 并刷新真实状态。
+              if (eventSessionId) {
+                clearStoppingFallback(eventSessionId);
+                queryClient.setQueryData(['tree'], (old: { projects: ProjectDTO[] } | undefined) => {
+                  if (!old) return old;
+                  return {
+                    ...old,
+                    projects: old.projects.map(project => ({
+                      ...project,
+                      sessions: updateNodeRuntimeStatus(project.sessions, eventSessionId, 'stopping'),
+                    })),
+                  };
+                });
+                const timer = setTimeout(() => {
+                  stoppingFallbackTimersRef.current.delete(eventSessionId);
+                  setLocalRuntimeStatusBySession(prev => {
+                    if (prev[eventSessionId] !== 'stopping') return prev;
+                    const { [eventSessionId]: _, ...rest } = prev;
+                    return rest;
+                  });
+                  queryClient.invalidateQueries({ queryKey: ['tree'] });
+                  queryClient.invalidateQueries({ queryKey: ['session', 'info', eventSessionId] });
+                  queryClient.invalidateQueries({ queryKey: ['session', 'messages', eventSessionId] });
+                }, STOPPING_FALLBACK_TIMEOUT_MS);
+                stoppingFallbackTimersRef.current.set(eventSessionId, timer);
+              }
+            }
+
             if (status === 'idle') {
+              if (eventSessionId) {
+                clearStoppingFallback(eventSessionId);
+              }
               // 流式快照：idle 带错误则记入快照，否则全清（现有逻辑保持不动）
               if (eventSessionId) {
                 const idleError = (message.payload as any)?.error;
@@ -303,6 +443,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           current_tab: activeTabRef.current === 'info' ? 'session_info' : activeTabRef.current === 'diff' ? 'git_diff' : activeTabRef.current === 'files' || activeTabRef.current === 'doce' ? 'files' : activeTabRef.current === 'terminal' ? 'terminal' : 'chat',
         });
         socket.ping();
+        void reconcileAskPending();
         if (selectedSessionIdRef.current) {
           socket.subscribeSession(selectedSessionIdRef.current);
           prevSubscribedSessionRef.current = selectedSessionIdRef.current;
@@ -322,8 +463,30 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     return () => {
       socketRef.current = null;
       socket.close();
+      // 组件卸载：遍历清除所有 stopping 兜底定时器（不调用 clearStoppingFallback，
+      // 避免 cleanup 早于其定义执行时的 TDZ 问题）
+      stoppingFallbackTimersRef.current.forEach(t => clearTimeout(t));
+      stoppingFallbackTimersRef.current.clear();
     };
   }, [isLoggedIn]); // 登录态变化时重建连接
+
+  // 补偿拉取触发点：挂载 / 窗口重新聚焦 / 标签页重新可见。
+  // WS 重连（onOpen）在连接回调里单独触发，这里覆盖「连接一直正常但页面被切走」的场景。
+  // 不做定时轮询：只在能到达用户的时刻各拉一次。
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    void reconcileAskPending();
+    const onFocus = () => { void reconcileAskPending(); };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void reconcileAskPending();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [isLoggedIn, reconcileAskPending]);
 
   const subscribeToStream = useCallback((cb: (stream: { sessionId: string; snapshot: ChatStreamSnapshot }) => void): (() => void) => {
     streamListenersRef.current.add(cb);
@@ -346,6 +509,14 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     messageListenersRef.current.add(cb);
     return () => { messageListenersRef.current.delete(cb); };
   }, []);
+
+  const subscribeToAskQuestionPending = useCallback(
+    (cb: (payload: AskQuestionPendingPayload) => void): (() => void) => {
+      askQuestionPendingListenersRef.current.add(cb);
+      return () => { askQuestionPendingListenersRef.current.delete(cb); };
+    },
+    [],
+  );
 
   const sendRaw = useCallback((msg: Record<string, unknown>) => {
     socketRef.current?.sendRaw?.(msg);
@@ -392,8 +563,33 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   // 稳定 chatStream context 引用（impl 经 useCallback 固定，memo 不会随 provider 渲染重建）
   const chatStreamValue = useMemo(() => ({ useChatStream: useChatStreamImpl }), [useChatStreamImpl]);
 
+  // ask_question 回答后（工具结果经 messages 轮询落库，runtime 变 idle），前端可按需清理
+  // 此处提供清理器：TabChat 提交成功或检测到 tool result 时调用，可让琥珀灯熄灭
+  const clearAskPending = useCallback((questionId: string) => {
+    if (!questionId) return;
+    if (!askingPendingMapRef.current[questionId]) return;
+    const { [questionId]: _, ...rest } = askingPendingMapRef.current;
+    askingPendingMapRef.current = rest;
+    setAskingPendingMap({ ...rest });
+  }, []);
+
+  // 暴露给 context：TabChat 提交后可调用，Sidebar 仅消费 askingPendingMap
+  const contextValue = useMemo(() => ({
+    connected,
+    localRuntimeStatusBySession,
+    subscribeToStream,
+    setSessionContext,
+    clearStreamRuntimeErrors,
+    subscribeToMessages,
+    subscribeToAskQuestionPending,
+    askingPendingMap,
+    clearAskPending,
+    sendRaw,
+    chatStream: chatStreamValue,
+  }), [connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, clearStreamRuntimeErrors, subscribeToMessages, subscribeToAskQuestionPending, askingPendingMap, chatStreamValue]);
+
   return (
-    <WebSocketContext.Provider value={{ connected, localRuntimeStatusBySession, subscribeToStream, setSessionContext, clearStreamRuntimeErrors, subscribeToMessages, sendRaw, chatStream: chatStreamValue }}>
+    <WebSocketContext.Provider value={contextValue as unknown as WebSocketContextValue}>
       {children}
     </WebSocketContext.Provider>
   );

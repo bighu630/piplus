@@ -86,6 +86,13 @@ export type PiHistoryMessage = {
   messageKind?: 'normal' | 'tool_call' | 'tool';
   toolName?: string;
   toolArgs?: Record<string, unknown>;
+  /**
+   * pi 工具调用 id：tool_call 消息为调用 id，tool 结果消息为对应的调用 id。
+   * 供前端把调用与结果精确配对（同轮多次同名调用时避免错配）。
+   */
+  toolCallId?: string;
+  /** 工具返回的结构化结果（如 ask_question 的 details），工具结果消息上存在。 */
+  details?: unknown;
 };
 
 export type PiHistoryPage = {
@@ -158,6 +165,11 @@ export type PiClient = {
       cwd: string;
       tools: PiToolDef[];
       toolHandler: (toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>;
+      /**
+       * 附加系统提示文本（如 ask_question 使用指引）。
+       * 经扩展工厂的 before_agent_start 事件在每 turn 注入（SDK 链式语义，每 turn 只追加一次）。
+       */
+      systemPrompt?: string;
     },
   ): Promise<void>;
   /**
@@ -176,6 +188,11 @@ export type PiClient = {
   /** Direct single-turn model call via the shared model runtime. */
   completeModel(input: PiCompleteModelInput): Promise<PiCompleteModelResult>;
   stopSession(sessionId: string): Promise<PiStopSessionResult>;
+  /**
+   * 等待 session 的 agent 进入 idle（无活跃 run/retry/compaction/排队 continuation）。
+   * 在 timeoutMs 内变为 idle 返回 true；超时返回 false；无 live agentSession 时立即返回 true。
+   */
+  waitForSessionIdle(sessionId: string, timeoutMs: number): Promise<boolean>;
   closeRuntime(sessionId: string): Promise<void>;
   /** 删除/归档会话时释放 runtime 并删除 registry 条目（含 createSession 的 piSessionId 别名条目）。 */
   disposeSession(sessionId: string, locator?: PiSessionLocator): Promise<void>;

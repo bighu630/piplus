@@ -1,19 +1,31 @@
 services:
   piplus:
-    image: iambighu/piplus:0.2.9
+    # 预构建镜像（CI 在打 tag 时同时推送 :<version> 与 :latest），compose 只拉取、不构建；
+    # 想从源码构建见 deployment/docker/README.md「从源码构建」
+    image: iambighu/piplus:latest
+    # 下面所有 ${VAR:-默认值} 都由 compose 从「项目根目录的 .env」插值。
+    # 默认值 == 本文件此前的硬编码值，因此没有 .env 时行为与旧版完全一致。
+    #
+    # 这里刻意不使用 `env_file: .env`：根目录 .env 同时还放着本地开发用的
+    # CORS_ORIGINS / APP_PASSWORD / AUTH_SECRET，整包注入容器会把它们一并塞进去。
+    # 其中 CORS_ORIGINS 在 apps/api/src/app.ts 中优先级高于 PUBLIC_WEB_ORIGIN，
+    # 一旦被注入就会静默改写 CORS 判定 —— 属于破坏性行为变更，故不采用。
     environment:
       HOME: /root
       API_HOST: 0.0.0.0
       API_PORT: 3000
       DATABASE_URL: file:/root/.config/piplus/piplus.sqlite
-      PUBLIC_WEB_ORIGIN: piplus.whosworld.fun
-      # Alternatively, use CORS_ORIGINS for multiple origins (comma-separated):
-      # CORS_ORIGINS: http://localhost:3002,https://piplus.whosworld.fun
+      PUBLIC_WEB_ORIGIN: ${PUBLIC_WEB_ORIGIN:-piplus.whosworld.fun}
+      # 需要多个 origin 时取消下面这行注释，并在 .env 里设置 CORS_ORIGINS（逗号分隔）。
+      # 注意：CORS_ORIGINS 一旦有值就优先于 PUBLIC_WEB_ORIGIN，二者不要同时设置。
+      # CORS_ORIGINS: ${CORS_ORIGINS:-}
       PIPLUS_SERVE_WEB: "1"
       PIPLUS_WEB_DIST: /app/apps/web/dist
       NODE_ENV: production
     ports:
-      - "3008:3000"
+      # 宿主机端口可改，容器内固定 3000
+      - "${PIPLUS_PORT:-3008}:3000"
     volumes:
-      - /data/piplus_data/pi/agent:/root/.pi/agent
-      - /data/piplus_data/piplus:/root/.config/piplus
+      # 宿主目录可改，默认值与旧版硬编码一致（改错会导致看起来「数据丢了」）
+      - "${PI_AGENT_DIR:-/data/piplus_data/pi/agent}:/root/.pi/agent"
+      - "${PIPLUS_CONFIG_DIR:-/data/piplus_data/piplus}:/root/.config/piplus"

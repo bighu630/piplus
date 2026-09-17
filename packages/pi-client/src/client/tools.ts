@@ -37,6 +37,17 @@ export async function bindToolRuntime(
             parameters: toolDef.parameters as any,
             execute: async (_toolCallId, params) => {
               const result = await handler(toolDef.name, params as Record<string, unknown>, { sessionId });
+              // handler 返回 { content, details }（如 ask_question）时直接透传，保留 details
+              // 供前端渲染；否则按原逻辑包一层 text 文本内容。
+              if (
+                result !== null &&
+                typeof result === 'object' &&
+                !Array.isArray(result) &&
+                'content' in result &&
+                'details' in result
+              ) {
+                return result as { content: Array<{ type: 'text'; text: string }>; details: unknown };
+              }
               return {
                 content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }],
                 details: {},

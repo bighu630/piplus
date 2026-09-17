@@ -8,6 +8,7 @@ import { registerAuthRoutes } from './auth/routes';
 import { requireAuth } from './middleware/auth';
 import { registerProjectRoutes } from './routes/projects';
 import { registerSessionRoutes, registerSessionMutationRoutes } from './routes/sessions';
+import { registerRuntimeReclaimHook } from './runtime-reclaim';
 import { registerModelRoutes } from './routes/models';
 import { registerPackagesRoutes } from './routes/packages';
 import { registerRoleTemplateRoutes } from './routes/role-templates';
@@ -38,6 +39,16 @@ function parseCorsOrigins(): string[] | undefined {
 
 export function createApp(options?: { piClient?: PiClient }) {
   const app = new Hono();
+
+  // 强制回收（pi-client 卡死兜底强杀）后的状态收敛接线：注册 pi-client 的 dispose 通知 handler。
+  // handler 为模块级函数引用（pi-client 用 Set 去重），重复 createApp 不会叠加；
+  // 传入 app 的 piClient 供「强杀补投递」拉起会话（缺省用懒建默认实例）。
+  // 注册失败（如模块加载异常）不得阻塞启动。
+  try {
+    registerRuntimeReclaimHook(options?.piClient);
+  } catch (err) {
+    console.error('[app] failed to register runtime reclaim hook', err);
+  }
   const corsOrigins = parseCorsOrigins();
   const hasWildcardCors = corsOrigins?.includes('*') ?? false;
   const configuredOrigin = normalizeOrigin(process.env.PUBLIC_WEB_ORIGIN);
@@ -82,6 +93,7 @@ export function createApp(options?: { piClient?: PiClient }) {
   app.use('/api/v1/projects', requireAuth);
   app.use('/api/v1/projects/*', requireAuth);
   app.use('/api/v1/sessions/*', requireAuth);
+  app.use('/api/v1/ask-pending', requireAuth);
   registerTreeRoutes(app);
   registerProjectRoutes(app);
   registerSessionRoutes(app, options?.piClient);

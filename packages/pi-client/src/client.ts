@@ -59,6 +59,9 @@ export function createPiClient(): PiClient {
     async stopSession(sessionId) {
       return messaging.stopSession(deps, sessionId);
     },
+    async waitForSessionIdle(sessionId, timeoutMs) {
+      return messaging.waitForSessionIdle(deps, sessionId, timeoutMs);
+    },
     async closeRuntime(sessionId) {
       return lifecycle.closeRuntime(deps, sessionId);
     },

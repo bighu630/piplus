@@ -7,6 +7,7 @@ import { registerModelConfigRoutes } from './model-config';
 import { registerFilesRoutes } from './files';
 import { registerGitRoutes } from './git';
 import { registerSessionControlRoutes, registerRuntimeRoutes } from './runtime';
+import { registerAskQuestionRoutes } from './ask-question';
 
 /**
  * 组装 sessions 相关路由。调用顺序与拆分前 registerSessionRoutes 内的路由注册顺序一致：
@@ -23,6 +24,7 @@ export function registerSessionRoutes(app: Hono, piClient: PiClient = createPiCl
   registerFilesRoutes(app);
   registerGitRoutes(app);
   registerRuntimeRoutes(app, piClient);
+  registerAskQuestionRoutes(app);
 
   registerWebSocketRoutes(app);
 }

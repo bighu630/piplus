@@ -65,6 +65,9 @@ export async function subscribeSession(
     runtimeUnsubscribe = session.agentSession.subscribe((event) => {
       const mapped = mapAgentSessionEvent(sessionId, runId, event);
       if (!mapped) return;
+      // 任何成功 mapped 的事件都算进展（含 tool_execution_start 映射的 activity）：
+      // closeRuntime 卡死兜底按"连续无进展时长"判断，收到事件即刷新进度时间。
+      session.lastStreamEventAt = Date.now();
       void listener(mapped);
     });
   }
@@ -173,4 +176,22 @@ export async function stopSession(deps: ClientDeps, sessionId: string) {
   // to return 202 immediately and must not wait for the agent to wind down.
   session.agentSession?.abort().catch(() => {});
   return { status: 'stopped' as const };
+}
+
+export async function waitForSessionIdle(deps: ClientDeps, sessionId: string, timeoutMs: number): Promise<boolean> {
+  const session = deps.runtimeRegistry.get(sessionId);
+  const agentSession = session?.agentSession;
+  if (!agentSession) return true;
+  if (agentSession.isIdle) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      agentSession.waitForIdle().then(() => true, () => false),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

@@ -59,6 +59,7 @@ function lastEvent(raw: FakeRawSocket): { kind: string; type: string; payload: R
 describe('ws server auth handshake (H1)', () => {
   const originalPassword = Bun.env.APP_PASSWORD;
   const originalNodeEnv = Bun.env.NODE_ENV;
+  const originalDevAuth = Bun.env.PIPLUS_DEV_AUTH;
   const originalTimeout = Bun.env.PIPLUS_WS_AUTH_TIMEOUT_MS;
 
   afterEach(() => {
@@ -66,6 +67,8 @@ describe('ws server auth handshake (H1)', () => {
     else Bun.env.APP_PASSWORD = originalPassword;
     if (originalNodeEnv === undefined) delete Bun.env.NODE_ENV;
     else Bun.env.NODE_ENV = originalNodeEnv;
+    if (originalDevAuth === undefined) delete Bun.env.PIPLUS_DEV_AUTH;
+    else Bun.env.PIPLUS_DEV_AUTH = originalDevAuth;
     if (originalTimeout === undefined) delete Bun.env.PIPLUS_WS_AUTH_TIMEOUT_MS;
     else Bun.env.PIPLUS_WS_AUTH_TIMEOUT_MS = originalTimeout;
   });
@@ -221,6 +224,54 @@ describe('ws server auth handshake (H1)', () => {
     await hooks.onOpen?.(new Event('open'), ws as never);
     await sleep(120);
     // 生产环境下伪造 x-user-id 无法通过认证
+    expect(lastEvent(raw)?.type).toBe('connection.unauthenticated');
+    expect(raw.closeCodes).toContain(4401);
+  });
+
+  test('auth enabled: forged x-user-id is NOT trusted without PIPLUS_DEV_AUTH (Docker: NODE_ENV unset)', async () => {
+    enableFastAuth();
+    // 精确复现漏洞场景：Docker 未设 NODE_ENV，且未显式开启 PIPLUS_DEV_AUTH。
+    // 注意 test-setup.ts 全局设置了 PIPLUS_DEV_AUTH=1，此处必须显式删除。
+    delete Bun.env.NODE_ENV;
+    delete Bun.env.PIPLUS_DEV_AUTH;
+    const hooks = createWebSocketHooks(createContext({ headers: { 'x-user-id': 'attacker' } }));
+    const raw = new FakeRawSocket();
+    const ws = wsContextOf(raw);
+
+    await hooks.onOpen?.(new Event('open'), ws as never);
+    // 未被信任：连接不携带伪造身份
+    expect((raw as unknown as { __userId?: string }).__userId).toBeUndefined();
+
+    await sleep(120);
+    // 按现有未认证路径处理：超时后 unauthenticated + 4401
+    expect(lastEvent(raw)?.type).toBe('connection.unauthenticated');
+    expect(raw.closeCodes).toContain(4401);
+  });
+
+  test('auth enabled: PIPLUS_DEV_AUTH=1 outside production trusts x-user-id', async () => {
+    enableFastAuth();
+    Bun.env.NODE_ENV = 'development';
+    Bun.env.PIPLUS_DEV_AUTH = '1';
+    const hooks = createWebSocketHooks(createContext({ headers: { 'x-user-id': 'dev-user' } }));
+    const raw = new FakeRawSocket();
+    const ws = wsContextOf(raw);
+
+    await hooks.onOpen?.(new Event('open'), ws as never);
+    expect((raw as unknown as { __userId?: string }).__userId).toBe('dev-user');
+  });
+
+  test('auth enabled: PIPLUS_DEV_AUTH=1 in production still rejects x-user-id', async () => {
+    enableFastAuth();
+    Bun.env.NODE_ENV = 'production';
+    Bun.env.PIPLUS_DEV_AUTH = '1';
+    const hooks = createWebSocketHooks(createContext({ headers: { 'x-user-id': 'attacker' } }));
+    const raw = new FakeRawSocket();
+    const ws = wsContextOf(raw);
+
+    await hooks.onOpen?.(new Event('open'), ws as never);
+    expect((raw as unknown as { __userId?: string }).__userId).toBeUndefined();
+
+    await sleep(120);
     expect(lastEvent(raw)?.type).toBe('connection.unauthenticated');
     expect(raw.closeCodes).toContain(4401);
   });

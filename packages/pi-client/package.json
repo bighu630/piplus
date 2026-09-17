@@ -6,13 +6,16 @@
   "exports": {
     ".": "./src/index.ts",
     "./locator": "./src/locator.ts",
-    "./constants": "./src/constants.ts"
+    "./constants": "./src/constants.ts",
+    "./ask-pending": "./src/ask-pending.ts",
+    "./runtime-pins": "./src/runtime-pins.ts",
+    "./runtime-lifecycle-hooks": "./src/runtime-lifecycle-hooks.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.82.1",
-    "@earendil-works/pi-coding-agent": "^0.82.1"
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1"
   }
 }

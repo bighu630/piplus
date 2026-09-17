@@ -20,8 +20,12 @@ export type ActiveSessionRuntime = {
   title: string | null;
   listeners: Set<SessionListener>;
   idleCleanupTimer?: ReturnType<typeof setTimeout>;
-  /** closeRuntime 流式守卫的连续重试计数（>0 表示处于流式跳过状态，正常 dispose 后复位 0）。 */
+  /** closeRuntime 流式守卫的尝试计数（仅日志/hook 用；判据是"连续无进展时长"，不是次数）。 */
   closeRetries?: number;
+  /** 最近一次成功 mapped 的 stream 事件时间（进展信号；工具活动等 activity 事件同样计入）。 */
+  lastStreamEventAt?: number;
+  /** 当前无进展观察窗口起点：closeRuntime 首次发现 isStreaming 时设置；强杀或新 run 时清除。 */
+  streamingSince?: number;
 };
 
 export class RuntimeRegistry {

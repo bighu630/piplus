@@ -33,9 +33,14 @@ import {
   gitCommit,
   addGitignore,
   getGitBranches,
+  getGitTags,
+  createGitTag,
+  pushGitTags,
+  getRemoteTags,
   getGitCommits,
   getGitShow,
   gitCheckout,
+  type GitRefType,
   testModelProvider,
   createModelProvider,
   getModelProviders,
@@ -508,13 +513,61 @@ export function useGitBranches(sessionId: string | null) {
   });
 }
 
+export function useGitTags(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'git-tags', sessionId],
+    queryFn: () => getGitTags(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 10_000,
+  });
+}
+
+/** Remote tag state (`git ls-remote --tags`). Resolves with `remote_ok: false` instead of throwing
+ * when there is no remote or the network fails, so a broken remote never breaks the Git page. */
+export function useRemoteTags(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['session', 'git-remote-tags', sessionId],
+    queryFn: () => getRemoteTags(sessionId!),
+    enabled: Boolean(sessionId),
+    staleTime: 30_000,
+  });
+}
+
+export function useCreateGitTagMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, name, message }: { sessionId: string; name: string; message?: string }) =>
+      createGitTag(sessionId, name, message),
+    onSuccess: (_data, { sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-tags', sessionId] });
+    },
+  });
+}
+
+export function usePushGitTagsMutation() {
+  const queryClient = useQueryClient();
+  // A batch push can partially succeed (some refs pushed, then a conflict fails the command),
+  // so refresh both the local and the remote tag state on error as well as on success.
+  const invalidateTagState = (sessionId: string) => {
+    queryClient.invalidateQueries({ queryKey: ['session', 'git-tags', sessionId] });
+    queryClient.invalidateQueries({ queryKey: ['session', 'git-remote-tags', sessionId] });
+  };
+  return useMutation({
+    mutationFn: ({ sessionId, names }: { sessionId: string; names?: string[] }) => pushGitTags(sessionId, names),
+    onSuccess: (_data, { sessionId }) => invalidateTagState(sessionId),
+    onError: (_error, { sessionId }) => invalidateTagState(sessionId),
+  });
+}
+
 export function useGitCheckoutMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ sessionId, branch }: { sessionId: string; branch: string }) => gitCheckout(sessionId, branch),
+    mutationFn: ({ sessionId, ref, type }: { sessionId: string; ref: string; type?: GitRefType }) =>
+      gitCheckout(sessionId, ref, type ?? 'branch'),
     onSuccess: (_data, { sessionId }) => {
       // Invalidate both branches list and git diff since checkout may change working tree
       queryClient.invalidateQueries({ queryKey: ['session', 'git-branches', sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['session', 'git-tags', sessionId] });
       queryClient.invalidateQueries({ queryKey: ['session', 'git-diff', sessionId] });
       queryClient.invalidateQueries({ queryKey: ['session', 'git-commits', sessionId] });
     },

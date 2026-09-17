@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { and, eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
-import { messages, projects, sessions } from '@piplus/db/schema';
+import { messages, projects, sessionEvents, sessions } from '@piplus/db/schema';
 import { getRequestContext, isCrossProjectWaiting, clearCrossProjectWait } from '../session/request-context';
 import { buildRoleManagerToolDefs, decideReminderAction, invokeRoleManagerTool } from './role-manager-tools';
 
@@ -384,6 +384,16 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       session_id: child!.id,
       summary: 'task done',
     });
+
+    // wait 循环匹配到 writeback 时必须写持久消费标记（L2 的 run 结束回扫据此去重，
+    // 否则 wait=true 的标准流程会把同一条结果再投一次）
+    const markerRows = await db.select().from(sessionEvents).where(eq(sessionEvents.sessionId, parentSessionId));
+    const markers = markerRows
+      .filter((e) => e.type === 'writeback_consumed')
+      .map((e) => JSON.parse(e.payload) as { message_id: string; via: string; request_id: string | null });
+    expect(markers).toHaveLength(1);
+    expect(markers[0].via).toBe('wait_loop');
+    expect(markers[0].request_id).toBeTruthy();
 
     // Runtime operations happened (auto-started)
     expect(state.ensureRuntime[0]?.sessionId).toBe(child!.id);
