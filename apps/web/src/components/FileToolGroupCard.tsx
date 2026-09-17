@@ -122,6 +122,7 @@ const FileRow = React.memo(function FileRow({
         <FileCode className={`w-3.5 h-3.5 shrink-0 ${iconTone}`} />
         <FilePathLabel
           path={path ?? '(未提供路径)'}
+          title={path ?? null}
           className={`text-[11px] font-mono ${tone}`}
         />
         {writeEditSummary && !isError && (
@@ -265,11 +266,11 @@ function FileToolGroupCard({
   return (
     <div className="flex justify-start items-start w-full min-w-0">
       <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-        <div className="flex items-start min-w-0">
+        <div className="flex items-start min-w-0 w-full">
           <div
             data-testid="tool-group-card"
             data-status={cardStatus}
-            className={`border rounded-xl overflow-hidden transition-colors ${scheme.card}`}
+            className={`border rounded-xl overflow-hidden transition-colors min-w-0 max-w-full ${scheme.card}`}
           >
             <div
               data-testid="tool-group-header"

@@ -64,15 +64,32 @@ describe('FilePathLabel', () => {
     expect(baseEl()!.textContent).toBe('testfile.txt');
   });
 
-  test('目录段用 rtl + ellipsis 实现「省略前面」（省略号在左侧）', () => {
+  test('目录段用 rtl 块方向 + 行内 LTR 隔离实现「省略前面」', () => {
     render(<FilePathLabel path="/root/a/b.txt" />);
 
     const dir = dirEl()!;
+    // 省略端跟随块方向：rtl → 省略号在左侧
     expect(dir.className).toContain('[direction:rtl]');
-    expect(dir.className).toContain('[unicode-bidi:plaintext]');
     expect(dir.className).toContain('text-ellipsis');
     expect(dir.className).toContain('overflow-hidden');
     expect(dir.className).toContain('whitespace-nowrap');
+    // 不能用 unicode-bidi:plaintext：它会把段落方向按首强字符重算，省略端回到右侧（实测）
+    expect(dir.className).not.toContain('unicode-bidi');
+    // 内容行内隔离为 LTR，避免 rtl 块方向重排 `/`、`.` 等中性字符
+    expect(dir.querySelector('[dir="ltr"]')).not.toBeNull();
+    expect(dir.querySelector('[dir="ltr"]')!.textContent).toBe('/root/a/');
+  });
+
+  test('Windows 反斜杠路径按最后一个分隔符切分（保留原字符）', () => {
+    render(<FilePathLabel path={'C:\\Users\\me\\project\\file.txt'} />);
+
+    expect(dirEl()!.textContent).toBe('C:\\Users\\me\\project\\');
+    expect(baseEl()!.textContent).toBe('file.txt');
+  });
+
+  test('title 传 null 时不显示 tooltip（占位符场景）', () => {
+    render(<FilePathLabel path="(未提供路径)" title={null} />);
+    expect(container!.querySelector('[data-testid="file-path-label"]')!.getAttribute('title')).toBeNull();
   });
 
   test('文件名优先完整显示（不收缩，仅超宽时自身省略）', () => {

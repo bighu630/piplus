@@ -570,3 +570,13 @@ describe('FileToolGroupCard 键盘可达性', () => {
     expect(details()).toHaveLength(2);
   });
 });
+
+describe('FileToolGroupCard 路径省略（省略前面）', () => {
+  test('缺少 path 的占位符不显示 tooltip', () => {
+    render(<Harness calls={[fileCall('e1-tool-0', 'write', { content: 'a' })]} />);
+
+    const label = rows()[0].querySelector('[data-testid="file-path-label"]')!;
+    expect(label.getAttribute('title')).toBeNull();
+    expect(rows()[0].textContent).toContain('(未提供路径)');
+  });
+});
