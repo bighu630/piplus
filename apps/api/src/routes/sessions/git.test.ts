@@ -1002,24 +1002,43 @@ describe('git push remote resolution priority', () => {
     await rm(repo, { recursive: true, force: true });
   });
 
-  test('POST git/tags/push skips branch.<name>.remote on a detached HEAD but keeps pushDefault', async () => {
+  test('POST git/tags/push skips branch.<name>.* on a detached HEAD but keeps pushDefault', async () => {
     const { repo, remotes } = await makeRepoWithRemotes('push-remote-priority-detached', ['r1', 'r2']);
     const baseSha = await commitFile(repo, 'a.txt', 'one', 'first commit');
     mustGit(repo, 'tag', 'v1.0.0');
-    mustGit(repo, 'config', 'branch.main.remote', 'r1');
-    mustGit(repo, 'config', 'remote.pushDefault', 'r2');
+    // Only branch-scoped config, and it would outrank the plain first-remote fallback. On a
+    // detached HEAD this config is unreachable, so landing on r1 proves it was really skipped.
+    mustGit(repo, 'config', 'branch.main.remote', 'r2');
+    mustGit(repo, 'config', 'branch.main.pushRemote', 'r2');
+    // Literal `branch.HEAD.*` is the trap for a naive fallback that just reads
+    // `branch.<rev-parse --abbrev-ref HEAD>.*`: while detached that yields the string `HEAD`,
+    // so a missing guard would silently honour this key. Without this line the test below
+    // would pass either way and would not actually pin the detached-HEAD guard.
+    mustGit(repo, 'config', 'branch.HEAD.remote', 'r2');
+    mustGit(repo, 'config', 'branch.HEAD.pushRemote', 'r2');
     mustGit(repo, 'checkout', '--detach', baseSha);
 
     const { app, sessionId } = await seedSession(repo);
-    const res = await apiPost(app, sessionId, 'tags/push', { names: ['v1.0.0'] });
+    const first = await apiPost(app, sessionId, 'tags/push', { names: ['v1.0.0'] });
 
-    expect(res.status).toBe(200);
-    // No current branch → branch.main.remote is unreachable; remote.pushDefault still applies.
-    expect(res.body.remote).toBe('r2');
-    expect(mustGit(remotes.r2, 'rev-parse', 'refs/tags/v1.0.0')).toBe(
+    expect(first.status).toBe(200);
+    // Discriminating assertion: branch.main.pushRemote=r2 is set, so if the branch-scoped
+    // lookup were still reachable while detached the push would land in r2 instead of r1.
+    expect(first.body.remote).toBe('r1');
+    expect(mustGit(remotes.r1, 'rev-parse', 'refs/tags/v1.0.0')).toBe(
       mustGit(repo, 'rev-parse', 'refs/tags/v1.0.0'),
     );
-    expect(mustGit(remotes.r1, 'tag', '-l')).toBe('');
+    expect(mustGit(remotes.r2, 'tag', '-l')).toBe('');
+
+    // remote.pushDefault is not branch-scoped, so it still applies while detached.
+    mustGit(repo, 'tag', 'v2.0.0');
+    mustGit(repo, 'config', 'remote.pushDefault', 'r2');
+    const second = await apiPost(app, sessionId, 'tags/push', { names: ['v2.0.0'] });
+    expect(second.status).toBe(200);
+    expect(second.body.remote).toBe('r2');
+    expect(mustGit(remotes.r2, 'rev-parse', 'refs/tags/v2.0.0')).toBe(
+      mustGit(repo, 'rev-parse', 'refs/tags/v2.0.0'),
+    );
 
     await rm(repo, { recursive: true, force: true });
   });
