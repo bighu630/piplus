@@ -407,6 +407,10 @@ describe('隐藏对话框时间戳（TabChat）', () => {
     for (const btn of buttons()) {
       expect(classes(btn)).not.toContain('md:absolute');
       expect(classes(btn.parentElement!)).toContain('mt-2');
+      // 浮动按钮的定位锚点
+      expect(classes(btn.parentElement!)).toContain('relative');
+      // 复制按钮不得换行（否则「复制」会被逐字竖排）
+      expect(classes(btn)).toContain('whitespace-nowrap');
     }
 
     await rerenderTabChat({ messages: fourMessages, hideChatTimestamps: true });
@@ -418,11 +422,14 @@ describe('隐藏对话框时间戳（TabChat）', () => {
     expect(classes(on[1])).toContain('md:absolute');
     expect(classes(on[1])).toContain('md:left-1');
     expect(classes(on[1].parentElement!)).toContain('md:mt-0');
+    expect(classes(on[1].parentElement!)).toContain('relative');
     expect(classes(on[2])).toContain('md:absolute');
     expect(classes(on[2])).toContain('md:right-1');
     expect(classes(on[2].parentElement!)).toContain('md:mt-0');
     // 最后一条（时间戳可见）：仍在流内
     expect(classes(on[3])).not.toContain('md:absolute');
+    // 浮动按钮同样不得换行（行宽收缩为 0 时「复制」会被逐字竖排）
+    for (const btn of on) expect(classes(btn)).toContain('whitespace-nowrap');
   });
 
   test('切换设置即时生效：不改数据、只翻转 prop，可见时间戳随之变化', async () => {

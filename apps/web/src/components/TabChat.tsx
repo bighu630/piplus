@@ -943,13 +943,14 @@ function TabChat({
                     onToggle={toggleResultCollapsed}
                   />
                   {/* 时间戳隐藏时（桌面端）该行高度归零：复制按钮绝对定位浮在消息间隙，
-                      移动端保持原样（按钮常显、需占位） */}
-                  <div className={`relative flex items-center gap-2 px-1 ${timestampText === null ? 'mt-1 md:mt-0' : 'mt-1'}`}>
+                      移动端保持原样（按钮常显、需占位）。
+                      约束：chip 高度需小于容器 space-y 间隙（当前约 15px < 16px），否则会压到下一条消息 */}
+                  <div className={`relative flex items-center gap-2 px-1 mt-1 ${timestampText === null ? 'md:mt-0' : ''}`}>
                     {msg.content_text ? (
                       <button
                         type="button"
                         onClick={() => handleCopyMessage(msg.id, msg.content_text)}
-                        className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer order-2 ${timestampText === null ? 'md:absolute md:top-0 md:left-1' : ''}`}
+                        className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer whitespace-nowrap order-2 ${timestampText === null ? 'md:absolute md:top-0 md:left-1' : ''}`}
                         title="复制消息"
                       >
                         {copiedMessageId === msg.id ? (
@@ -1023,13 +1024,14 @@ function TabChat({
                 </div>
               )}
                 {/* 时间戳隐藏时（桌面端）该行高度归零：复制按钮绝对定位浮在消息间隙（用户消息靠右、助手消息靠左），
-                    移动端保持原样（按钮常显、需占位） */}
+                    移动端保持原样（按钮常显、需占位）。
+                    约束：chip 高度需小于容器 space-y 间隙（当前约 15px < 16px），否则会压到下一条消息 */}
                 <div className={`relative flex items-center gap-2 px-1 ${timestampText === null ? 'mt-1 md:mt-0' : 'mt-2'}`}>
                   {msg.content_text ? (
                     <button
                       type="button"
                       onClick={() => handleCopyMessage(msg.id, msg.content_text)}
-                      className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer ${timestampText === null ? `md:absolute md:top-0 ${isUser ? 'md:right-1' : 'md:left-1'}` : (isUser ? '' : 'order-2')}`}
+                      className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer whitespace-nowrap ${timestampText === null ? `md:absolute md:top-0 ${isUser ? 'md:right-1' : 'md:left-1'}` : (isUser ? '' : 'order-2')}`}
                       title="复制消息"
                     >
                       {copiedMessageId === msg.id ? (
