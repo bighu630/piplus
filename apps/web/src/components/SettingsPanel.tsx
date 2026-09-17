@@ -78,6 +78,18 @@ export default function SettingsPanel({
   const [visionTouched, setVisionTouched] = useState(false);
   const [visionSaved, setVisionSaved] = useState(false);
   const [visionError, setVisionError] = useState<string | null>(null);
+  const [hideChatTimestampsError, setHideChatTimestampsError] = useState<string | null>(null);
+  // 乐观覆盖：勾选后立即生效（等 PUT + invalidate + 回读的往返），服务端值追上后清除
+  const [hideChatTimestampsOverride, setHideChatTimestampsOverride] = useState<boolean | null>(null);
+  const serverHideChatTimestamps = settingsQuery.data?.hide_chat_timestamps === 'true';
+  const hideChatTimestampsOn = hideChatTimestampsOverride ?? serverHideChatTimestamps;
+
+  useEffect(() => {
+    // 服务端值到达并等于乐观值：清除覆盖，后续外部变化重新生效
+    if (hideChatTimestampsOverride !== null && serverHideChatTimestamps === hideChatTimestampsOverride) {
+      setHideChatTimestampsOverride(null);
+    }
+  }, [serverHideChatTimestamps, hideChatTimestampsOverride]);
 
   // Sync input from server value when settings arrive (string → number).
   // 仅当输入框未被用户触碰时同步，避免覆盖用户正在编辑的值。
@@ -138,6 +150,38 @@ export default function SettingsPanel({
                 <div className="w-9 h-5 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
               </label>
             </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">隐藏对话框时间戳</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">开启后，仅显示第一条与最后一条消息的时间戳（含工具卡片）。</div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  data-testid="hide-chat-timestamps-toggle"
+                  className="sr-only peer"
+                  checked={hideChatTimestampsOn}
+                  onChange={async (e) => {
+                    const next = e.target.checked;
+                    setHideChatTimestampsOverride(next);
+                    setHideChatTimestampsError(null);
+                    try {
+                      await updateSettingsMut.mutateAsync({ hide_chat_timestamps: String(next) });
+                    } catch (err) {
+                      // 保存失败：回滚到服务端值并提示
+                      setHideChatTimestampsOverride(null);
+                      setHideChatTimestampsError(err instanceof Error ? err.message : '保存失败');
+                    }
+                  }}
+                />
+                <div className="w-9 h-5 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+            {hideChatTimestampsError && (
+              <p className="text-[11px] text-red-600 dark:text-red-400">{hideChatTimestampsError}</p>
+            )}
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
