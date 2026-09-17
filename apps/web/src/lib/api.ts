@@ -388,8 +388,63 @@ export function getGitTags(sessionId: string) {
     session_id: string;
     cwd: string;
     detached: boolean;
-    tags: Array<{ name: string; is_current: boolean; is_annotated: boolean; date: string; subject: string }>;
+    tags: Array<{ name: string; is_current: boolean; is_annotated: boolean; date: string; subject: string; sha: string }>;
   }>(`/api/v1/sessions/${sessionId}/git/tags`);
+}
+
+/**
+ * Create a tag at HEAD. A non-empty `message` produces an annotated tag, otherwise a lightweight one.
+ * Git failures (e.g. a duplicate name) come back as a non-2xx response, so `request()` rejects with
+ * git's stderr in `Error#message` — surface that directly in the UI.
+ */
+export function createGitTag(sessionId: string, name: string, message?: string) {
+  return request<{
+    session_id: string;
+    cwd: string;
+    result: 'ok' | 'error';
+    stdout?: string;
+    stderr?: string;
+    name: string;
+    annotated: boolean;
+  }>(`/api/v1/sessions/${sessionId}/git/tags`, {
+    method: 'POST',
+    body: JSON.stringify({ name, message }),
+  });
+}
+
+/**
+ * Push tags to the resolved remote. Omitting `names` pushes every tag that is missing from (or
+ * different from) the remote. Failures reject with git's stderr in `Error#message`.
+ */
+export function pushGitTags(sessionId: string, names?: string[]) {
+  return request<{
+    session_id: string;
+    cwd: string;
+    result: 'ok' | 'error';
+    stdout?: string;
+    stderr?: string;
+    pushed: string[];
+    remote: string;
+  }>(`/api/v1/sessions/${sessionId}/git/tags/push`, {
+    method: 'POST',
+    body: JSON.stringify(names ? { names } : {}),
+  });
+}
+
+/**
+ * Read the remote's tag list so the UI can flag tags that have not been pushed.
+ * The endpoint degrades gracefully: when no remote exists or the network fails it still
+ * resolves with 200 and `remote_ok: false`, so callers must check `remote_ok`.
+ */
+export function getRemoteTags(sessionId: string) {
+  return request<{
+    session_id: string;
+    cwd: string;
+    remote_ok: boolean;
+    remote: string | null;
+    error: string | null;
+    tags: Array<{ name: string; sha: string }>;
+  }>(`/api/v1/sessions/${sessionId}/git/remote-tags`);
 }
 
 export function gitCheckout(sessionId: string, ref: string, type: GitRefType = 'branch') {
