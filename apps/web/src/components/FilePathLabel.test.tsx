@@ -69,6 +69,7 @@ describe('FilePathLabel', () => {
 
     const dir = dirEl()!;
     expect(dir.className).toContain('[direction:rtl]');
+    expect(dir.className).toContain('[unicode-bidi:plaintext]');
     expect(dir.className).toContain('text-ellipsis');
     expect(dir.className).toContain('overflow-hidden');
     expect(dir.className).toContain('whitespace-nowrap');

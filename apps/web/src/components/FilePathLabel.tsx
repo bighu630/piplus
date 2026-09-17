@@ -6,6 +6,8 @@ import React from 'react';
  * 实现：把路径拆成「目录前缀」与「文件名」两段：
  * - 目录前缀：允许收缩，配合 `direction: rtl` + `text-overflow: ellipsis` 让省略号出现在**左侧**
  *   （即省略开头、保留靠近文件名的尾部目录，如 `…/code/test/test_folder/`）
+ *   同时设置 `unicode-bidi: plaintext`：让内容按自身方向（路径为 LTR）排版，
+ *   避免 RTL 行方向把 `/`、`.` 等中性字符重排
  * - 文件名：优先完整显示（`shrink-0`），仅当自身超过容器宽度时才从尾部省略
  *
  * 完整路径始终通过 `title` 提供（鼠标悬停可见）。
@@ -31,7 +33,7 @@ function FilePathLabel({ path, className = '', dirMaxWidthClass = 'max-w-[240px]
       {dir !== '' && (
         <span
           data-testid="file-path-dir"
-          className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap [direction:rtl] text-left ${dirMaxWidthClass}`}
+          className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap [direction:rtl] [unicode-bidi:plaintext] text-left ${dirMaxWidthClass}`}
         >
           {dir}
         </span>
