@@ -35,6 +35,11 @@ export interface FileToolGroupCardProps {
   onToggleAll: (ids: string[], expand: boolean) => void;
   /** 仍在运行的调用 id 集合 */
   runningIds: Set<string>;
+  /**
+   * 时间戳文本：`undefined` = 默认渲染 `calls[0].created_at`；`null` = 隐藏。
+   * 「隐藏对话框时间戳」开启且组内不含会话首尾消息时由 TabChat 传入 null。
+   */
+  timestamp?: string | null;
 }
 
 const FileRow = React.memo(function FileRow({
@@ -185,6 +190,7 @@ function FileToolGroupCard({
   onToggleOne,
   onToggleAll,
   runningIds,
+  timestamp,
 }: FileToolGroupCardProps) {
   // 失败原因默认展开；用户点击失败行可收起（纯展示态，无需提升到父级）
   const [collapsedErrorIds, setCollapsedErrorIds] = useState<Set<string>>(new Set());
@@ -331,9 +337,11 @@ function FileToolGroupCard({
             </div>
           )}
         </div>
-        <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-          {new Date(calls[0].created_at).toLocaleTimeString()}
-        </span>
+        {timestamp !== null && (
+          <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+            {new Date(timestamp ?? calls[0].created_at).toLocaleTimeString()}
+          </span>
+        )}
       </div>
     </div>
   );

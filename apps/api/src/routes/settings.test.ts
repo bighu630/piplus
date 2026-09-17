@@ -215,4 +215,51 @@ describe('settings routes', () => {
     });
     expect(res.status).toBe(200);
   });
+
+  test('PUT accepts hide_chat_timestamps boolean and GET reads it back', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    const on = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: AUTH_HEADERS,
+      body: JSON.stringify({ hide_chat_timestamps: 'true' }),
+    });
+    expect(on.status).toBe(200);
+    expect((await on.json() as Record<string, string>).hide_chat_timestamps).toBe('true');
+
+    const get = await app.request('/api/v1/settings', { method: 'GET', headers: AUTH_HEADERS });
+    expect(await get.json()).toEqual({ hide_chat_timestamps: 'true' });
+
+    const off = await app.request('/api/v1/settings', {
+      method: 'PUT',
+      headers: AUTH_HEADERS,
+      body: JSON.stringify({ hide_chat_timestamps: 'false' }),
+    });
+    expect(off.status).toBe(200);
+    expect((await off.json() as Record<string, string>).hide_chat_timestamps).toBe('false');
+  });
+
+  test('PUT rejects invalid hide_chat_timestamps values', async () => {
+    const path = makeDbPath();
+    createSeedDb(path);
+    Bun.env.DATABASE_URL = `file:${path}`;
+    const app = createApp();
+
+    // 布尔 true 经 String() 归一化为 'true'，与既有 vision_enabled 口径一致，属合法值
+    for (const raw of [1, null, 'yes', 'TRUE', '  '] as const) {
+      const res = await app.request('/api/v1/settings', {
+        method: 'PUT',
+        headers: AUTH_HEADERS,
+        body: JSON.stringify({ hide_chat_timestamps: raw }),
+      });
+      expect(res.status, `expected 400 for ${JSON.stringify(raw)}`).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('hide_chat_timestamps');
+    }
+
+    const get = await app.request('/api/v1/settings', { method: 'GET', headers: AUTH_HEADERS });
+    expect(await get.json()).toEqual({});
+  });
 });

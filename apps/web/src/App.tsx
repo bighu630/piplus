@@ -319,6 +319,8 @@ export default function App() {
   const visionRelayEnabled = settingsQuery.data?.vision_enabled === 'true'
     && !!settingsQuery.data?.vision_model
     && settingsQuery.data.vision_model.includes('/');
+  // 「隐藏对话框时间戳」：默认关闭，仅 'true' 视为开启（设置保存后经 query invalidate 即时生效）
+  const hideChatTimestamps = settingsQuery.data?.hide_chat_timestamps === 'true';
   const setModelMut = useSetSessionModelMutation();
   const thinkingLevelQuery = useSessionThinkingLevel(selectedSessionId);
   const setThinkingLevelMut = useSetSessionThinkingLevelMutation();
@@ -910,6 +912,7 @@ export default function App() {
                   plannerRolePromptPending={plannerRolePromptMut.isPending}
                   showPlannerRolePromptButton={isPlannerRoot && runtimeStatus === 'idle'}
                   isMobile={isMobile}
+                  hideChatTimestamps={hideChatTimestamps}
                 />
               )}
               {activeTab === 'info' && (

@@ -24,6 +24,11 @@ export interface ToolCallCardProps {
   roleSuffix?: string | null;
   /** 对应 tool result 的文本（卡片内「结果」子项内容） */
   resultContent?: string | null;
+  /**
+   * 时间戳文本：`undefined` = 默认渲染 `msg.created_at`；`null` = 隐藏。
+   * 「隐藏对话框时间戳」开启且该消息非会话首尾时由 TabChat 传入 null。
+   */
+  timestamp?: string | null;
 }
 
 function ToolCallCard({
@@ -33,6 +38,7 @@ function ToolCallCard({
   running = false,
   roleSuffix = null,
   resultContent = null,
+  timestamp,
 }: ToolCallCardProps) {
   const toolName = msg.tool_name || 'unknown';
 
@@ -101,9 +107,11 @@ function ToolCallCard({
             </div>
           )}
         </div>
-        <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-          {new Date(msg.created_at).toLocaleTimeString()}
-        </span>
+        {timestamp !== null && (
+          <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+            {new Date(timestamp ?? msg.created_at).toLocaleTimeString()}
+          </span>
+        )}
       </div>
     </div>
   );

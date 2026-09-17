@@ -20,9 +20,14 @@ export interface MergedToolCallsCardProps {
   messages: ChatMessageDTO[];
   expanded: boolean;
   onToggle: (id: string) => void;
+  /**
+   * 时间戳文本：`undefined` = 默认渲染 `calls[0].created_at`；`null` = 隐藏。
+   * 「隐藏对话框时间戳」开启且组内不含会话首尾消息时由 TabChat 传入 null。
+   */
+  timestamp?: string | null;
 }
 
-function MergedToolCallsCard({ toolName, calls, messages, expanded, onToggle }: MergedToolCallsCardProps) {
+function MergedToolCallsCard({ toolName, calls, messages, expanded, onToggle, timestamp }: MergedToolCallsCardProps) {
   const scheme = TOOL_CALL_SCHEMES.ok;
   const anchor = calls[0];
 
@@ -84,9 +89,11 @@ function MergedToolCallsCard({ toolName, calls, messages, expanded, onToggle }: 
               ))}
           </div>
         </div>
-        <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-          {new Date(anchor.created_at).toLocaleTimeString()}
-        </span>
+        {timestamp !== null && (
+          <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+            {new Date(timestamp ?? anchor.created_at).toLocaleTimeString()}
+          </span>
+        )}
       </div>
     </div>
   );

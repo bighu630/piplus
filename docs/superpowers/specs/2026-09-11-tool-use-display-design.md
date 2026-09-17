@@ -12,7 +12,7 @@
 4. **失败原因默认展开**在对应行内（点击该行仍可收起）；write/edit/read 的结果（成功与失败）均不再渲染独立结果卡片。
 5. **普通工具（bash/grep/find/ls 等）**：一条调用一张卡片，**卡片本身按执行结果着色**（成功绿 / 失败红 / 结果未回琥珀，与文件聚合卡片同口径）；头部点击展开后为两个可折叠子项——「执行参数」（默认收起）与「结果」（默认展开，成功/失败标识）；结果不再渲染独立卡片。`ask_question`（交互型工具，结果即用户答案）保持中性琥珀并与例外展示一致。
 6. **连续同工具调用合并**：连续相邻（跨 assistant 消息也算）、**同一工具、且成功**的普通调用合并为一张卡片，头部右侧显示 `×N`；展开后为 N 组「执行参数 + 结果」（参数默认收起、结果默认展开），**组间以分割线 + 间隙隔开**。失败的调用不参与合并（单独渲染，保持失败卡片）；`read`/`write`/`edit` 保持同回合多文件卡片；`ask_question` / `spawn_session` / `send_message_to_session` 不参与合并。
-7. **独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片、`spawn_session` / `send_message_to_session` 的紫色摘要卡片，以及**调用不在当前视图内的孤立结果**降级卡片（分页边界，避免信息丢失）。前两类工具卡片本身也保持既有展示。
+7. **独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片、`spawn_session` / `send_message_to_session` 的紫色摘要卡片，以及**调用不在当前视图内的孤立结果**降级卡片（分页边界，避免信息丢失）。前两类工具卡片本身也保持既有展示；这些独立结果卡片**默认展开，点击卡片头部可收起、再点击展开**（`ask_question` 答案卡除外，保持不可收起）。
 7. **bash 的「执行参数」**用**表格**展示（`command` / `timeout` 等键值行），其中 `command` 的值做**命令格式化**：在顶层分隔符（`&&` / `||` / `|` / `;`）处断行缩进 + bash 语法高亮；表格右上角提供「复制命令」按钮（复制**原始命令**，保证可直接执行）。其它工具仍为 JSON 原文。
 8. 工具结果统一截断标准：**200 行**（read 内容与普通工具结果同一口径），容器内滚动，截断提示在滚动容器外。
 9. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
@@ -105,7 +105,7 @@ interface ToolCallCardProps {
 
 **`ToolResultView.tsx`**：通用工具结果文本（统一截断 200 行 + 滚动、截断提示在滚动容器外、失败 rose / 成功中性色、空输出占位）。
 
-**独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片（AskQuestionCard）、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（Markdown 渲染）、以及孤立结果（调用不在当前视图内）的降级结果卡片。
+**独立结果卡片仅保留三类**：`ask_question` 的结构化答案卡片（AskQuestionCard）、`spawn_session` / `send_message_to_session` 的紫色摘要卡片（Markdown 渲染）、以及孤立结果（调用不在当前视图内）的降级结果卡片。后者三类（不含 `ask_question`）由 `ToolResultCard.tsx` 渲染：**默认展开**，头部渲染 chevron + 工具名 + 状态（完成 / 结果 / 错误），整行头部可点击（`role="button"` + `tabIndex=0`，Enter/Space 同样可切换），`aria-expanded` 反映当前态；收起时正文条件卸载（Markdown 与长文本不参与布局与解析），折叠态由 TabChat 的 `collapsedResultIds`（「被用户收起」的 id 集合）受控维护。`ask_question` 结果卡保持既有展示，不可收起。
 
 **结果承载判定**：`collectCoveredToolResultIds(messages)` 收集「已由工具卡片承载」的结果 id（文件类 → 聚合卡片；普通工具 → 「结果」子项），排除 `STANDALONE_RESULT_TOOLS`（ask_question / spawn_session / send_message_to_session）；命中集合的结果不再渲染独立卡片，未命中（孤立结果 / 例外工具）继续走独立卡片。
 
@@ -138,6 +138,7 @@ interface ToolCallCardProps {
 - 失败判定：result 文本以 `Error` 开头（大小写不敏感，统一用 `isToolErrorMessage`）；结果未回（运行中/被中断/未落盘）归为 **pending**（琥珀色），不宣称为成功
 - 部分失败：同组内可能部分成功部分失败（并行调用），整卡按“有任一失败即红色”（失败优先于 pending）着色，失败行单独标红
 - 独立结果卡片与工具卡片的失败配色统一为 rose（TabChat 原 red 已对齐）；`ToolResultView` 截断提示边框用中性 slate，避免绿/红卡内出现琥珀线
+- 独立结果卡片默认展开（进入会话即显示正文，信息不隐藏）；收起后仅卸载正文，头部工具名与状态、footer 的复制按钮与时间戳都保留；折叠态按消息 id 记录在 TabChat 内存中（不持久化，重新挂载后恢复默认展开）
 - 状态徽标（失败/成功标签）统一 700 档（rose-700 / emerald-700），图标保持 600 档
 - 分组计算在 TabChat 中以 `useMemo([messages])` 缓存（不依赖每次渲染新建的 `displayMessages`）；消息量继续增大时可进一步建「结果索引」把 O(n²) 扫描降为 O(n)
 - 已知技术债：状态调色板中 `ToolCallCard` / `ToolCallBody` / `MergedToolCallsCard` 已共用 `lib/tool-call-scheme.ts`；`FileToolGroupCard` 与 `TabChat` 仍各有自己的配色表（色值已统一）；`hasResult` 口径在文件卡片（结果消息存在）与工具卡片（`content_text` 非 null）略有差异
@@ -157,6 +158,8 @@ interface ToolCallCardProps {
   3. 单文件组、混合工具组标签（`write + edit + read × 3`）、路径 `title`、running spinner
   4. 状态着色与失败展开：全部成功绿色卡片；结果未回琥珀色（pending，不宣称成功）；失败红色卡片（优先级高于运行中）+ 失败行默认展开错误原因 + 点击可收起；部分失败时仅失败行标红；全部收起/展开与失败行联动；失败的 edit/read 不渲染 diff 或 read 内容（只显示错误原因）
   5. read 行：行号范围 chip、独立展开内容、无结果回退 args；edit 行：details.diff 精确 ±、diff 明细渲染
+- `apps/web/src/components/ToolResultCard.test.tsx`：默认展开（无需点击即渲染正文）、点击头部收起/再展开、键盘 Enter/Space 与 `role=button` 可达、spawn 摘要紫色卡 + Markdown 渲染 + 状态文案（完成 / 其它 status / 无 status）、失败红卡、非 JSON 降级绿卡 + 200 字截断（含 200/201 边界）、summary 空白降级、孤立结果绿卡、空内容（null / 空字符串）不渲染正文、工具名缺失回退 `unknown`
+  - TabChat 接线（`expanded={!collapsedResultIds.has(msg.id)}` + `onToggle` + 状态集）不另建集成测试：TabChat 依赖 WebSocketProvider / react-query / api，进程级 `mock.module` 会泄漏到同进程其它测试文件，打挂不带 `--isolate` 的基线门禁（`scripts/baseline-check.sh` 跑 `bun test`），故不引入
 - `apps/web/src/components/ToolCallCard.test.tsx`：普通工具两个子项（执行参数默认收起 / 结果默认展开、成功/失败/运行中标识、子项可收起、重新展开恢复默认）、args 非法与无参数降级、折叠态失败徽标、复制按钮；例外保持（spawn 表格 + 角色后缀、ask_question JSON args、args 为空/非法时不出现子项）、spinner
 - `apps/web/src/lib/format-bash-command.test.ts`：`&&`/`||`/`|`/`;` 断行缩进、引号与转义内不处理、`$'...'`（ANSI-C quoting）、`;;`/`;&`/`;;&` 保留、单个 `&` 不处理、原始多行保留、空命令与空行折叠
 - `apps/web/src/components/ToolCallCard.test.tsx`（bash 部分）：参数表格（command/timeout 行）、命令断行缩进、hljs 语法高亮 token、复制命令按钮（spy 断言写入原始命令）、缺 command 字段、非 bash 工具仍为 JSON
@@ -166,7 +169,7 @@ interface ToolCallCardProps {
 
 ## 验证
 
-- `apps/web`：`bun run lint` + `bun test --isolate`（261 用例，改动范围，遵循仓库 AGENTS.md 的 scoped 检查纪律）
+- `apps/web`：`bun run lint` + `bun test --isolate`（本轮新增 `ToolResultCard.test.tsx` 16 例；改动范围内全绿，遵循仓库 AGENTS.md 的 scoped 检查纪律）；本轮不引入进程级 `mock.module`，故不会影响不带 `--isolate` 的 `bun test` 与基线门禁（`scripts/baseline-check.sh`）
 
 注：`ReadResultView` 仍保留 `isError` 样式分支（防御层）；当前生产路径下失败 read 由 `FileRow` 的错误分支直接渲染错误原因，不会传入 `ReadResultView`。
 

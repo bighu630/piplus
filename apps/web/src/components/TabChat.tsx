@@ -12,11 +12,11 @@ import {
   Wrench,
   ChevronDown,
   ChevronRight,
-  Terminal,
   Archive,
   GitMerge,
 } from 'lucide-react';
 import ToolCallCard from './ToolCallCard';
+import ToolResultCard from './ToolResultCard';
 import FileToolGroupCard from './FileToolGroupCard';
 import MergedToolCallsCard from './MergedToolCallsCard';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -27,7 +27,8 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import Download from 'yet-another-react-lightbox/plugins/download';
 import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
-import { buildFileToolGroups, collectCoveredToolResultIds, collectMergedToolCallGroups, findToolResultMessage, isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
+import { buildFileToolGroups, collectCoveredToolResultIds, collectMergedToolCallGroups, findToolResultMessage, parseToolArgsJson } from '../lib/tool-summary';
+import { computeVisibleTimestampIds, pickTimestampText } from '../lib/chat-timestamps';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -125,6 +126,8 @@ interface TabChatProps {
   thinkingLevelOptions?: string[];
   onThinkingLevelSelect?: (level: string) => void;
   isMobile?: boolean;
+  /** 「隐藏对话框时间戳」：开启后仅保留会话首尾消息的时间戳（设置变化即时生效） */
+  hideChatTimestamps?: boolean;
 }
 
 function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessageDTO[]): boolean {
@@ -201,6 +204,27 @@ function sanitizeStreamingContent(content: string): string {
   return content;
 }
 
+/** 卡片时间戳候选：调用 + 其对应的结果消息。
+ * 末条消息可能是被卡片承载的工具结果（结果本身不单独渲染），若只拿调用参与首尾判断，
+ * 「最后一条消息」的时间戳会随结果一起消失，因此两者一并作为候选。
+ * 注意：只有被卡片承载的结果（coveredResultIds）才计入；
+ * ask_question / spawn_session / send_message_to_session 的结果会单独渲染成结果卡片，
+ * 若也计入会导致同一时间戳在调用卡片与结果卡片上各显示一次。
+ */
+function timestampCandidates(
+  messages: ChatMessageDTO[],
+  calls: ChatMessageDTO[],
+  coveredResultIds: ReadonlySet<string>,
+): ChatMessageDTO[] {
+  const out: ChatMessageDTO[] = [];
+  for (const call of calls) {
+    out.push(call);
+    const result = findToolResultMessage(messages, call.id, call.tool_name || 'unknown', call.tool_call_id);
+    if (result && coveredResultIds.has(result.id)) out.push(result);
+  }
+  return out;
+}
+
 function TabChat({
   messages,
   hasMore,
@@ -229,12 +253,24 @@ function TabChat({
   thinkingLevelOptions,
   onThinkingLevelSelect,
   isMobile,
+  hideChatTimestamps,
 }: TabChatProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
   // 稳定引用：配合 ToolCallCard 的 React.memo，避免内联闭包导致工具卡片全量重渲染
   const toggleToolExpanded = useCallback((id: string) => {
     setExpandedToolIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // 独立结果卡片（spawn/send 摘要、孤立结果）默认展开，这里只记录「被用户收起」的 id
+  const [collapsedResultIds, setCollapsedResultIds] = useState<Set<string>>(new Set());
+  const toggleResultCollapsed = useCallback((id: string) => {
+    setCollapsedResultIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -364,6 +400,13 @@ function TabChat({
           created_at: new Date().toISOString(),
         },
       ];
+
+  // 「隐藏对话框时间戳」：开启后仅首尾消息保留时间戳（分组卡片按组内是否含首尾消息判断）
+  // 传 allMessages（而非含空会话占位消息的 displayMessages）：空会话的「暂无消息」占位不显示时间戳
+  const visibleTimestampIds = computeVisibleTimestampIds(allMessages, {
+    enabled: hideChatTimestamps === true,
+    hasMore,
+  });
 
   // 会话内全部图片构成画廊（谷歌相册式）：左右切换浏览本会话所有图片，点击定位到对应 index
   const sessionImageSlides = useMemo(() => {
@@ -713,6 +756,9 @@ function TabChat({
         )}
 
         {displayMessages.map((msg) => {
+          // 单条消息的可见时间戳：设置关闭时为 undefined（沿用默认渲染）
+          const timestampText = pickTimestampText(visibleTimestampIds, [msg]);
+
           // ═══ 文件工具聚合卡片：同回合的 write/edit/read 合并为一张卡片（多行文件列表，每行可独立展开）═══
           if (fileToolMemberIds.has(msg.id)) {
             const group = fileToolGroups.get(msg.id);
@@ -726,6 +772,7 @@ function TabChat({
                 onToggleOne={toggleToolExpanded}
                 onToggleAll={toggleAllToolFiles}
                 runningIds={runningToolIds}
+                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, group.calls, coveredToolResultIds))}
               />
             );
           }
@@ -742,6 +789,7 @@ function TabChat({
                 messages={messages}
                 expanded={expandedToolIds.has(group.id)}
                 onToggle={toggleToolExpanded}
+                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, group.calls, coveredToolResultIds))}
               />
             );
           }
@@ -765,9 +813,11 @@ function TabChat({
                       {msg.content_text}
                     </div>
                   </div>
-                  <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
+                  {timestampText !== null && (
+                    <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+                      {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                    </span>
+                  )}
                 </div>
               </div>
             );
@@ -819,13 +869,17 @@ function TabChat({
                     {askSubmitError && (
                       <div className="text-[11px] text-red-600 dark:text-red-400 px-1">提交失败：{askSubmitError}</div>
                     )}
-                    <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
-                      {new Date(msg.created_at).toLocaleTimeString()}
-                    </span>
+                    {timestampText !== null && (
+                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
+                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                      </span>
+                    )}
                   </div>
                 </div>
               );
             }
+
+            const toolResult = findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id);
 
             return (
               <ToolCallCard
@@ -835,7 +889,8 @@ function TabChat({
                 onToggle={toggleToolExpanded}
                 running={runningToolIds.has(msg.id)}
                 roleSuffix={spawnSessionRole}
-                resultContent={findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id)?.content_text ?? null}
+                resultContent={toolResult?.content_text ?? null}
+                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, [msg], coveredToolResultIds))}
               />
             );
           }
@@ -864,98 +919,26 @@ function TabChat({
                       details={details}
                       content={msg.content_text ?? ''}
                     />
-                    <span className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
-                      {new Date(msg.created_at).toLocaleTimeString()}
-                    </span>
+                    {timestampText !== null && (
+                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
+                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                      </span>
+                    )}
                   </div>
                 </div>
               );
             }
 
-            // ═══ 独立结果卡片（保持既有展示）：spawn/send 摘要、以及调用不在视图内的孤立结果 ═══
-            const isError = isToolErrorMessage(msg.content_text);
-            const summary = msg.content_text
-              ? msg.content_text.slice(0, 200) + (msg.content_text.length > 200 ? '…' : '')
-              : '(empty result)';
-
-            let spawnSummary: string | null = null;
-            let spawnStatus: string | null = null;
-            if ((toolName === 'spawn_session' || toolName === 'send_message_to_session') && msg.content_text && !isError) {
-              try {
-                const parsed = JSON.parse(msg.content_text);
-                if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
-                  spawnSummary = parsed.summary.trim();
-                  spawnStatus = typeof parsed.status === 'string' ? parsed.status : null;
-                }
-              } catch {
-                // 不是 JSON：按普通结果渲染
-              }
-            }
-
-            const colorScheme = isError
-              ? {
-                  bg: 'bg-rose-50 dark:bg-rose-950/30',
-                  border: 'border-rose-200 dark:border-rose-800',
-                  borderT: 'border-rose-200 dark:border-rose-800',
-                  icon: 'text-rose-600 dark:text-rose-400',
-                  label: 'text-rose-800 dark:text-rose-300',
-                  text: 'text-rose-900 dark:text-rose-200',
-                  suffix: 'text-rose-600/60 dark:text-rose-400/60',
-                }
-              : spawnSummary
-                ? {
-                    bg: 'bg-indigo-50 dark:bg-indigo-950/30',
-                    border: 'border-indigo-200 dark:border-indigo-800',
-                    borderT: 'border-indigo-200 dark:border-indigo-800',
-                    icon: 'text-indigo-600 dark:text-indigo-400',
-                    label: 'text-indigo-800 dark:text-indigo-300',
-                    text: 'text-indigo-900 dark:text-indigo-200',
-                    suffix: 'text-indigo-600/60 dark:text-indigo-400/60',
-                  }
-                : {
-                    bg: 'bg-emerald-50 dark:bg-emerald-950/30',
-                    border: 'border-emerald-200 dark:border-emerald-800',
-                    borderT: 'border-emerald-200 dark:border-emerald-800',
-                    icon: 'text-emerald-600 dark:text-emerald-400',
-                    label: 'text-emerald-800 dark:text-emerald-300',
-                    text: 'text-emerald-900 dark:text-emerald-200',
-                    suffix: 'text-emerald-600/60 dark:text-emerald-400/60',
-                  };
-
+            // ═══ 独立结果卡片：spawn/send 摘要、以及调用不在视图内的孤立结果 ═══
+            // 默认展开；点击卡片头部收起/再展开（折叠态按消息 id 记录在本组件）
             return (
               <div key={msg.id} className="flex justify-start items-start w-full min-w-0 group">
                 <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                  <div className={`${colorScheme.bg} ${colorScheme.border} rounded-xl overflow-hidden`}>
-                    <div className="px-3 py-2 flex items-center gap-2">
-                      <Terminal className={`w-3.5 h-3.5 ${colorScheme.icon} shrink-0`} />
-                      <span className={`text-xs font-semibold ${colorScheme.label} font-mono`}>
-                        {toolName}
-                      </span>
-                      {spawnSummary && spawnStatus && (
-                        <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
-                          {spawnStatus === 'completed' ? '完成' : spawnStatus}
-                        </span>
-                      )}
-                      {!spawnSummary && (
-                        <span className={`text-[10px] ${colorScheme.suffix} ml-1`}>
-                          {isError ? '错误' : '结果'}
-                        </span>
-                      )}
-                    </div>
-                    {spawnSummary ? (
-                      <div className={`border-t ${colorScheme.borderT} px-4 py-3`}>
-                        <div className="text-slate-800 dark:text-slate-200 w-full">
-                          <MarkdownRenderer content={spawnSummary} variant="compact" />
-                        </div>
-                      </div>
-                    ) : msg.content_text ? (
-                      <div className={`border-t ${colorScheme.borderT} px-3 py-2`}>
-                        <div className={`text-[11px] ${colorScheme.text} font-mono whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto`}>
-                          {summary}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
+                  <ToolResultCard
+                    msg={msg}
+                    expanded={!collapsedResultIds.has(msg.id)}
+                    onToggle={toggleResultCollapsed}
+                  />
                   <div className="flex items-center gap-2 mt-1 px-1">
                     {msg.content_text ? (
                       <button
@@ -977,9 +960,11 @@ function TabChat({
                         )}
                       </button>
                     ) : null}
-                    <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono order-1">
-                      {new Date(msg.created_at).toLocaleTimeString()}
-                    </span>
+                    {timestampText !== null && (
+                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 font-mono order-1">
+                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1053,9 +1038,11 @@ function TabChat({
                       )}
                     </button>
                   ) : null}
-                  <span className={`text-[10px] text-slate-400 dark:text-slate-500 font-mono ${isUser ? '' : 'order-1'}`}>
-                    {new Date(msg.created_at).toLocaleTimeString()}
-                  </span>
+                  {timestampText !== null && (
+                    <span data-testid="message-timestamp" className={`text-[10px] text-slate-400 dark:text-slate-500 font-mono ${isUser ? '' : 'order-1'}`}>
+                      {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
