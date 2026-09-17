@@ -14,13 +14,15 @@ import {
   GitCommitVertical,
   Tag,
   ArrowUpCircle,
+  UploadCloud,
+  Plus,
   X,
   FileText,
   Folder,
   FolderOpen,
   PanelLeft,
 } from 'lucide-react';
-import { useSessionGitDiff, useGitBranches, useGitTags, useGitCommits, useGitShow, useGitPullMutation, useGitPushMutation, useGitCommitMutation, useAddGitignoreMutation, useGitCheckoutMutation } from '../lib/hooks';
+import { useSessionGitDiff, useGitBranches, useGitTags, useGitCommits, useGitShow, useGitPullMutation, useGitPushMutation, useGitCommitMutation, useAddGitignoreMutation, useGitCheckoutMutation, useRemoteTags, useCreateGitTagMutation, usePushGitTagsMutation } from '../lib/hooks';
 
 interface GitActionResult {
   session_id: string;
@@ -247,6 +249,9 @@ function TabGitDiff({
   const gitCommitMut = useGitCommitMutation();
   const addGitignoreMut = useAddGitignoreMutation();
   const gitCheckoutMut = useGitCheckoutMutation();
+  const remoteTagsQuery = useRemoteTags(activeTab === 'diff' ? selectedSessionId : null);
+  const createGitTagMut = useCreateGitTagMutation();
+  const pushGitTagsMut = usePushGitTagsMutation();
 
   // Compute which diff to display
   const displayDiff = selectedCommitHash
@@ -275,6 +280,9 @@ function TabGitDiff({
   const [isTreePanelCollapsed, setIsTreePanelCollapsed] = useState(false);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [refMode, setRefMode] = useState<'branch' | 'tag'>('branch');
+  const [showTagForm, setShowTagForm] = useState(false);
+  const [newTagName, setNewTagName] = useState('');
+  const [newTagMessage, setNewTagMessage] = useState('');
   const branchSelectorRef = useRef<HTMLDivElement>(null);
   const [commitDropdownOpen, setCommitDropdownOpen] = useState(false);
   const commitSelectorRef = useRef<HTMLDivElement>(null);
@@ -282,6 +290,13 @@ function TabGitDiff({
   // Reset reference mode to branches whenever the session changes
   useEffect(() => {
     setRefMode('branch');
+  }, [selectedSessionId]);
+
+  // Reset the tag creation form whenever the session changes
+  useEffect(() => {
+    setShowTagForm(false);
+    setNewTagName('');
+    setNewTagMessage('');
   }, [selectedSessionId]);
 
   // Close commit dropdown on outside click
@@ -466,16 +481,91 @@ function TabGitDiff({
   const isCommitting = gitCommitMut.isPending;
   const isAddingGitignore = addGitignoreMut.isPending;
   const isCheckingOut = gitCheckoutMut.isPending;
+  const isCreatingTag = createGitTagMut.isPending;
+  const isPushingTags = pushGitTagsMut.isPending;
   const currentBranch = gitBranchesQuery.data?.current_branch ?? null;
   const branches = gitBranchesQuery.data?.branches ?? null;
   const detached = gitBranchesQuery.data?.detached ?? false;
   const detachedRef = gitBranchesQuery.data?.detached_ref ?? null;
   const tags = gitTagsQuery.data?.tags ?? null;
+  const remoteTagShas = useMemo(
+    () => new Map((remoteTagsQuery.data?.tags ?? []).map((t) => [t.name, t.sha])),
+    [remoteTagsQuery.data],
+  );
+  // Remote state is only trustworthy when the backend could actually reach the remote.
+  const remoteReady = remoteTagsQuery.data?.remote_ok === true;
+  const isUnpushed = useCallback(
+    (t: { name: string; sha: string }) => remoteReady && remoteTagShas.get(t.name) !== t.sha,
+    [remoteReady, remoteTagShas],
+  );
+  const unpushedTags = useMemo(() => (tags ?? []).filter(isUnpushed), [tags, isUnpushed]);
   const sessionWorktreePath = gitBranchesQuery.data?.session_worktree_path ?? null;
   const cwd = gitDiffQuery.data?.cwd ?? gitBranchesQuery.data?.cwd ?? null;
   const commits = gitCommitsQuery.data?.commits ?? null;
 
-  const anyBusy = isPulling || isPushing || isCommitting || isDisplayLoading || isCheckingOut || !!selectedCommitHash;
+  const anyBusy = isPulling || isPushing || isCommitting || isDisplayLoading || isCheckingOut || isCreatingTag || isPushingTags || !!selectedCommitHash;
+
+  /** Create a tag at HEAD. With `alsoPush` the freshly created tag is pushed right after. */
+  const handleCreateTag = useCallback(
+    async (alsoPush: boolean) => {
+      const name = newTagName.trim();
+      if (!name || !selectedSessionId || isCreatingTag || isPushingTags) return;
+      const message = newTagMessage.trim();
+      try {
+        await createGitTagMut.mutateAsync({ sessionId: selectedSessionId, name, message: message || undefined });
+      } catch (err) {
+        setOpFeedback({ op: 'checkout', result: 'error', message: checkoutErrorMessage(err, `创建标签 "${name}" 失败`) });
+        setTimeout(clearFeedback, 6000);
+        return;
+      }
+      if (alsoPush) {
+        try {
+          await pushGitTagsMut.mutateAsync({ sessionId: selectedSessionId, names: [name] });
+          setOpFeedback({ op: 'checkout', result: 'ok', message: `已创建并推送标签 "${name}"` });
+        } catch (err) {
+          setOpFeedback({
+            op: 'checkout',
+            result: 'error',
+            message: `标签 "${name}" 已创建，但推送失败：${checkoutErrorMessage(err, '推送失败')}`,
+          });
+        }
+      } else {
+        setOpFeedback({ op: 'checkout', result: 'ok', message: `已创建标签 "${name}"` });
+      }
+      setNewTagName('');
+      setNewTagMessage('');
+      setShowTagForm(false);
+      setTimeout(clearFeedback, 6000);
+    },
+    [newTagName, newTagMessage, selectedSessionId, isCreatingTag, isPushingTags, createGitTagMut, pushGitTagsMut, clearFeedback],
+  );
+
+  /** Push every tag that is missing from (or differs on) the remote. */
+  const handlePushUnpushedTags = useCallback(async () => {
+    if (!selectedSessionId || unpushedTags.length === 0) return;
+    try {
+      const res = await pushGitTagsMut.mutateAsync({ sessionId: selectedSessionId });
+      setOpFeedback({ op: 'checkout', result: 'ok', message: `已推送 ${res.pushed.length} 个标签` });
+    } catch (err) {
+      setOpFeedback({ op: 'checkout', result: 'error', message: checkoutErrorMessage(err, '推送标签失败') });
+    }
+    setTimeout(clearFeedback, 6000);
+  }, [selectedSessionId, unpushedTags.length, pushGitTagsMut, clearFeedback]);
+
+  /** Push a single tag to the remote. */
+  const handlePushTag = useCallback(
+    async (name: string) => {
+      if (!selectedSessionId) return;
+      try {
+        await pushGitTagsMut.mutateAsync({ sessionId: selectedSessionId, names: [name] });
+        setOpFeedback({ op: 'checkout', result: 'ok', message: `已推送标签 "${name}"` });
+      } catch (err) {
+        setOpFeedback({ op: 'checkout', result: 'error', message: checkoutErrorMessage(err, `推送标签 "${name}" 失败`) });
+      }
+      setTimeout(clearFeedback, 6000);
+    },
+    [selectedSessionId, pushGitTagsMut, clearFeedback],
+  );
 
   const functionalFiles = useMemo(
     () => parsedFiles.filter((f) => f.lines.some((l) => l.type !== 'header')),
@@ -537,6 +627,93 @@ function TabGitDiff({
                       标签 ({tags?.length ?? 0})
                     </button>
                   </div>
+                  {refMode === 'tag' && (
+                    <div className="px-2 py-1.5 border-b border-slate-100 dark:border-slate-700 space-y-1.5">
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowTagForm((prev) => !prev)}
+                          disabled={anyBusy}
+                          className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-300 hover:bg-violet-100/70 dark:hover:bg-violet-900/50 transition cursor-pointer disabled:opacity-50"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>新建标签</span>
+                        </button>
+                        {unpushedTags.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => void handlePushUnpushedTags()}
+                            disabled={anyBusy}
+                            title="推送全部未推送的标签"
+                            className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-300 hover:bg-amber-100/70 dark:hover:bg-amber-900/50 transition cursor-pointer disabled:opacity-50"
+                          >
+                            <UploadCloud className="w-3 h-3" />
+                            <span>{isPushingTags ? '推送中…' : `推送未推送 (${unpushedTags.length})`}</span>
+                          </button>
+                        )}
+                      </div>
+                      {showTagForm && (
+                        <div className="space-y-1.5">
+                          <input
+                            autoFocus
+                            type="text"
+                            placeholder="标签名，如 v1.2.0"
+                            value={newTagName}
+                            onChange={(e) => setNewTagName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                void handleCreateTag(true);
+                              }
+                            }}
+                            disabled={isCreatingTag || isPushingTags}
+                            className="w-full px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:border-violet-400 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 disabled:opacity-50"
+                          />
+                          <input
+                            type="text"
+                            placeholder="说明（可选，填写则创建 annotated 标签）"
+                            value={newTagMessage}
+                            onChange={(e) => setNewTagMessage(e.target.value)}
+                            disabled={isCreatingTag || isPushingTags}
+                            className="w-full px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:border-violet-400 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 disabled:opacity-50"
+                          />
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTagForm(false);
+                                setNewTagName('');
+                                setNewTagMessage('');
+                              }}
+                              disabled={isCreatingTag || isPushingTags}
+                              className="px-2 py-1 text-[10px] font-semibold text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700/50 rounded-lg transition cursor-pointer disabled:opacity-50"
+                            >
+                              取消
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleCreateTag(false)}
+                              disabled={!newTagName.trim() || anyBusy}
+                              className="px-2.5 py-1 text-[10px] font-bold bg-violet-600 text-white hover:bg-violet-700 rounded-lg transition cursor-pointer disabled:opacity-50"
+                            >
+                              {isCreatingTag ? '创建中…' : '创建'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleCreateTag(true)}
+                              disabled={!newTagName.trim() || anyBusy}
+                              className="px-2.5 py-1 text-[10px] font-bold bg-amber-500 text-white hover:bg-amber-600 rounded-lg transition cursor-pointer disabled:opacity-50"
+                            >
+                              {isCreatingTag || isPushingTags ? '处理中…' : '创建并推送'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {!remoteReady && !remoteTagsQuery.isLoading && (
+                        <div className="px-0.5 text-[10px] text-slate-400 dark:text-slate-500">远程状态不可用</div>
+                      )}
+                    </div>
+                  )}
                   <div className="max-h-60 overflow-y-auto">
                     {refMode === 'branch' ? (
                     <>
@@ -604,9 +781,10 @@ function TabGitDiff({
                     ) : (
                     <>
                     {tags?.map((t) => {
+                      const unpushed = isUnpushed(t);
                       return (
+                        <div key={t.name} className="flex items-start gap-0.5 pr-1">
                         <button
-                          key={t.name}
                           type="button"
                           onClick={async () => {
                             if (!t.is_current) {
@@ -633,7 +811,7 @@ function TabGitDiff({
                             }
                           }}
                           disabled={t.is_current || isCheckingOut}
-                          className={`w-full flex items-start space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
+                          className={`flex-1 min-w-0 flex items-start space-x-2 px-3 py-2 text-xs text-left transition cursor-pointer ${
                             t.is_current
                               ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 font-semibold'
                               : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
@@ -648,6 +826,11 @@ function TabGitDiff({
                                   annotated
                                 </span>
                               )}
+                              {unpushed && (
+                                <span className="shrink-0 px-1 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 leading-none">
+                                  未推送
+                                </span>
+                              )}
                               {t.is_current && <span className="ml-auto shrink-0 text-[10px] text-blue-500">当前</span>}
                             </div>
                             <div className="truncate mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">
@@ -656,6 +839,22 @@ function TabGitDiff({
                             </div>
                           </div>
                         </button>
+                        {unpushed && (
+                          <button
+                            type="button"
+                            title={`推送标签 "${t.name}" 到远程`}
+                            aria-label={`推送标签 "${t.name}" 到远程`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handlePushTag(t.name);
+                            }}
+                            disabled={anyBusy}
+                            className="shrink-0 mt-1.5 mr-0.5 p-1 rounded-lg text-amber-600 dark:text-amber-400 hover:bg-amber-100/70 dark:hover:bg-amber-900/40 transition cursor-pointer disabled:opacity-30"
+                          >
+                            <UploadCloud className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        </div>
                       );
                     })}
                     {!tags && (
