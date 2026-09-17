@@ -96,6 +96,18 @@ async function makeBareRemote(label: string): Promise<string> {
   return dir;
 }
 
+/** A repo with several bare remotes, used to pin down the push-remote resolution priority. */
+async function makeRepoWithRemotes(label: string, names: string[]): Promise<{ repo: string; remotes: Record<string, string> }> {
+  const repo = await makeRepo(label);
+  const remotes: Record<string, string> = {};
+  for (const name of names) {
+    const dir = await makeBareRemote(`${label}-${name}`);
+    mustGit(repo, 'remote', 'add', name, dir);
+    remotes[name] = dir;
+  }
+  return { repo, remotes };
+}
+
 async function apiGet(app: TestApp, sessionId: string, endpoint: 'branches' | 'tags' | 'remote-tags') {
   const res = await app.request(`/api/v1/sessions/${sessionId}/git/${endpoint}`, {
     headers: { 'x-user-id': 'user_seed' },
@@ -604,6 +616,48 @@ describe('git tag sha and remote status', () => {
     await rm(repo, { recursive: true, force: true });
   });
 
+  test('git/tags keeps the sha correct when a tag subject contains the list separator', async () => {
+    const repo = await makeRepo('tags-separator-subject');
+    await commitFile(repo, 'a.txt', 'one', 'first commit');
+    // `|||` is legal in tag messages (and in ref names), so a subject containing it must not
+    // shift the fields that follow it — the sha used to be parsed as the subject's tail.
+    mustGit(repo, 'tag', '-a', 'v1.0.0', '-m', 'subject with ||| inside');
+    const annotatedTagSha = mustGit(repo, 'rev-parse', 'refs/tags/v1.0.0');
+
+    const { app, sessionId } = await seedSession(repo);
+    const { status, body } = await apiGet(app, sessionId, 'tags');
+
+    expect(status).toBe(200);
+    const tag = body.tags.find((t: any) => t.name === 'v1.0.0');
+    expect(tag).toBeDefined();
+    expect(tag.name).toBe('v1.0.0');
+    expect(tag.is_annotated).toBe(true);
+    expect(tag.date).not.toBe('inside');
+    // The sha is the tag object sha — never a fragment of the subject.
+    expect(tag.sha).toBe(annotatedTagSha);
+    expect(tag.sha).toHaveLength(40);
+    expect(tag.sha).not.toBe('inside');
+    expect(tag.subject).toContain('subject with');
+
+    // User-visible consequence: once pushed, the local sha equals the advertised remote sha, so
+    // the Git page no longer shows a permanent false "unpushed" badge for this tag.
+    const remote = await makeBareRemote('tags-separator-subject');
+    mustGit(repo, 'remote', 'add', 'origin', remote);
+    mustGit(repo, 'push', 'origin', 'refs/tags/v1.0.0:refs/tags/v1.0.0');
+
+    const remoteTags = await apiGet(app, sessionId, 'remote-tags');
+    expect(remoteTags.status).toBe(200);
+    expect(remoteTags.body.tags).toEqual([{ name: 'v1.0.0', sha: annotatedTagSha }]);
+    expect(tag.sha).toBe((remoteTags.body.tags as Array<{ sha: string }>)[0].sha);
+
+    // A tag the remote already advertises with the same sha is a no-op, not a re-push.
+    const push = await apiPost(app, sessionId, 'tags/push', {});
+    expect(push.status).toBe(200);
+    expect(push.body.pushed).toEqual([]);
+
+    await rm(repo, { recursive: true, force: true });
+  });
+
   test('git/remote-tags degrades gracefully without a remote and lists the remote once configured', async () => {
     const repo = await makeRepo('remote-tags');
     const firstSha = await commitFile(repo, 'a.txt', 'one', 'first commit');
@@ -780,6 +834,12 @@ describe('git tag push', () => {
     expect(malformed.body.error.code).toBe('INVALID_NAMES');
     expect(mustGit(remote, 'tag', '-l')).toBe('');
 
+    // A non-string scalar must not be coerced (String(1234)) into a bogus ref and fail as a 500.
+    const numeric = await apiPost(app, sessionId, 'tags/push', { names: [1234] });
+    expect(numeric.status).toBe(400);
+    expect(numeric.body.error.code).toBe('INVALID_NAMES');
+    expect(mustGit(remote, 'tag', '-l')).toBe('');
+
     // Duplicates collapse into a single refspec — git rejects the same ref pushed twice.
     const res = await apiPost(app, sessionId, 'tags/push', { names: ['v1.0.0', 'v1.0.0'] });
     expect(res.status).toBe(200);
@@ -854,6 +914,112 @@ describe('git tag push', () => {
     expect(mustGit(remote, 'rev-parse', 'refs/tags/v1.0.0')).toBe(
       mustGit(repo, 'rev-parse', 'refs/tags/v1.0.0'),
     );
+
+    await rm(repo, { recursive: true, force: true });
+  });
+});
+
+describe('git push remote resolution priority', () => {
+  test('POST git/tags/push prefers remote.pushDefault over branch.<name>.remote', async () => {
+    const { repo, remotes } = await makeRepoWithRemotes('push-remote-priority-a', ['r1', 'r2']);
+    const tagSha = await commitFile(repo, 'a.txt', 'one', 'first commit');
+    mustGit(repo, 'tag', 'v1.0.0');
+    // `git push` resolves remote.pushDefault before branch.<name>.remote.
+    mustGit(repo, 'config', 'branch.main.remote', 'r1');
+    mustGit(repo, 'config', 'remote.pushDefault', 'r2');
+
+    const { app, sessionId } = await seedSession(repo);
+    const res = await apiPost(app, sessionId, 'tags/push', { names: ['v1.0.0'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.remote).toBe('r2');
+    // The tag must really land in r2 — a wrong return value here pushes to the wrong repo.
+    expect(mustGit(remotes.r2, 'rev-parse', 'refs/tags/v1.0.0')).toBe(tagSha);
+    expect(mustGit(remotes.r1, 'tag', '-l')).toBe('');
+
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  test('POST git/tags/push prefers branch.<name>.pushRemote over pushDefault and branch.remote', async () => {
+    const { repo, remotes } = await makeRepoWithRemotes('push-remote-priority-b', ['r1', 'r2', 'r3']);
+    const tagSha = await commitFile(repo, 'a.txt', 'one', 'first commit');
+    mustGit(repo, 'tag', 'v1.0.0');
+    mustGit(repo, 'config', 'branch.main.remote', 'r1');
+    mustGit(repo, 'config', 'remote.pushDefault', 'r2');
+    // pushRemote is the first source git consults for a branch-specific push.
+    mustGit(repo, 'config', 'branch.main.pushRemote', 'r3');
+
+    const { app, sessionId } = await seedSession(repo);
+    const res = await apiPost(app, sessionId, 'tags/push', { names: ['v1.0.0'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.remote).toBe('r3');
+    expect(mustGit(remotes.r3, 'rev-parse', 'refs/tags/v1.0.0')).toBe(tagSha);
+    expect(mustGit(remotes.r1, 'tag', '-l')).toBe('');
+    expect(mustGit(remotes.r2, 'tag', '-l')).toBe('');
+
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  test('POST git/tags/push falls back to branch.<name>.remote when no push remote is set', async () => {
+    const { repo, remotes } = await makeRepoWithRemotes('push-remote-priority-c', ['r1', 'r2']);
+    const tagSha = await commitFile(repo, 'a.txt', 'one', 'first commit');
+    mustGit(repo, 'tag', 'v1.0.0');
+    mustGit(repo, 'config', 'branch.main.remote', 'r1');
+
+    const { app, sessionId } = await seedSession(repo);
+    const res = await apiPost(app, sessionId, 'tags/push', { names: ['v1.0.0'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.remote).toBe('r1');
+    expect(mustGit(remotes.r1, 'rev-parse', 'refs/tags/v1.0.0')).toBe(tagSha);
+    expect(mustGit(remotes.r2, 'tag', '-l')).toBe('');
+
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  test('POST git/tags/push falls back to the first configured remote without branch config', async () => {
+    const { repo, remotes } = await makeRepoWithRemotes('push-remote-priority-d', ['r1', 'r2']);
+    const tagSha = await commitFile(repo, 'a.txt', 'one', 'first commit');
+    mustGit(repo, 'tag', 'v1.0.0');
+    // No branch.* config: the helper keeps its documented fallback, `git remote`'s first entry
+    // (git sorts the names). git itself would refuse to push without an explicit destination,
+    // but the API still has to pick exactly one remote for tag listing and pushing.
+    const firstRemote = mustGit(repo, 'remote').split('\n').map((line) => line.trim()).filter(Boolean)[0];
+    expect(firstRemote).toBeTruthy();
+
+    const { app, sessionId } = await seedSession(repo);
+    const res = await apiPost(app, sessionId, 'tags/push', { names: ['v1.0.0'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.remote).toBe(firstRemote);
+    expect(mustGit(remotes[firstRemote], 'rev-parse', 'refs/tags/v1.0.0')).toBe(tagSha);
+    for (const [name, dir] of Object.entries(remotes)) {
+      if (name === firstRemote) continue;
+      expect(mustGit(dir, 'tag', '-l')).toBe('');
+    }
+
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  test('POST git/tags/push skips branch.<name>.remote on a detached HEAD but keeps pushDefault', async () => {
+    const { repo, remotes } = await makeRepoWithRemotes('push-remote-priority-detached', ['r1', 'r2']);
+    const baseSha = await commitFile(repo, 'a.txt', 'one', 'first commit');
+    mustGit(repo, 'tag', 'v1.0.0');
+    mustGit(repo, 'config', 'branch.main.remote', 'r1');
+    mustGit(repo, 'config', 'remote.pushDefault', 'r2');
+    mustGit(repo, 'checkout', '--detach', baseSha);
+
+    const { app, sessionId } = await seedSession(repo);
+    const res = await apiPost(app, sessionId, 'tags/push', { names: ['v1.0.0'] });
+
+    expect(res.status).toBe(200);
+    // No current branch → branch.main.remote is unreachable; remote.pushDefault still applies.
+    expect(res.body.remote).toBe('r2');
+    expect(mustGit(remotes.r2, 'rev-parse', 'refs/tags/v1.0.0')).toBe(
+      mustGit(repo, 'rev-parse', 'refs/tags/v1.0.0'),
+    );
+    expect(mustGit(remotes.r1, 'tag', '-l')).toBe('');
 
     await rm(repo, { recursive: true, force: true });
   });

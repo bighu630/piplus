@@ -24,8 +24,10 @@ function execGitFileArgs(cwd: string, args: string[], timeoutMs?: number): strin
 }
 
 /**
- * Remote to push to, resolved by git rather than hard-coded:
- * `branch.<current>.remote` → `remote.pushDefault` → first configured remote.
+ * Remote to push to, resolved by git rather than hard-coded. Mirrors git's own push-remote
+ * order: `branch.<current>.pushRemote` → `remote.pushDefault` → `branch.<current>.remote`
+ * → first configured remote. `remote.pushDefault` outranks `branch.<current>.remote` on
+ * purpose: without that, tags would land in a different repository than `git push` uses.
  */
 function resolveGitRemote(cwd: string): string | null {
   const tryConfig = (key: string): string | null => {
@@ -36,18 +38,21 @@ function resolveGitRemote(cwd: string): string | null {
     }
   };
 
+  // Detached HEAD (`rev-parse --abbrev-ref HEAD` → `HEAD`) has no branch.* config to read.
+  let currentBranch: string | null = null;
   try {
     const current = execGitFileArgs(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
-    if (current && current !== 'HEAD') {
-      const fromBranch = tryConfig(`branch.${current}.remote`);
-      if (fromBranch) return fromBranch;
-    }
+    if (current && current !== 'HEAD') currentBranch = current;
   } catch {
-    // detached HEAD or a repository without commits — fall through to the other sources
+    // a repository without commits — same fallback as detached HEAD
   }
 
-  const pushDefault = tryConfig('remote.pushDefault');
-  if (pushDefault) return pushDefault;
+  const branchConfig = (key: string): string | null =>
+    currentBranch ? tryConfig(`branch.${currentBranch}.${key}`) : null;
+
+  const preferred =
+    branchConfig('pushRemote') ?? tryConfig('remote.pushDefault') ?? branchConfig('remote');
+  if (preferred) return preferred;
 
   try {
     const first = execGitFileArgs(cwd, ['remote'])
@@ -395,15 +400,20 @@ export function registerGitRoutes(app: Hono) {
       const detached = isDetachedHead(cwd);
       const pointingAtHead = new Set(detached ? tagsPointingAtHead(cwd) : []);
 
+      // The sha comes from the tab-separated `%(refname:lstrip=2)\t%(objectname)` listing:
+      // a ref name cannot contain a tab, while `|||` *is* legal in a tag message. Keeping
+      // `%(objectname)` in this `|||` format made a subject containing `|||` shift the field
+      // and expose a fragment of the message as the sha (a permanent "unpushed" badge).
+      const localShas = listLocalTagShas(cwd);
       const output = execGit(
         cwd,
-        `tag --list --sort=-creatordate --format='%(refname:lstrip=2)|||%(objecttype)|||%(creatordate:short)|||%(subject)|||%(objectname)'`,
+        `tag --list --sort=-creatordate --format='%(refname:lstrip=2)|||%(objecttype)|||%(creatordate:short)|||%(subject)'`,
       );
       const tags = output
         .split('\n')
         .filter(Boolean)
         .map((line: string) => {
-          const [name = '', objecttype = '', date = '', subject = '', sha = ''] = line.split('|||');
+          const [name = '', objecttype = '', date = '', subject = ''] = line.split('|||');
           const tagName = name.trim();
           return {
             name: tagName,
@@ -413,7 +423,7 @@ export function registerGitRoutes(app: Hono) {
             subject: subject.trim(),
             // annotated tag → tag object sha; lightweight tag → commit sha. Both equal what
             // `git ls-remote --tags <remote>` advertises for `refs/tags/<name>`.
-            sha: sha.trim(),
+            sha: localShas.get(tagName) ?? '',
           };
         })
         .filter((tag) => Boolean(tag.name));
@@ -558,6 +568,11 @@ export function registerGitRoutes(app: Hono) {
     if (Array.isArray(rawNames) && rawNames.length > 0) {
       requested = [];
       for (const raw of rawNames) {
+        // A non-string scalar must not be coerced into a tag name (`String(1234)` → 1234 →
+        // `src refspec refs/tags/1234 does not match any` and a 500 instead of a 400).
+        if (typeof raw !== 'string') {
+          return c.json({ error: { code: 'INVALID_NAMES', message: 'names must be an array of tag names' } }, 400);
+        }
         const parsed = validateTagName(raw);
         if ('error' in parsed) return c.json({ error: parsed.error }, 400);
         requested.push(parsed.name);
