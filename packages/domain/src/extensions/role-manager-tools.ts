@@ -617,12 +617,34 @@ async function waitForChildWriteback(
           currentModelProvider: sessions.currentModelProvider,
           currentModelId: sessions.currentModelId,
           piSessionLocatorJson: sessions.piSessionLocatorJson,
+          lastStopAt: sessions.lastStopAt,
+          lastRunAt: sessions.lastRunAt,
         })
         .from(sessions)
         .where(eq(sessions.id, childSessionId))
         .limit(1);
 
       const now = Date.now();
+
+      // 子会话被用户 stop：立即取消 wait，避免 reminder 把已停止的子会话重新拉起。
+      // stop 路由先写 stopping + lastStopAt，finalizeSessionStop 很快复位 idle（2s 轮询易错过 stopping 窗口），
+      // 因此除了 stopping 态，还用 lastStopAt >= lastRunAt 识别「停止后已被复位 idle」；
+      // 等待期间用户手动重新激活子会话会更新 lastRunAt，不会误取消。
+      // 放在 writeback 命中之后：子会话已写回结果再被 stop，仍返回 completed。
+      const stoppedAfterRun = !!(child?.lastStopAt && (!child.lastRunAt || child.lastStopAt.getTime() >= child.lastRunAt.getTime()));
+      if (child && (child.runtimeStatus === 'stopping' || stoppedAfterRun)) {
+        console.log('[role-manager-tools] waitForChildWriteback child stopped', {
+          childSessionId,
+          requestId,
+          runtimeStatus: child.runtimeStatus,
+          stoppedAfterRun,
+        });
+        return {
+          status: 'cancelled',
+          session_id: childSessionId,
+          message: '子会话已停止，已取消等待子会话结果',
+        };
+      }
 
       // If child failed (idle + explicit error), try candidates or return failure.
       if (child?.runtimeStatus === 'idle' && child?.lastRuntimeError) {
