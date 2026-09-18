@@ -28,6 +28,12 @@ export function resolveSafeFilePath(rootDir: string, relativePath: string) {
 }
 
 export function execGit(cwd: string, ...args: string[]) {
-  const stdout = execSync(`git ${args.join(' ')}`, { cwd, encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).toString();
+  // LC_ALL=C：强制 git 输出稳定英文（如 detached HEAD 伪分支名），避免中文 locale 下解析失败
+  const stdout = execSync(`git ${args.join(' ')}`, {
+    cwd,
+    encoding: 'utf-8',
+    maxBuffer: 10 * 1024 * 1024,
+    env: { ...process.env, LC_ALL: 'C' },
+  }).toString();
   return stdout;
 }
