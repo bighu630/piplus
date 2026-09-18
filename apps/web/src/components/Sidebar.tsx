@@ -4,25 +4,18 @@ import {
   Folder,
   FolderOpen,
   Github,
-  FileText,
   ChevronDown,
   ChevronRight,
   Plus,
   Trash2,
   LogOut,
   Settings,
-  PlusCircle,
   Search,
   Archive,
-  Star,
-  Circle,
-  Triangle,
-  Bug,
-  Eye,
-  User,
   ArrowUp,
 } from 'lucide-react';
-import { ROLE_ICONS_MAP } from '../lib/role-icons';
+import { getRoleIconComponent } from '../lib/role-icons';
+import { getRoleLabel } from '../lib/role-metadata';
 import { useRoleTemplates } from '../lib/hooks';
 import { fuzzyMatch } from '../lib/fuzzy';
 import { useWebSocket } from '../lib/ws-provider';
@@ -62,38 +55,6 @@ interface SidebarProps {
   onReturnToTree?: () => void;
   /** 隐藏 session 树上的角色名 */
   hideRoleLabels?: boolean;
-}
-
-function roleLabel(key: string): string {
-  const map: Record<string, string> = {
-    planner: '规划者',
-    worker: '执行者',
-    reviewer: '审查者',
-    feature_lead: '需求负责人',
-    bugfix_lead: 'Bug负责人',
-    blank: '空白',
-  };
-  return map[key] ?? key;
-}
-
-function roleIcon(key: string, templates?: Array<{ key: string; icon: string | null }>): React.ComponentType<{ className?: string }> {
-  // Try backend-stored icon first
-  if (templates) {
-    const tpl = templates.find(t => t.key === key);
-    if (tpl?.icon && ROLE_ICONS_MAP[tpl.icon]) {
-      return ROLE_ICONS_MAP[tpl.icon];
-    }
-  }
-  // Fallback to hardcoded map
-  const map: Record<string, React.ComponentType<{ className?: string }>> = {
-    planner: Star,
-    worker: Circle,
-    reviewer: Eye,
-    feature_lead: Triangle,
-    bugfix_lead: Bug,
-    blank: User,
-  };
-  return map[key] ?? FileText;
 }
 
 function projectInitials(name: string): string {
@@ -270,7 +231,7 @@ function Sidebar({
               : null;
           }
           if (includeSearch && hasSearch) {
-            if (!fuzzyMatch(q, s.title) && !fuzzyMatch(q, s.role_template_key) && !fuzzyMatch(q, roleLabel(s.role_template_key))) {
+            if (!fuzzyMatch(q, s.title) && !fuzzyMatch(q, s.role_template_key) && !fuzzyMatch(q, getRoleLabel(s.role_template_key))) {
               // Bridge node: keep visible if any child matched the search
               return filteredChildren.length > 0
                 ? { ...s, children: filteredChildren }
@@ -383,7 +344,7 @@ function Sidebar({
               </div>
             )}
             <div className="flex items-center space-x-1.5 min-w-0">
-              {(isPinned || !effectiveCollapsed) && React.createElement(roleIcon(session.role_template_key, roleTemplatesQuery.data), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : isPinned ? 'text-amber-300 dark:text-amber-300' : 'text-slate-400'}` })}
+              {(isPinned || !effectiveCollapsed) && React.createElement(getRoleIconComponent(session.role_template_key, roleTemplatesQuery.data), { className: `w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : isPinned ? 'text-amber-300 dark:text-amber-300' : 'text-slate-400'}` })}
 
             {!effectiveCollapsed && (
               <span
@@ -413,7 +374,7 @@ function Sidebar({
                     e.preventDefault();
                     e.stopPropagation();
                     if (onArchiveSession) {
-                      const name = session.title || roleLabel(session.role_template_key);
+                      const name = session.title || getRoleLabel(session.role_template_key);
                       setTimeout(() => {
                         if (confirm(`确定归档会话 "${name}"？`)) {
                           onArchiveSession(session.id);
@@ -422,7 +383,7 @@ function Sidebar({
                     }
                   }}
                 >
-                  {roleLabel(session.role_template_key)}
+                  {getRoleLabel(session.role_template_key)}
                 </span>
               </div>
               {statusDotColor ? (
@@ -445,7 +406,7 @@ function Sidebar({
                   e.preventDefault();
                   e.stopPropagation();
                   if (onArchiveSession) {
-                    const name = session.title || roleLabel(session.role_template_key);
+                    const name = session.title || getRoleLabel(session.role_template_key);
                     setTimeout(() => {
                       if (confirm(`确定归档会话 "${name}"？`)) {
                         onArchiveSession(session.id);
@@ -454,7 +415,7 @@ function Sidebar({
                   }
                 }}
               >
-                {roleLabel(session.role_template_key)}
+                {getRoleLabel(session.role_template_key)}
               </span>
               {statusDotColor ? (
                 <div className={`w-2 h-2 rounded-full shrink-0 ${statusDotColor} ${(session.runtime_status === 'running' || isAsking) ? 'animate-pulse' : ''}`} />
