@@ -952,13 +952,23 @@ describe('session routes', () => {
 
     // Stop a session that was just created and has NO runtime restored.
     // The handler must return 202 immediately — no hanging even when agentSession is absent.
+    const before = Date.now();
     const stopRes = await app.request(`/api/v1/sessions/${sessionId}/stop`, {
       method: 'POST',
       headers: { 'x-user-id': 'user_seed' },
     });
+    const after = Date.now();
     expect(stopRes.status).toBe(202);
     const body = await stopRes.json();
     expect(body).toMatchObject({ session_id: sessionId, status: 'stopping' });
+
+    // lastStopAt 必须写真实时钟（与 startSessionRun 的 lastRunAt 同源），而非 nextMessageTime 的排序时钟
+    // （后者会超前真实时间，使 waitForChildWriteback 的 lastStopAt >= lastRunAt 判据误取消合法重启）。
+    const db = createDb(`file:${path}`);
+    const [stopped] = await db.select({ lastStopAt: sessions.lastStopAt }).from(sessions).where(eq(sessions.id, sessionId)).limit(1);
+    expect(stopped?.lastStopAt).toBeTruthy();
+    expect(stopped!.lastStopAt!.getTime()).toBeGreaterThanOrEqual(before);
+    expect(stopped!.lastStopAt!.getTime()).toBeLessThanOrEqual(after);
   });
 
   test('POST /api/v1/sessions/:id/stop returns 202 after sending a message (runtime active)', async () => {
