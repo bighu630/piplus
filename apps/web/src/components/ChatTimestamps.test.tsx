@@ -358,6 +358,80 @@ describe('隐藏对话框时间戳（TabChat）', () => {
     expect(timestamps()).toHaveLength(1);
   });
 
+  test('开启时消息列表更紧凑：容器行距从 space-y-6 收紧为 space-y-4', async () => {
+    await renderTabChat({ messages: basicMessages, hideChatTimestamps: false });
+    expect(container!.querySelector('.space-y-6')).not.toBeNull();
+    expect(container!.querySelector('.space-y-4')).toBeNull();
+
+    await rerenderTabChat({ messages: basicMessages, hideChatTimestamps: true });
+    expect(container!.querySelector('.space-y-4')).not.toBeNull();
+    expect(container!.querySelector('.space-y-6')).toBeNull();
+  });
+
+  test('开启时消息尾部行距收紧（mt-2 → mt-1），关闭时不变', async () => {
+    // 三条普通消息：首/末条时间戳可见（保持 mt-2），中间条时间戳隐藏（收紧为 mt-1）
+    const threeMessages: ChatMessageDTO[] = [
+      msg({ id: 'u1', role: 'user', content_text: '第一条', created_at: T0 }),
+      msg({ id: 'a1', content_text: '中间', created_at: T1 }),
+      msg({ id: 'u2', role: 'user', content_text: '最后一条', created_at: T2 }),
+    ];
+    const footerClasses = () =>
+      Array.from(container!.querySelectorAll('button[title="复制消息"]')).map((btn) =>
+        btn.parentElement!.className.split(' '),
+      );
+
+    await renderTabChat({ messages: threeMessages, hideChatTimestamps: false });
+    const off = footerClasses();
+    expect(off).toHaveLength(3);
+    for (const cls of off) expect(cls).toContain('mt-2');
+
+    await rerenderTabChat({ messages: threeMessages, hideChatTimestamps: true });
+    const on = footerClasses();
+    expect(on[0]).toContain('mt-2'); // 首条时间戳可见
+    expect(on[1]).toContain('mt-1'); // 中间条时间戳隐藏 → 行距收紧
+    expect(on[2]).toContain('mt-2'); // 末条时间戳可见
+  });
+
+  test('开启时桌面端尾部占位行归零：中间消息的复制按钮绝对定位（首/末条不变）', async () => {
+    // 中间两条（assistant + user）时间戳被隐藏，首/末条时间戳可见
+    const fourMessages: ChatMessageDTO[] = [
+      msg({ id: 'u1', role: 'user', content_text: '第一条', created_at: T0 }),
+      msg({ id: 'a1', content_text: '中间一', created_at: T1 }),
+      msg({ id: 'u2', role: 'user', content_text: '中间二', created_at: T2 }),
+      msg({ id: 'a2', content_text: '最后一条', created_at: T3 }),
+    ];
+    const buttons = () => Array.from(container!.querySelectorAll('button[title="复制消息"]'));
+    const classes = (el: Element) => el.className.split(' ');
+
+    await renderTabChat({ messages: fourMessages, hideChatTimestamps: false });
+    for (const btn of buttons()) {
+      expect(classes(btn)).not.toContain('md:absolute');
+      expect(classes(btn.parentElement!)).toContain('mt-2');
+      // 浮动按钮的定位锚点
+      expect(classes(btn.parentElement!)).toContain('relative');
+      // 复制按钮不得换行（否则「复制」会被逐字竖排）
+      expect(classes(btn)).toContain('whitespace-nowrap');
+    }
+
+    await rerenderTabChat({ messages: fourMessages, hideChatTimestamps: true });
+    const on = buttons();
+    expect(on).toHaveLength(4);
+    // 第一条（时间戳可见）：仍在流内
+    expect(classes(on[0])).not.toContain('md:absolute');
+    // 中间两条：桌面端绝对定位 + 行高归零（助手靠左、用户靠右）
+    expect(classes(on[1])).toContain('md:absolute');
+    expect(classes(on[1])).toContain('md:left-1');
+    expect(classes(on[1].parentElement!)).toContain('md:mt-0');
+    expect(classes(on[1].parentElement!)).toContain('relative');
+    expect(classes(on[2])).toContain('md:absolute');
+    expect(classes(on[2])).toContain('md:right-1');
+    expect(classes(on[2].parentElement!)).toContain('md:mt-0');
+    // 最后一条（时间戳可见）：仍在流内
+    expect(classes(on[3])).not.toContain('md:absolute');
+    // 浮动按钮同样不得换行（行宽收缩为 0 时「复制」会被逐字竖排）
+    for (const btn of on) expect(classes(btn)).toContain('whitespace-nowrap');
+  });
+
   test('切换设置即时生效：不改数据、只翻转 prop，可见时间戳随之变化', async () => {
     await renderTabChat({ messages: basicMessages, hideChatTimestamps: false });
     expect(timestamps()).toHaveLength(3);

@@ -236,11 +236,16 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(header()!.textContent).toContain('write + edit + read × 3');
   });
 
-  test('文件名完整路径通过 title 提供（可见文本截断）', () => {
-    const longPath = 'apps/web/src/components/very/deep/path/TabChat.tsx';
+  test('长路径省略前面：目录段可省略、文件名完整（title 提供全路径）', () => {
+    const longPath = '/root/data/code/test/test_folder/testfile.txt';
     render(<Harness calls={[fileCall('e1-tool-0', 'write', { path: longPath, content: 'x' })]} />);
-    const pathEl = rows()[0].querySelector('[title]');
-    expect(pathEl!.getAttribute('title')).toBe(longPath);
+
+    const label = rows()[0].querySelector('[data-testid="file-path-label"]')!;
+    expect(label.getAttribute('title')).toBe(longPath);
+    expect(rows()[0].querySelector('[data-testid="file-path-dir"]')!.textContent).toBe(
+      '/root/data/code/test/test_folder/',
+    );
+    expect(rows()[0].querySelector('[data-testid="file-path-base"]')!.textContent).toBe('testfile.txt');
   });
 
   test('running 调用渲染 spinner', () => {
@@ -563,5 +568,15 @@ describe('FileToolGroupCard 键盘可达性', () => {
 
     pressKey(header(), 'Enter');
     expect(details()).toHaveLength(2);
+  });
+});
+
+describe('FileToolGroupCard 路径省略（省略前面）', () => {
+  test('缺少 path 的占位符不显示 tooltip', () => {
+    render(<Harness calls={[fileCall('e1-tool-0', 'write', { content: 'a' })]} />);
+
+    const label = rows()[0].querySelector('[data-testid="file-path-label"]')!;
+    expect(label.getAttribute('title')).toBeNull();
+    expect(rows()[0].textContent).toContain('(未提供路径)');
   });
 });

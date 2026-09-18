@@ -9,7 +9,13 @@ type TestApp = ReturnType<typeof createApp>;
 type GitResult = { code: number; stdout: string; stderr: string };
 
 function git(cwd: string, ...args: string[]): GitResult {
-  const proc = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
+  // LC_ALL=C：强制稳定英文输出（如 detached HEAD 伪分支名），避免测试在中文 locale 下失败
+  const proc = Bun.spawnSync(['git', ...args], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: { ...Bun.env, LC_ALL: 'C' },
+  });
   return {
     code: proc.exitCode ?? -1,
     stdout: new TextDecoder().decode(proc.stdout).trim(),

@@ -16,7 +16,7 @@
 7. **bash 的「执行参数」**用**表格**展示（`command` / `timeout` 等键值行），其中 `command` 的值做**命令格式化**：在顶层分隔符（`&&` / `||` / `|` / `;`）处断行缩进 + bash 语法高亮；表格右上角提供「复制命令」按钮（复制**原始命令**，保证可直接执行）。其它工具仍为 JSON 原文。
 8. 工具结果统一截断标准：**200 行**（read 内容与普通工具结果同一口径），容器内滚动，截断提示在滚动容器外。
 9. write 无法得知旧内容（见下），只显示 `+N`；edit 显示 `+N -N`。
-10. 文件路径保持单行截断，鼠标悬停（`title`）看完整。
+10. **过长文件路径省略前面**：目录前缀可省略（省略号在左，保留靠近文件名的尾部目录），**文件名始终优先完整显示**；鼠标悬停（`title`）看完整路径。
 
 ## 数据来源（已核实代码事实）
 
@@ -101,6 +101,12 @@ interface ToolCallCardProps {
 
 **`ToolCallBody.tsx`**：从 ToolCallCard 抽出的「展开区主体」（执行参数 + 结果两个子项，含 bash 表格/高亮/复制与结果复制），由 ToolCallCard 与 MergedToolCallsCard 共用；子项折叠态由组件内部维护，调用方通过**条件挂载**在重新展开时恢复默认。
 
+**`FilePathLabel.tsx`**：文件路径标签（文件行使用）—— 拆成「目录前缀」与「文件名」两段：
+- 目录前缀：`min-w-0 + overflow-hidden + text-ellipsis + whitespace-nowrap + [direction:rtl] + text-left`（省略端跟随块方向 → 省略号落在**左侧**，省略开头、保留靠近文件名的尾部目录），内容再用 `<span dir="ltr">` 做**行内隔离**（RTL 块方向不重排 `/`、`.` 等中性字符）；**不能用 `unicode-bidi: plaintext`**（会把段落方向按首强字符重算，省略端回到右侧——已在 Chromium/Firefox 实测）
+- 文件名：`shrink-0 max-w-full`（优先完整，仅自身超宽时尾部省略）
+- 兼容 Windows 反斜杠路径（按最后一个 `/` 或 `\` 切分）；`title` 提供完整路径（传 `null` 可关闭，占位符场景用）
+- 卡片宽度约束：文件行的 `flex items-start` 容器加 `w-full`、卡片本体加 `min-w-0 max-w-full`，避免超长文件名把卡片撑出容器后被 `overflow-x-hidden` 静默裁切
+
 **`lib/tool-call-scheme.ts`**：状态配色表（`TOOL_CALL_SCHEMES`）抽出，供 ToolCallCard / ToolCallBody / MergedToolCallsCard 共用（原分散在 ToolCallCard 内）。
 
 **`ToolResultView.tsx`**：通用工具结果文本（统一截断 200 行 + 滚动、截断提示在滚动容器外、失败 rose / 成功中性色、空输出占位）。
@@ -150,6 +156,7 @@ interface ToolCallCardProps {
 
 - `apps/web/src/lib/tool-summary.test.ts`：write 行数（普通/空/末尾换行）、edit 的 details.diff 解析与 args 回退、行号范围 4 种情形、result 匹配（含 toolCallId 精确配对与序数回退）、`isFileToolCall` / `buildFileToolGroups` / `parseToolArgsJson` / `splitReadContent`
 - `apps/web/src/lib/tool-summary.test.ts`（合并分组）：连续同工具成功 → 1 组、跨 assistant 消息合并、其它工具/普通消息断开、失败与运行中不参与、文件类与例外工具不参与
+- `apps/web/src/components/FilePathLabel.test.tsx`：目录/文件名拆分、rtl 块方向 + 行内 LTR 隔离（且不含 unicode-bidi）、文件名不收缩、title 全路径与 `null` 关闭、纯文件名与根目录文件、Windows 反斜杠路径、自定义目录宽度
 - `apps/web/src/components/MergedToolCallsCard.test.tsx`：头部 ×N、默认收起、展开为 N 组（参数收起/结果展开）、组间分割与间隙、每组参数独立展开、重新展开恢复默认、键盘可达、running spinner
 - `apps/web/src/lib/diff.test.ts`：行级 diff 的末尾换行口径与 truncateDiff 截断边界
 - `apps/web/src/components/FileToolGroupCard.test.tsx`（happy-dom + React 19，参照 `AskQuestionCard.test.tsx`）：
