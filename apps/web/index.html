@@ -15,12 +15,72 @@
         } catch (e) {}
       })();
     </script>
+    <style>
+      /* 首屏静态加载页：在 JS 下载/解析完成前就已渲染，避免长时间白屏。
+         React 首次渲染会清空 #root 内容并替换为应用（已实测 createRoot 行为）。 */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        background: #f1f5f9;
+        color: #64748b;
+        font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        letter-spacing: 0.02em;
+      }
+      html.dark #boot-splash {
+        background: #020617;
+        color: #94a3b8;
+      }
+      #boot-splash .boot-brand {
+        width: 52px;
+        height: 52px;
+        border-radius: 14px;
+        background: #2563eb;
+        color: #fff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 900;
+        font-size: 24px;
+        user-select: none;
+      }
+      #boot-splash .boot-spinner {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        border: 2px solid currentColor;
+        border-top-color: transparent;
+        animation: boot-spin 1s linear infinite;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-splash .boot-spinner {
+          animation: none;
+        }
+      }
+    </style>
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#0f172a" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%232563eb'/><text x='50' y='68' text-anchor='middle' fill='white' font-size='52' font-weight='900' font-family='system-ui,sans-serif'>Pi</text></svg>" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- 不加 role/aria-live：避免与 React 挂载后的 AppLoading 重复播报；屏幕阅读器由后者负责 -->
+      <div id="boot-splash">
+        <div class="boot-brand">Pi</div>
+        <div class="boot-spinner" aria-hidden="true"></div>
+        <div>正在加载…</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
