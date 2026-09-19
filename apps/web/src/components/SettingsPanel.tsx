@@ -84,12 +84,24 @@ export default function SettingsPanel({
   const serverHideChatTimestamps = settingsQuery.data?.hide_chat_timestamps === 'true';
   const hideChatTimestampsOn = hideChatTimestampsOverride ?? serverHideChatTimestamps;
 
+  const [allowInjectionError, setAllowInjectionError] = useState<string | null>(null);
+  const [allowInjectionOverride, setAllowInjectionOverride] = useState<boolean | null>(null);
+  const serverAllowInjection = settingsQuery.data?.allow_runtime_message_injection === 'true';
+  const allowInjectionOn = allowInjectionOverride ?? serverAllowInjection;
+
   useEffect(() => {
     // 服务端值到达并等于乐观值：清除覆盖，后续外部变化重新生效
     if (hideChatTimestampsOverride !== null && serverHideChatTimestamps === hideChatTimestampsOverride) {
       setHideChatTimestampsOverride(null);
     }
   }, [serverHideChatTimestamps, hideChatTimestampsOverride]);
+
+  useEffect(() => {
+    // 与 hide_chat_timestamps 同一套乐观覆盖机制
+    if (allowInjectionOverride !== null && serverAllowInjection === allowInjectionOverride) {
+      setAllowInjectionOverride(null);
+    }
+  }, [serverAllowInjection, allowInjectionOverride]);
 
   // Sync input from server value when settings arrive (string → number).
   // 仅当输入框未被用户触碰时同步，避免覆盖用户正在编辑的值。
@@ -181,6 +193,38 @@ export default function SettingsPanel({
             </div>
             {hideChatTimestampsError && (
               <p className="text-[11px] text-red-600 dark:text-red-400">{hideChatTimestampsError}</p>
+            )}
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">运行中允许插话（steer）</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">开启后，agent 工作时可插入消息，消息会在当前回合工具执行完后、下一次模型调用前进入上下文。</div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  data-testid="allow-runtime-injection-toggle"
+                  className="sr-only peer"
+                  checked={allowInjectionOn}
+                  onChange={async (e) => {
+                    const next = e.target.checked;
+                    setAllowInjectionOverride(next);
+                    setAllowInjectionError(null);
+                    try {
+                      await updateSettingsMut.mutateAsync({ allow_runtime_message_injection: String(next) });
+                    } catch (err) {
+                      // 保存失败：回滚到服务端值并提示
+                      setAllowInjectionOverride(null);
+                      setAllowInjectionError(err instanceof Error ? err.message : '保存失败');
+                    }
+                  }}
+                />
+                <div className="w-9 h-5 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+            {allowInjectionError && (
+              <p className="text-[11px] text-red-600 dark:text-red-400">{allowInjectionError}</p>
             )}
           </div>
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 p-3 space-y-2">

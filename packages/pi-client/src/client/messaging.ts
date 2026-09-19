@@ -7,6 +7,7 @@ import type {
   PiMessage,
   PiRunAccepted,
   PiSessionStreamEvent,
+  PiSteerResult,
 } from '../types';
 import type { ClientDeps } from './deps';
 import { mapAgentSessionEvent } from './event-mapping';
@@ -168,13 +169,55 @@ export async function sendMessage(
   return { sessionId, runId };
 }
 
+export async function steerSession(
+  deps: ClientDeps,
+  sessionId: string,
+  content: string,
+): Promise<PiSteerResult> {
+  const session = deps.runtimeRegistry.get(sessionId);
+  // 没有 live runtime（服务重启后 DB 仍是 running 等）时无法入队；调用方据此返回明确错误。
+  if (!session?.agentSession) {
+    throw new Error('pi_session_runtime_unavailable');
+  }
+  // 已发出 stop：stopSession 会 clearQueue，此时再入队会在下一次 prompt 被打出去（见下方注释）。
+  if (session.stopped) {
+    throw new Error('session_stopped');
+  }
+  // 必须要求有活跃 run：SDK 的 steer() 在 idle 下同样会无条件入队，会静默滞留到用户下一条消息。
+  // run 刚结束、DB 尚未回落 idle 的窗口由此关闭（调用方把该错误当作「本轮已结束」）。
+  if (!session.agentSession.isStreaming) {
+    throw new Error('session_not_streaming');
+  }
+  await session.agentSession.steer(content);
+  return { sessionId, queued: session.agentSession.getSteeringMessages().length };
+}
+
 export async function stopSession(deps: ClientDeps, sessionId: string) {
   const session = getOrCreateSession(deps, sessionId);
   session.stopped = true;
+  const agentSession = session.agentSession;
+  // 必须先丢弃排队中的插话：SDK 的 abort() 只中断当前 run，不清空 steering/followUp 队列，
+  // 否则用户停止后队列里的消息会在下一次 prompt 时被一并投递出去。
+  try {
+    agentSession?.clearQueue();
+  } catch {
+    // clearQueue 是同步 API，理论上不抛；即便抛也不应阻塞停止流程。
+  }
   // Fire abort in background — AgentSession.abort() waits for agent to become idle,
   // which can block indefinitely during LLM generation. The caller (API route) needs
   // to return 202 immediately and must not wait for the agent to wind down.
-  session.agentSession?.abort().catch(() => {});
+  // abort 收尾后再清一次：挡住 abort 展开期间（stopped 检查之前的极小窗口）新到的插话。
+  // 条件收窄：若期间已有新 run 将 stopped 复位，则不得误删新 run 的队列。
+  void agentSession
+    ?.abort()
+    .catch(() => {})
+    .finally(() => {
+      try {
+        if (session.stopped) agentSession?.clearQueue();
+      } catch {
+        // 同上，清理失败不影响停止结果。
+      }
+    });
   return { status: 'stopped' as const };
 }
 

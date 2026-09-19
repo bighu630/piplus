@@ -63,6 +63,9 @@ function makeRecordingPiClient() {
     async sendMessage() {
       return { sessionId: 'pi_stub', runId: 'run_stub' };
     },
+    async steerSession(sessionId: string) {
+      return { sessionId, queued: 1 };
+    },
     async stopSession() {
       return { status: 'stopped' as const };
     },

@@ -118,6 +118,8 @@ export function useAppShell() {
     && settingsQuery.data.vision_model.includes('/');
   // 「隐藏对话框时间戳」：默认关闭，仅 'true' 视为开启（设置保存后经 query invalidate 即时生效）
   const hideChatTimestamps = settingsQuery.data?.hide_chat_timestamps === 'true';
+  // 「运行中允许插话（steer）」：默认关闭，仅 'true' 视为开启
+  const allowRuntimeInjection = settingsQuery.data?.allow_runtime_message_injection === 'true';
 
   const onSessionSelected = useCallback(() => {
     // 标题编辑的复位不在这里做：切换会话时 useTitleEditing 的 session-change effect 会复位，
@@ -303,6 +305,7 @@ export function useAppShell() {
     showPlannerRolePromptButton: isPlannerRoot && runtimeStatus === 'idle',
     isMobile,
     hideChatTimestamps,
+    allowRuntimeInjection,
   };
 
   const modals = {
