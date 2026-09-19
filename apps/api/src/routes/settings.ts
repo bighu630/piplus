@@ -4,7 +4,7 @@ import { settings } from '@piplus/db/schema';
 import { getDbPath } from '../db-context';
 
 // 允许通过 API 读写的设置项白名单
-const ALLOWED_KEYS: readonly string[] = ['subagent_timeout_minutes', 'vision_enabled', 'vision_model', 'vision_fallback_model', 'hide_chat_timestamps'];
+const ALLOWED_KEYS: readonly string[] = ['subagent_timeout_minutes', 'vision_enabled', 'vision_model', 'vision_fallback_model', 'hide_chat_timestamps', 'allow_runtime_message_injection'];
 
 // 严格校验：非负整数分钟（0 = 永不超时）。
 // 拒绝 true→1、null→0、"1e3"→1000、"0x10"→16 等宽松隐式转换。
@@ -30,7 +30,8 @@ function validateSettingValue(key: string, raw: unknown): { ok: true; value: str
       return { ok: true, value: normalizeValue(raw as number | string) };
     }
     case 'vision_enabled':
-    case 'hide_chat_timestamps': {
+    case 'hide_chat_timestamps':
+    case 'allow_runtime_message_injection': {
       const s = typeof raw === 'string' ? raw.trim() : String(raw);
       if (s !== 'true' && s !== 'false') {
         return { ok: false, message: `${key} 必须是 "true" 或 "false"` };

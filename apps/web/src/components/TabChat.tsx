@@ -128,6 +128,8 @@ interface TabChatProps {
   isMobile?: boolean;
   /** 「隐藏对话框时间戳」：开启后仅保留会话首尾消息的时间戳（设置变化即时生效） */
   hideChatTimestamps?: boolean;
+  /** 「运行中允许插话（steer）」：运行中发送按钮变「插入」且可发送 */
+  allowRuntimeInjection?: boolean;
 }
 
 function isToolCallPending(msgId: string, toolName: string, allMsgs: ChatMessageDTO[]): boolean {
@@ -254,6 +256,7 @@ function TabChat({
   onThinkingLevelSelect,
   isMobile,
   hideChatTimestamps,
+  allowRuntimeInjection,
 }: TabChatProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
@@ -1254,6 +1257,7 @@ function TabChat({
         isRunning={isRunning}
         isStopping={isStopping}
         isAsking={hasWaitingAsk}
+        allowInjection={allowRuntimeInjection}
         sendShortcutMode={sendShortcutMode}
         currentModelSupportsImages={currentModelSupportsImages}
         visionRelayEnabled={visionRelayEnabled}

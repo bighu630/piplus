@@ -56,6 +56,9 @@ export function createPiClient(): PiClient {
     async sendMessage(sessionId, content, options) {
       return messaging.sendMessage(deps, sessionId, content, options);
     },
+    async steerSession(sessionId, content) {
+      return messaging.steerSession(deps, sessionId, content);
+    },
     async stopSession(sessionId) {
       return messaging.stopSession(deps, sessionId);
     },

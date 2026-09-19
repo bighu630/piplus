@@ -44,6 +44,8 @@ interface ChatInputProps {
   isRunning: boolean;
   isStopping: boolean;
   isAsking?: boolean;
+  /** 「运行中允许插话（steer）」：开启后 agent 运行中可发送消息（进入当前 turn 之后、下一轮 LLM 之前）。 */
+  allowInjection?: boolean;
   sendShortcutMode?: 'enter' | 'mod_enter';
   currentModelSupportsImages?: boolean | null;
   visionRelayEnabled?: boolean;
@@ -60,6 +62,7 @@ export default function ChatInput({
   isRunning,
   isStopping,
   isAsking,
+  allowInjection,
   sendShortcutMode,
   currentModelSupportsImages,
   visionRelayEnabled,
@@ -106,6 +109,13 @@ export default function ChatInput({
   const addImageFiles = async (fileList: FileList | File[]) => {
     const files = Array.from(fileList);
     if (!files.length) return;
+    // 运行中插话只支持纯文本（后端会 400 拒绝）：粘贴等绕过按钮 disabled 的路径在这里拦住。
+    if (isRunning) {
+      setAttachmentError(allowInjection
+        ? '运行中插话只支持纯文本，请等待本轮结束后再发送图片。'
+        : '对话进行中，暂时不能添加图片。');
+      return;
+    }
     if (!canSendImages) {
       setAttachmentError('当前模型不支持图片输入，请先切换到支持图片的模型。');
       return;
@@ -136,6 +146,8 @@ export default function ChatInput({
   const handleSubmit = async () => {
     const content = draft.trim();
     if ((!content && attachments.length === 0) || sending) return;
+    // 运行中未开启插话：输入框可输入但不允许发送（发送按钮已禁用，此处挡住 Enter 快捷键绕过）。
+    if (isRunning && !allowInjection) return;
     // 乐观清空：点击发送立即清空输入框（vision relay 时 POST 需等图片识别完成，可能耗时较长），
     // 失败时在 catch 中恢复内容，避免用户误以为未发出而重复提交。
     const pendingContent = content;
@@ -308,7 +320,7 @@ export default function ChatInput({
           {/* Textarea */}
           <textarea
             className="w-full min-h-[68px] resize-none px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-blue-500 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 transition disabled:bg-slate-100 dark:disabled:bg-slate-800/50"
-            disabled={isRunning || isStopping || sending || Boolean(isAsking)}
+            disabled={isStopping || sending || Boolean(isAsking)}
             ref={textareaRef}
             onChange={(e) => {
               const value = e.target.value;
@@ -470,11 +482,11 @@ export default function ChatInput({
 
             {/* Send button */}
             <button
-              className="flex items-center space-x-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs transition cursor-pointer disabled:opacity-50"
-              disabled={isRunning || isStopping || sending || Boolean(isAsking) || (draft.trim().length === 0 && attachments.length === 0)}
+              className={`flex items-center space-x-1.5 px-4 py-1.5 text-white font-semibold rounded-xl text-xs transition cursor-pointer disabled:opacity-50 ${isRunning && allowInjection ? 'bg-amber-500 hover:bg-amber-600' : 'bg-blue-600 hover:bg-blue-700'}`}
+              disabled={(isRunning && !allowInjection) || isStopping || sending || Boolean(isAsking) || (draft.trim().length === 0 && attachments.length === 0)}
               onClick={() => { void handleSubmit(); }}
             >
-              <span>{isStopping ? '正在停止…' : sending ? '发送中…' : '发送'}</span>
+              <span>{isStopping ? '正在停止…' : isRunning && allowInjection ? (sending ? '插入中…' : '插入') : sending ? '发送中…' : '发送'}</span>
               <ArrowUp className="w-3.5 h-3.5" />
             </button>
           </div>

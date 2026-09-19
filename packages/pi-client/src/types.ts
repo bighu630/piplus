@@ -141,6 +141,12 @@ export type PiStopSessionResult = {
   status: 'stopped';
 };
 
+export type PiSteerResult = {
+  sessionId: string;
+  /** steer 入队后仍待投递的消息数（SDK steeringMode 默认 one-at-a-time，可能 > 1）。 */
+  queued: number;
+};
+
 export type PiRuntimeState = {
   ready: boolean;
   isFirst: boolean;
@@ -185,6 +191,14 @@ export type PiClient = {
   getHistory(sessionId: string, locator: PiSessionLocator, cursor?: string | null, limit?: number): Promise<PiHistoryPage>;
   /** Send a message. Purely sends content — no prompt injection. */
   sendMessage(sessionId: string, content: string, options?: { images?: PiImageInput[] }): Promise<PiRunAccepted>;
+  /**
+   * 向正在运行的 agent 插入一条消息（SDK steer）：当前 assistant turn 的工具调用全部执行完后、
+   * 下一次 LLM 调用前进入上下文。无 live runtime 时抛 'pi_session_runtime_unavailable'，
+   * 已 stop 时抛 'session_stopped'，无活跃 run 时抛 'session_not_streaming'。
+   * 已知边界（SDK 固有）：若插话恰好在循环最后一次 steering 轮询之后到达，
+   * 该消息会留在队列里、在下一次 prompt 开头被投递（不丢失，但不属于当前 turn）。
+   */
+  steerSession(sessionId: string, content: string): Promise<PiSteerResult>;
   /** Direct single-turn model call via the shared model runtime. */
   completeModel(input: PiCompleteModelInput): Promise<PiCompleteModelResult>;
   stopSession(sessionId: string): Promise<PiStopSessionResult>;

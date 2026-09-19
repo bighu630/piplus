@@ -44,7 +44,7 @@ export type SendSessionMessagePayload = {
 export type OptimisticImageContentBlock = ChatImageContentBlockDTO;
 
 export function sendSessionMessage(sessionId: string, payload: SendSessionMessagePayload) {
-  return request<{ accepted: boolean; session_id: string; run_id: string; message_id: string }>(
+  return request<{ accepted: boolean; session_id: string; run_id?: string; message_id?: string; steered?: boolean; queued?: number }>(
     `/api/v1/sessions/${sessionId}/chat/messages`,
     { method: 'POST', body: JSON.stringify(payload) },
   );

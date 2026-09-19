@@ -348,13 +348,15 @@ export function registerChatRoutes(app: Hono, piClient: PiClient) {
    *     security:
    *       - bearerAuth: []
    *     description: 受理用户消息并异步启动 LLM；生成结果通过 WebSocket chat_stream 推送。
+   *       运行中且设置 allow_runtime_message_injection 开启时，改为把消息 steer 进当前 run
+   *       （不落 messages 表），返回 { accepted, steered: true, session_id, queued }。
    *     responses:
    *       202:
-   *         description: 已受理，返回 run_id 与 message_id。
+   *         description: 已受理。普通发送返回 run_id 与 message_id；插话返回 steered=true 与 queued。
    *       400:
-   *         description: 消息内容为空。
+   *         description: 消息内容为空 / 运行中带图（RUNTIME_INJECTION_TEXT_ONLY）/ 运行中斜杠命令（RUNTIME_SLASH_COMMAND_UNSUPPORTED）。
    *       409:
-   *         description: 会话繁忙。
+   *         description: 会话繁忙（SESSION_BUSY，含开关关闭的 running 与 stopping）/ 无活跃 run（SESSION_NOT_STREAMING）/ runtime 不可用（SESSION_RUNTIME_UNAVAILABLE）。
    */
   app.post('/api/v1/sessions/:sessionId/chat/messages', async (c) => {
     const db = createDb(`file:${getDbPath()}`);
@@ -383,7 +385,50 @@ export function registerChatRoutes(app: Hono, piClient: PiClient) {
     const [project] = await db.select({ id: projects.id, createdBy: projects.createdBy, projectPath: projects.projectPath }).from(projects).where(eq(projects.id, session.projectId)).limit(1);
     if (!project || project.createdBy !== userId) return c.json({ error: { code: 'NOT_FOUND', message: 'Session not found' } }, 404);
 
-    if (session.runtimeStatus === 'running' || session.runtimeStatus === 'stopping') {
+    if (session.runtimeStatus === 'running') {
+      // 运行中插话（steer）：仅当设置开启时允许。消息不落 messages 表，直接进 pi 队列，
+      // 由 SDK 在当前 turn 的工具批次执行完后、下一次 LLM 调用前写入上下文。
+      const injectionEnabled = (await getSetting(db, 'allow_runtime_message_injection')) === 'true';
+      if (!injectionEnabled) {
+        return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+      }
+      // 斜杠命令保持「运行中不可用」的旧语义：否则 /compact 等会被当成字面文本 steer 给模型。
+      if (/^\s*\//.test(content)) {
+        return c.json({ error: { code: 'RUNTIME_SLASH_COMMAND_UNSUPPORTED', message: '运行中暂不支持斜杠命令，请等待本轮结束后再执行' } }, 400);
+      }
+      // 运行中暂不支持图片：图片需先经模型能力判定/vision relay，且 steer 不经过落库校验链。
+      if (attachmentParse.images.length > 0) {
+        return c.json({ error: { code: 'RUNTIME_INJECTION_TEXT_ONLY', message: '运行中插话暂不支持图片附件' } }, 400);
+      }
+      let steer: Awaited<ReturnType<typeof piClient.steerSession>>;
+      try {
+        steer = await piClient.steerSession(sessionId, content);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'unknown';
+        if (message === 'pi_session_runtime_unavailable') {
+          return c.json({ error: { code: 'SESSION_RUNTIME_UNAVAILABLE', message: 'Session runtime is not ready for steering' } }, 409);
+        }
+        if (message === 'session_stopped') {
+          return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
+        }
+        if (message === 'session_not_streaming') {
+          // run 刚好结束、DB 尚未回落 idle：明确告知客户端重新发送，而不是让消息静默滞留到下一条消息。
+          return c.json({ error: { code: 'SESSION_NOT_STREAMING', message: '本轮已结束，请重新发送' } }, 409);
+        }
+        log.warn('runtime steer failed', { sessionId, error: message });
+        return c.json({ error: { code: 'STEER_FAILED', message } }, 400);
+      }
+      log.info('runtime steer queued', { sessionId, queued: steer.queued });
+      // 审计失败不得把已入队的 steer 报成失败（否则用户重发会产生重复插话）。
+      try {
+        await createAuditService(db).record(userId, 'message.steered', 'session', sessionId, {});
+      } catch (error) {
+        log.warn('runtime steer audit failed', { sessionId, error: error instanceof Error ? error.message : String(error) });
+      }
+      return c.json({ accepted: true, steered: true, session_id: sessionId, queued: steer.queued }, 202);
+    }
+
+    if (session.runtimeStatus === 'stopping') {
       return c.json({ error: { code: 'SESSION_BUSY', message: 'Session is currently busy' } }, 409);
     }
 
