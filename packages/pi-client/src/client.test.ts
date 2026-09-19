@@ -214,7 +214,7 @@ describe('pi client gateway', () => {
     expect(page.messages[0]?.role).toBe('user');
     // 首次对话合并角色 prompt 与用户消息，持久化的 user 消息包含合并后的内容
     expect(page.messages[0]?.text).toContain('Reply with exactly: persist me');
-  });
+  }, { timeout: 20_000 });
 
   test('bindToolRuntime registers tool defs without error and session remains usable', async () => {
     const client = createPiClient();

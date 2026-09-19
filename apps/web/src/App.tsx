@@ -41,7 +41,6 @@ export default function App() {
   }
 
   const {
-    isMobile,
     selectedSessionId,
     selectedProjectId,
     activeTab,

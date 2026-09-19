@@ -35,10 +35,6 @@
 </tr>
 </table>
 
-### 前置要求
-
-1. 安装 **Bun**（仅构建需要，运行时不再依赖）：<https://bun.sh>
-
 ---
 
 ## 🚀 快速启动
@@ -156,6 +152,8 @@ Pi 自己的 agent / session 数据仍由 Pi 自己管理（~/.pi/agent/）。
 ---
 
 ## 🛠 开发
+
+从源码开发需要先安装 [Bun](https://bun.sh)。
 
 ```bash
 bun install          # 安装依赖
