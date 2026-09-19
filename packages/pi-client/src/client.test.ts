@@ -560,6 +560,29 @@ describe('mapAgentSessionEvent', () => {
     expect(event).toEqual({ type: 'text_delta', sessionId: 'sess_act_3', runId: 'run_3', delta: 'hello' });
   });
 
+  test('toolResult message_end → tool_result_end (mid-run refresh signal)', () => {
+    const event = mapAgentSessionEvent('sess_act_5', 'run_5', {
+      type: 'message_end',
+      message: { role: 'toolResult', toolCallId: 'call_1', toolName: 'bash', content: [] } as never,
+    });
+    expect(event).toEqual({ type: 'tool_result_end', sessionId: 'sess_act_5', runId: 'run_5' });
+  });
+
+  test('assistant message_end still maps to message_end (regression)', () => {
+    const event = mapAgentSessionEvent('sess_act_6', 'run_6', {
+      type: 'message_end',
+      message: { role: 'assistant', content: [] } as never,
+    });
+    expect(event).toEqual({ type: 'message_end', sessionId: 'sess_act_6', runId: 'run_6' });
+  });
+
+  test('user message_end is dropped (only assistant/toolResult are forwarded)', () => {
+    expect(mapAgentSessionEvent('sess_act_7', 'run_7', {
+      type: 'message_end',
+      message: { role: 'user', content: [] } as never,
+    })).toBeNull();
+  });
+
   test('unmapped events (agent_start) are dropped', () => {
     expect(mapAgentSessionEvent('sess_act_4', 'run_4', { type: 'agent_start' })).toBeNull();
   });

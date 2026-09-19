@@ -1,9 +1,9 @@
 import { afterEach, beforeAll, afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { act } from 'react';
+import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Window } from 'happy-dom';
-import { WebSocketProvider, useWebSocket, useWebSocketConnected } from './ws-provider';
+import { WebSocketProvider, useWebSocket, useWebSocketConnected, useChatStream } from './ws-provider';
 import { TOKEN_STORAGE_KEY } from './auth-session';
 
 // 验收场景（reviewer 🔴）：4401 登出停摆后，用户重新登录必须能重建 WS 连接
@@ -325,6 +325,100 @@ describe('WebSocketProvider reconnect after re-login', () => {
       });
 
       expect(maps.at(-1)).toEqual({});
+    });
+  });
+
+  describe('session.messages_changed 刷新', () => {
+    test('收到工具结果落库事件时 invalidate 该会话的 messages 查询', async () => {
+      renderProvider();
+      await act(async () => {
+        await flush();
+        await flush();
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      await act(async () => {
+        socket.open();
+        await flush();
+      });
+
+      // 在 onOpen 之后装侦：避免把建连时的既有 invalidate 计入
+      const calls: Array<{ queryKey?: unknown[] }> = [];
+      const originalInvalidate = queryClient.invalidateQueries.bind(queryClient);
+      queryClient.invalidateQueries = ((filters?: { queryKey?: unknown[] }) => {
+        calls.push(filters ?? {});
+        return originalInvalidate(filters as never);
+      }) as typeof queryClient.invalidateQueries;
+
+      await act(async () => {
+        socket.dispatch('message', {
+          data: JSON.stringify({
+            kind: 'event',
+            type: 'session.messages_changed',
+            timestamp: new Date().toISOString(),
+            scope: { session_id: 'sess_tool_1' },
+            payload: {},
+          }),
+        } as unknown as MessageEvent);
+        await flush();
+      });
+
+      expect(calls).toContainEqual({ queryKey: ['session', 'messages', 'sess_tool_1'] });
+    });
+
+    test('工具结果事件不会推进 chat_stream 快照 phase（保持 streaming）', async () => {
+      const phases: string[] = [];
+      function StreamProbe() {
+        const ctx = useWebSocket() as unknown as {
+          setSessionContext: (s: string | null, p: string | null, t: string) => void;
+        };
+        // chat_stream 仅对「当前会话」转发给流式订阅者，测试需要先设定会话上下文
+        useEffect(() => {
+          ctx.setSessionContext('sess_tool_2', null, 'chat');
+        }, []);
+        phases.push(useChatStream('sess_tool_2').phase);
+        return null;
+      }
+      queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+      container = (globalThis.document as Document).createElement('div');
+      (globalThis.document as Document).body.appendChild(container);
+      root = createRoot(container);
+      act(() => {
+        root!.render(
+          <QueryClientProvider client={queryClient}>
+            <WebSocketProvider>
+              <StreamProbe />
+            </WebSocketProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await act(async () => {
+        await flush();
+        await flush();
+      });
+      const socket = FakeWebSocket.instances[0]!;
+      await act(async () => {
+        socket.open();
+        await flush();
+      });
+
+      const dispatch = (body: Record<string, unknown>) => {
+        socket.dispatch('message', { data: JSON.stringify(body) } as unknown as MessageEvent);
+      };
+
+      // 先建立 streaming 状态（越过 80ms 节流窗口）
+      await act(async () => {
+        dispatch({ kind: 'chat_stream', phase: 'start', scope: { session_id: 'sess_tool_2' }, payload: {} });
+        dispatch({ kind: 'chat_stream', phase: 'delta', scope: { session_id: 'sess_tool_2' }, payload: { delta: 'hi' } });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      });
+      expect(phases.at(-1)).toBe('streaming');
+
+      // 工具结果落库事件只应刷新消息列表，不得把流式 phase 推进为 complete
+      await act(async () => {
+        dispatch({ kind: 'event', type: 'session.messages_changed', scope: { session_id: 'sess_tool_2' }, payload: {} });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      });
+      expect(phases.at(-1)).toBe('streaming');
     });
   });
 });
