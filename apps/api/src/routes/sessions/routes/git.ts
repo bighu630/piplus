@@ -176,7 +176,7 @@ export function registerGitRoutes(app: Hono) {
       }
     }
 
-    return c.json({ session_id: sessionId, diff, cwd });
+    return c.json({ session_id: sessionId, diff, cwd, missing_worktree_path: resolved.missingWorktreePath ?? null });
   });
 
   app.post('/api/v1/sessions/:sessionId/git/pull', async (c) => {
@@ -363,6 +363,7 @@ export function registerGitRoutes(app: Hono) {
         current_branch: currentBranch,
         branches: annotatedBranches,
         session_worktree_path: resolved.sessionWorktreePath,
+        missing_worktree_path: resolved.missingWorktreePath ?? null,
         detached,
         detached_ref: detached ? (tagsPointingAtHead(cwd)[0] ?? shortHeadSha(cwd)) : null,
       });

@@ -7,7 +7,7 @@ import type {
 } from '@piplus/shared';
 
 export function getSessionGitDiff(sessionId: string) {
-  return request<{ session_id: string; diff: string; cwd: string }>(`/api/v1/sessions/${sessionId}/git-diff`);
+  return request<{ session_id: string; diff: string; cwd: string; missing_worktree_path?: string | null }>(`/api/v1/sessions/${sessionId}/git-diff`);
 }
 
 export function getSessionFileTree(sessionId: string) {
