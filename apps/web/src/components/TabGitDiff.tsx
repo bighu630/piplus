@@ -13,7 +13,7 @@ import {
   GitPullRequest,
   GitCommitVertical,
   Tag,
-  ArrowUpCircle,
+  ArrowDownCircle,
   UploadCloud,
   Plus,
   X,
@@ -1014,7 +1014,7 @@ function TabGitDiff({
             disabled={anyBusy}
             className="flex items-center justify-center space-x-1.5 px-3 py-2 md:py-1.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/50 dark:border-emerald-900 rounded-xl text-emerald-600 dark:text-emerald-400 font-semibold hover:bg-emerald-100/70 dark:hover:bg-emerald-900 disabled:opacity-50 text-xs transition cursor-pointer"
           >
-            <ArrowUpCircle className={`w-3.5 h-3.5 ${isPulling ? 'animate-spin' : ''}`} />
+            <ArrowDownCircle className={`w-3.5 h-3.5 ${isPulling ? 'animate-spin' : ''}`} />
             <span>{isPulling ? 'Pulling…' : 'Pull'}</span>
           </button>
 
