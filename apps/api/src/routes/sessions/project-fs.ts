@@ -22,28 +22,31 @@ export function resolveProjectDir(c: any, userId: string, sessionId: string) {
   // 刻意**不在这里清库**：existsSync 对「祖先目录不可访问」（网络盘未挂载、EACCES、挂载延迟）
   // 也会返回 false，读时清空会把一个暂时不可用的有效关联永久删掉；清空交给既有显式路径
   // （git/checkout 切到普通分支时会清空，切到 worktree 分支时会写回）。
-  // 注：Bun 的 execSync 在 cwd 不存在时报的是误导性的 `posix_spawn '/bin/sh'` ENOENT，
-  // 容易被误判为“缺少 shell”，所以必须显式检测而不是依赖下游报错。
-  if (worktreeDir && !existsSync(worktreeDir)) {
+  const worktreeMissing = worktreeDir !== null && !existsSync(worktreeDir);
+  const cwd = worktreeMissing ? projectDir : (worktreeDir ?? projectDir);
+
+  // 兜底：不管理由是 worktree 失效回落、还是项目根本身被删/未挂载，只要**最终要用的 cwd**
+  // 不存在，就在这里给出明确错误。否则下游 execSync 会报出误导性的
+  // `posix_spawn '/bin/sh'` ENOENT（会被误判为“缺少 shell”），readdir 也会抛未捕获异常变 500。
+  // 注意判空必须基于 cwd 而不是“有没有 worktree”，否则两者同时缺失时依然会漏过去。
+  if (!existsSync(cwd)) {
     return {
-      cwd: projectDir,
+      error: { code: 'PROJECT_DIR_MISSING', message: `工作目录不存在：${cwd}` },
+      status: 409,
+    } as const;
+  }
+
+  if (worktreeMissing) {
+    return {
+      cwd,
       sessionWorktreePath: null,
       gitConfigJson: project.gitConfigJson ?? '{}',
       missingWorktreePath: worktreeDir,
     };
   }
 
-  // 项目根也不存在时（projectDir 同样会被 rm -rf / 未挂载），与其让下游报出误导性的
-  // shell / readdir 错误，不如直接给出能看懂的错误。
-  if (!worktreeDir && !existsSync(projectDir)) {
-    return {
-      error: { code: 'PROJECT_DIR_MISSING', message: `项目目录不存在：${projectDir}` },
-      status: 409,
-    } as const;
-  }
-
   return {
-    cwd: worktreeDir ?? projectDir,
+    cwd,
     sessionWorktreePath: session.worktreePath ?? null,
     gitConfigJson: project.gitConfigJson ?? '{}',
     missingWorktreePath: null,

@@ -36,6 +36,12 @@ afterEach(() => {
 });
 
 function render(worktreePath?: string | null) {
+  // 先卸载上一个（同一 test 内可能连调），避免容器/root 残留到 afterAll
+  if (root) {
+    act(() => root!.unmount());
+    root = null;
+  }
+  container?.remove();
   container = window.document.createElement('div') as unknown as HTMLElement;
   window.document.body.appendChild(container as unknown as Node);
   root = createRoot(container as unknown as Element);

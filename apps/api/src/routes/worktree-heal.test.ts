@@ -187,4 +187,27 @@ describe('失效 worktree：读时回落 + 持续回报', () => {
       await ctx.cleanup();
     }
   });
+
+  test('worktree 失效且项目根也不存在时同样给出明确错误（不能漏成误导性 posix_spawn）', async () => {
+    // 关键：保留 worktree 关联（不先清空），才能命中「回落目标也不存在」这个组合
+    const ctx = await setup();
+    try {
+      await rm(ctx.projectDir, { recursive: true, force: true });
+
+      const treeRes = await ctx.app.request(`/api/v1/sessions/${ctx.sessionId}/files/tree`, { headers: authHeaders });
+      expect(treeRes.status).toBe(409);
+      const treeBody = await treeRes.json();
+      expect(treeBody.error.code).toBe('PROJECT_DIR_MISSING');
+      expect(JSON.stringify(treeBody)).not.toContain('posix_spawn');
+
+      // git/branches 正是用户看到 500 GIT_ERROR 的那条路径
+      const branchesRes = await ctx.app.request(`/api/v1/sessions/${ctx.sessionId}/git/branches`, { headers: authHeaders });
+      expect(branchesRes.status).toBe(409);
+      const branchesBody = await branchesRes.json();
+      expect(branchesBody.error.code).toBe('PROJECT_DIR_MISSING');
+      expect(JSON.stringify(branchesBody)).not.toContain('posix_spawn');
+    } finally {
+      await ctx.cleanup();
+    }
+  });
 });
