@@ -36,6 +36,13 @@ export function mapAgentSessionEvent(
     return { type: 'activity', sessionId, runId };
   }
 
+  // 工具结果消息（role=toolResult）落库：单独转发为 tool_result_end。
+  // 必须与 assistant 的 message_end 分开：assistant 的 complete 会推进流式快照 phase，
+  // 而工具结果只应触发消息列表刷新，不能污染流式状态。
+  if (event.type === 'message_end' && event.message.role === 'toolResult') {
+    return { type: 'tool_result_end', sessionId, runId };
+  }
+
   if (event.type === 'message_end' && event.message.role === 'assistant') {
     return { type: 'message_end', sessionId, runId };
   }

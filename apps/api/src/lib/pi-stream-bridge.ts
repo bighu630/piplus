@@ -12,6 +12,9 @@ export function mapPiStreamEventToFrames(
       return [createChatStreamFrame(sessionId, 'delta', event.runId, event.messageId ?? event.runId, event.delta)];
     case 'message_end':
       return [createChatStreamFrame(sessionId, 'complete', event.runId, event.messageId ?? event.runId)];
+    case 'tool_result_end':
+      // 工具结果落库：发一个轻量事件让前端刷新消息列表，不进入 chat_stream（避免推进流式 phase）。
+      return [createEvent('session.messages_changed', {}, { session_id: sessionId })];
     case 'error':
       return [createChatStreamFrame(sessionId, 'error', event.runId, event.messageId ?? event.runId, null, event.error)];
     case 'compaction_start':

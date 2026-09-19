@@ -119,6 +119,9 @@ export type PiSessionStreamEvent =
   | { type: 'message_start'; sessionId: string; runId: string; messageId?: string }
   | { type: 'text_delta'; sessionId: string; runId: string; messageId?: string; delta: string }
   | { type: 'message_end'; sessionId: string; runId: string; messageId?: string }
+  // 工具结果消息（role=toolResult）落库信号。之前只转发 assistant 的 message_end，
+  // 导致 run 进行中前端收不到工具结果刷新信号，只能等下一次 assistant message_end。
+  | { type: 'tool_result_end'; sessionId: string; runId: string }
   | { type: 'error'; sessionId: string; runId: string; messageId?: string; error: string }
   | { type: 'compaction_start'; sessionId: string; reason: 'manual' | 'threshold' | 'overflow' }
   | { type: 'compaction_end'; sessionId: string; reason: 'manual' | 'threshold' | 'overflow'; aborted: boolean; errorMessage?: string }

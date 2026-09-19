@@ -413,6 +413,15 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             queryClient.refetchQueries({ queryKey: ['tree'] });
           }
 
+          // 工具结果落库：run 进行中刷新消息列表，让工具结果及时出现。
+          // 这是 WS 连接时不再轮询后，工具结果唯一的实时刷新信号（见 pi-stream-bridge）。
+          if (message.kind === 'event' && message.type === 'session.messages_changed') {
+            const eventSessionId = message.scope?.session_id as string | undefined;
+            if (eventSessionId) {
+              queryClient.invalidateQueries({ queryKey: ['session', 'messages', eventSessionId] });
+            }
+          }
+
           if (message.kind === 'event' && message.type === 'runtime.restored') {
             if (currentSessionId) {
               queryClient.invalidateQueries({ queryKey: ['session', 'commands', currentSessionId] });
@@ -563,7 +572,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   // 稳定 chatStream context 引用（impl 经 useCallback 固定，memo 不会随 provider 渲染重建）
   const chatStreamValue = useMemo(() => ({ useChatStream: useChatStreamImpl }), [useChatStreamImpl]);
 
-  // ask_question 回答后（工具结果经 messages 轮询落库，runtime 变 idle），前端可按需清理
+  // ask_question 回答后（工具结果经 messages 刷新落库，runtime 变 idle），前端可按需清理
   // 此处提供清理器：TabChat 提交成功或检测到 tool result 时调用，可让琥珀灯熄灭
   const clearAskPending = useCallback((questionId: string) => {
     if (!questionId) return;
