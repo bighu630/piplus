@@ -45,7 +45,12 @@ export function registerFilesRoutes(app: Hono) {
     const cwd = resolved.cwd;
 
     const tree = await buildFileTree(cwd);
-    return c.json({ session_id: sessionId, root_path: cwd, tree });
+    return c.json({
+      session_id: sessionId,
+      root_path: cwd,
+      tree,
+      missing_worktree_path: resolved.missingWorktreePath ?? null,
+    });
   });
 
   app.get('/api/v1/sessions/:sessionId/files/content', async (c) => {
@@ -75,7 +80,13 @@ export function registerFilesRoutes(app: Hono) {
 
     const truncated = buffer.byteLength > MAX_FILE_CONTENT_BYTES;
     const content = buffer.subarray(0, MAX_FILE_CONTENT_BYTES).toString('utf8');
-    return c.json({ session_id: sessionId, path: relativePath, content, truncated });
+    return c.json({
+      session_id: sessionId,
+      path: relativePath,
+      content,
+      truncated,
+      missing_worktree_path: resolved.missingWorktreePath ?? null,
+    });
   });
 
   app.get('/api/v1/sessions/:sessionId/files/image', async (c) => {

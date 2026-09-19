@@ -140,6 +140,11 @@ export type SessionFileTreeResponseDTO = {
   session_id: string;
   root_path: string;
   tree: SessionFileTreeNodeDTO[];
+  /**
+   * 会话原先关联的 worktree 目录已不存在、后端已自愈回退到项目根时，这里是原 worktree 路径。
+   * 正常情况为 null / 缺省。
+   */
+  missing_worktree_path?: string | null;
 };
 
 export type SessionFileContentResponseDTO = {
@@ -147,6 +152,8 @@ export type SessionFileContentResponseDTO = {
   path: string;
   content: string;
   truncated: boolean;
+  /** 同 SessionFileTreeResponseDTO.missing_worktree_path。 */
+  missing_worktree_path?: string | null;
 };
 
 export type SessionFileSaveResponseDTO = {

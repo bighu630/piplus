@@ -5,6 +5,7 @@ import { PlusCircle } from 'lucide-react';
 import { useRoleTemplates } from '../lib/hooks';
 import { renderRoleIcon } from '../lib/role-icons';
 import { THINKING_LEVEL_DISPLAY_LABELS } from '../lib/thinking-levels';
+import { ROLE_KEYS, CONFIGURABLE_ROLE_KEYS, getAllRoleKeys } from '../lib/role-metadata';
 import type { RoleConfigEntry } from '../lib/api';
 
 interface CreateProjectModalProps {
@@ -15,36 +16,6 @@ interface CreateProjectModalProps {
   modelsQueryLoading: boolean;
   createProjectMut: any;
   setProjectRoleModelsMut: any;
-}
-
-const ROLE_CONFIG_KEYS = [
-  { key: 'planner', label: '负责人' },
-  { key: 'worker', label: '执行者' },
-  { key: 'reviewer', label: '审查者' },
-  { key: 'feature_lead', label: '需求负责人' },
-  { key: 'bugfix_lead', label: 'Bug负责人' },
-  { key: 'blank', label: '空白' },
-];
-
-const CONFIGURABLE_ROLE_KEYS = ROLE_CONFIG_KEYS.filter((r) => r.key !== 'planner');
-
-/**
- * Returns all role keys (built-in + custom) with labels for the role-config tab.
- * Built-in roles keep their order, custom roles are appended alphabetically.
- */
-function getAllRoleKeys(templates: Array<{ key: string; name: string; isBuiltin: boolean }> | undefined): Array<{ key: string; label: string }> {
-  const builtinKeys = new Set(ROLE_CONFIG_KEYS.map((r) => r.key));
-  const customTemplates = (templates ?? []).filter((t) => !builtinKeys.has(t.key));
-  const seenCustom = new Set<string>();
-  const customRoles: Array<{ key: string; label: string }> = [];
-  for (const t of customTemplates) {
-    if (!seenCustom.has(t.key)) {
-      seenCustom.add(t.key);
-      customRoles.push({ key: t.key, label: t.name });
-    }
-  }
-  customRoles.sort((a, b) => a.key.localeCompare(b.key));
-  return [...ROLE_CONFIG_KEYS, ...customRoles];
 }
 
 const getModelThinkingLevels = (modelKey: string, modelsQueryData: any): string[] => {
@@ -90,11 +61,11 @@ export default function CreateProjectModal({
     if (!wasOpenRef.current) {
       wasOpenRef.current = true;
       const defaults: Record<string, RoleConfigEntry> = {};
-      for (const r of ROLE_CONFIG_KEYS) defaults[r.key] = { enabled: true, version: '内置' };
+      for (const r of ROLE_KEYS) defaults[r.key] = { enabled: true, version: '内置' };
       setCreateRoleConfig(defaults);
     }
     // 模板数据到达/刷新时补全缺失的自定义角色（不覆盖用户已编辑项）
-    const builtinKeys = new Set(ROLE_CONFIG_KEYS.map((r) => r.key));
+    const builtinKeys = new Set(ROLE_KEYS.map((r) => r.key));
     const customTemplates = (roleTemplatesQuery.data ?? []).filter((t) => !builtinKeys.has(t.key));
     if (customTemplates.length > 0) {
       setCreateRoleConfig((prev) => {
@@ -292,7 +263,7 @@ export default function CreateProjectModal({
               const roleVersions = (roleTemplatesQuery.data ?? [])
                 .filter((t) => t.key === role.key)
                 .sort((a, b) => String(b.version).localeCompare(String(a.version), undefined, { numeric: true }));
-              const isBuiltin = ROLE_CONFIG_KEYS.some((r) => r.key === role.key);
+              const isBuiltin = ROLE_KEYS.some((r) => r.key === role.key);
               return (
                 <div key={role.key} className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 px-3 py-2">
                   <div className="flex items-center gap-3 flex-1">

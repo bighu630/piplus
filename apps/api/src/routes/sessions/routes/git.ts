@@ -4,7 +4,7 @@ import { projects, sessions } from '@piplus/db/schema';
 import { eq } from 'drizzle-orm';
 import { execFileSync } from 'node:child_process';
 import { appendFile, access, readFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import path from 'node:path';
 import { getDbPath } from '../../../db-context';
 import { execGit, resolveProjectDir } from '../project-fs';
@@ -176,7 +176,7 @@ export function registerGitRoutes(app: Hono) {
       }
     }
 
-    return c.json({ session_id: sessionId, diff, cwd });
+    return c.json({ session_id: sessionId, diff, cwd, missing_worktree_path: resolved.missingWorktreePath ?? null });
   });
 
   app.post('/api/v1/sessions/:sessionId/git/pull', async (c) => {
@@ -363,6 +363,7 @@ export function registerGitRoutes(app: Hono) {
         current_branch: currentBranch,
         branches: annotatedBranches,
         session_worktree_path: resolved.sessionWorktreePath,
+        missing_worktree_path: resolved.missingWorktreePath ?? null,
         detached,
         detached_ref: detached ? (tagsPointingAtHead(cwd)[0] ?? shortHeadSha(cwd)) : null,
       });
@@ -833,8 +834,10 @@ export function registerGitRoutes(app: Hono) {
         if (branchMatch && pathMatch) {
           const wtBranch = branchMatch[1];
           const wtPath = path.resolve(mainCwd, pathMatch[1]);
-          // Skip the main worktree — its branch is handled by regular checkout
-          if (wtBranch === branch && wtPath !== resolvedMainCwd) {
+          // Skip the main worktree — its branch is handled by regular checkout.
+          // 同时跳过目录已被外部删除的 worktree：git 仍可能登记着它，
+          // 否则会把失效路径写回会话，与 resolveProjectDir 的回落形成来回摆动。
+          if (wtBranch === branch && wtPath !== resolvedMainCwd && existsSync(wtPath)) {
             worktreePath = wtPath;
             break;
           }

@@ -7,6 +7,7 @@ export type AuditAction =
   | 'session.archived'
   | 'session.stopped'
   | 'message.sent'
+  | 'message.steered'
   | 'title.changed'
   | 'session.pinned'
   | 'session.unpinned'

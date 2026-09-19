@@ -46,6 +46,157 @@ function makeCatalog(roles: Array<{ key: string; name: string; description: stri
   };
 }
 
+/**
+ * 等待子会话进入稳定 idle（连续 150ms 无新的 sendMessage → 无 startChildSessionRun 在飞）。
+ * wait 循环每轮 poll 间隔 2s，稳定后到下一轮 poll 之间有一大段无 run 的窗口，
+ * 便于测试在其中注入 stop 状态而不被在飞的 run 覆盖。
+ */
+async function waitForChildSettled(db: any, parentSessionId: string, sent: unknown[], timeoutMs = 5000) {
+  const start = Date.now();
+  let lastSent = sent.length;
+  let stableSince = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, parentSessionId)).limit(1);
+    if (sent.length !== lastSent) {
+      lastSent = sent.length;
+      stableSince = Date.now();
+    }
+    if (child && child.runtimeStatus === 'idle' && Date.now() - stableSince >= 150) {
+      return child;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('child session did not settle');
+}
+
+/**
+ * 构建「父会话 running + spawn_session wait=true」测试场景，便于注入子会话 stop / 写回状态。
+ * writebackOnReminder=true 时在第 2 次 sendMessage（reminder 轮）插入匹配 requestId 的 writeback。
+ */
+async function startChildWaitScenario(opts: {
+  parentProjectId: string;
+  parentSessionId: string;
+  writebackOnReminder?: boolean;
+}) {
+  const dbPath = makeDbPath();
+  createSeedDb(dbPath);
+  const db = createDb(`file:${dbPath}`);
+  const state = { sent: [] as Array<{ sessionId: string; content: string }> };
+
+  const piClient = {
+    async createSession(input: { title?: string; prompt: string; cwd?: string; model?: { provider: string; id: string } }) {
+      const sessionId = `pi_${crypto.randomUUID().slice(0, 8)}`;
+      return {
+        sessionId,
+        locator: {
+          piSessionId: sessionId,
+          sessionFile: `/tmp/${sessionId}.jsonl`,
+        },
+        model: input.model ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` } : undefined,
+      };
+    },
+    async restoreRuntime() { return; },
+    async subscribeSession() { return () => {}; },
+    async getHistory() { return { messages: [], nextCursor: null }; },
+    async stopSession() { return { status: 'stopped' as const }; },
+    async closeRuntime() { return; },
+    async listAvailableModels() { return []; },
+    async getCurrentModel() { return null; },
+    async sendMessage(sessionId: string, content: string) {
+      state.sent.push({ sessionId, content });
+      if (opts.writebackOnReminder && state.sent.length === 2) {
+        const reqCtx = getRequestContext(sessionId);
+        if (reqCtx?.requestId) {
+          await db.insert(messages).values({
+            id: `msg_${crypto.randomUUID().slice(0, 8)}`,
+            sessionId: opts.parentSessionId,
+            piMessageId: null,
+            messageKind: 'writeback',
+            sourceSessionId: sessionId,
+            role: 'assistant',
+            contentText: 'task done before stop',
+            contentBlocksJson: null,
+            contentVersion: 1,
+            requestId: reqCtx.requestId,
+            createdAt: new Date(),
+          } as any);
+        }
+      }
+      return { sessionId, runId: 'run' };
+    },
+    async ensureRuntime() { return; },
+    async injectPromptIfNeeded() { return; },
+    isFirstConversation() { return false; },
+    getRuntimeState() { return null; },
+    async bindToolRuntime() { return; },
+    async setSessionModel(_sessionId: string, _locator: unknown, modelRef: { provider: string; id: string }) {
+      return { provider: modelRef.provider, id: modelRef.id, label: `${modelRef.provider}/${modelRef.id}` };
+    },
+  } as any;
+
+  const now = new Date();
+  await db.insert(projects).values({
+    id: opts.parentProjectId,
+    name: 'Role Tools Project',
+    createdBy: 'user_seed',
+    status: 'active',
+    projectPath: '',
+    sourceType: 'existing',
+    sourceUrl: '',
+    archivedAt: null,
+    archivedBy: null,
+    lastActivityAt: now,
+    createdAt: now,
+    updatedAt: now,
+  } as any);
+
+  await db.insert(sessions).values({
+    id: opts.parentSessionId,
+    projectId: opts.parentProjectId,
+    parentSessionId: null,
+    rootSessionId: opts.parentSessionId,
+    depth: 0,
+    roleTemplateId: 'rt_planner',
+    piSessionId: 'pi_parent',
+    piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_parent', sessionFile: '/tmp/pi-parent.jsonl' }),
+    requestedByMessageId: null,
+    title: 'Parent',
+    titleSource: 'default',
+    status: 'active',
+    // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
+    runtimeStatus: 'running',
+    currentModelProvider: 'anthropic',
+    currentModelId: 'claude-sonnet-4-20250514',
+    lastActivityAt: now,
+    lastRunAt: null,
+    lastStopAt: null,
+    lastRuntimeError: null,
+    createdBy: 'user_seed',
+    archivedAt: null,
+    archivedBy: null,
+    createdAt: now,
+    updatedAt: now,
+    roleBasePromptSnapshot: 'base',
+    userSuppliedPrompt: '',
+    parentSuppliedPrompt: '',
+    compiledPrompt: 'compiled',
+  } as any);
+
+  const waitPromise = invokeRoleManagerTool('spawn_session', {
+    role: 'worker',
+    objective: 'long running task',
+    title: 'Long Running Task',
+    wait: true,
+  }, {
+    db,
+    piClient,
+    sessionId: opts.parentSessionId,
+    userId: 'user_seed',
+  });
+
+  return { db, state, waitPromise };
+}
+
 describe('role manager tools', () => {
   test('spawn_session description lists available roles from catalog', () => {
     const catalog = makeCatalog([
@@ -1429,6 +1580,109 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       message: '父会话已停止，已取消等待子会话结果',
     });
   });
+
+  test('spawn_session wait=true cancels when child session is stopped (stopping)', async () => {
+    const { db, state, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_role_tools_child_stop',
+      parentSessionId: 'session_parent_tools_child_stop',
+    });
+    const child = await waitForChildSettled(db, 'session_parent_tools_child_stop', state.sent);
+    // 模拟用户 stop 子会话：stop 路由写 stopping。故意不写 lastStopAt，单独覆盖 stopping 分支。
+    await db.update(sessions)
+      .set({ runtimeStatus: 'stopping', lastStopAt: null, updatedAt: new Date() })
+      .where(eq(sessions.id, child.id));
+    const sentBefore = state.sent.length;
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      session_id: child.id,
+      message: '子会话已停止，已取消等待子会话结果',
+    });
+    // 取消后禁止 reminder 再拉起子会话（无新增 sendMessage / startChildSessionRun）
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(state.sent.length).toBe(sentBefore);
+  });
+
+  test('spawn_session wait=true cancels when child stopped then reset to idle (lastStopAt >= lastRunAt)', async () => {
+    const { db, state, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_role_tools_child_stop_idle',
+      parentSessionId: 'session_parent_tools_child_stop_idle',
+    });
+    const child = await waitForChildSettled(db, 'session_parent_tools_child_stop_idle', state.sent);
+    // 模拟 stop 后 finalizeSessionStop 已把 stopping 复位 idle，但 lastStopAt 仍在。
+    await db.update(sessions)
+      .set({
+        runtimeStatus: 'idle',
+        lastStopAt: new Date(),
+        lastRunAt: new Date(Date.now() - 60_000),
+        updatedAt: new Date(),
+      })
+      .where(eq(sessions.id, child.id));
+    const sentBefore = state.sent.length;
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      session_id: child.id,
+      message: '子会话已停止，已取消等待子会话结果',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(state.sent.length).toBe(sentBefore);
+  });
+
+  test('spawn_session wait=true returns completed when child is stopped after writeback (writeback 优先)', async () => {
+    const { db, state, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_role_tools_child_stop_wb',
+      parentSessionId: 'session_parent_tools_child_stop_wb',
+      writebackOnReminder: true,
+    });
+    const child = await waitForChildSettled(db, 'session_parent_tools_child_stop_wb', state.sent);
+    // 子会话已写回（reminder 轮插入 writeback）后再被 stop：writeback 命中必须优先于 stop 检查
+    await db.update(sessions)
+      .set({ runtimeStatus: 'stopping', lastStopAt: new Date(), updatedAt: new Date() })
+      .where(eq(sessions.id, child.id));
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({
+      status: 'completed',
+      session_id: child.id,
+      summary: 'task done before stop',
+    });
+  });
+
+  test('spawn_session wait=true keeps waiting when child was reactivated (lastRunAt > lastStopAt)', async () => {
+    const { db, state, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_role_tools_child_reactivated',
+      parentSessionId: 'session_parent_tools_child_reactivated',
+    });
+    const child = await waitForChildSettled(db, 'session_parent_tools_child_reactivated', state.sent);
+    // 用户 stop 后手动重新激活子会话：新 run 的 lastRunAt 晚于 lastStopAt，不得误取消
+    await db.update(sessions)
+      .set({
+        runtimeStatus: 'idle',
+        lastStopAt: new Date(Date.now() - 60_000),
+        lastRunAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(sessions.id, child.id));
+
+    let settled = false;
+    // 失败由下方 await waitPromise 报出；此处 catch 仅避免后台 promise 产生 unhandled rejection 噪音
+    void waitPromise.then(() => { settled = true; }, () => { /* surfaced by await below */ });
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(settled).toBe(false);
+
+    // 收尾：stop 子会话让 wait 循环退出
+    await db.update(sessions)
+      .set({ runtimeStatus: 'stopping', lastStopAt: null, updatedAt: new Date() })
+      .where(eq(sessions.id, child.id));
+    const result = await waitPromise;
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      message: '子会话已停止，已取消等待子会话结果',
+    });
+  }, 10_000);
 
   test('cross_project_ask - cancels when source session becomes idle (zombie guard)', async () => {
     const dbPath = makeDbPath();

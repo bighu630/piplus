@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
+import { MotionGlobalConfig } from 'motion/react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import MergedToolCallsCard from './MergedToolCallsCard';
 
@@ -12,6 +13,7 @@ import MergedToolCallsCard from './MergedToolCallsCard';
 const originalWindow = globalThis.window;
 const originalDocument = globalThis.document;
 const originalActEnv = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+const originalSkipAnimations = MotionGlobalConfig.skipAnimations;
 
 let window: Window;
 let root: Root | null = null;
@@ -27,12 +29,15 @@ function setupGlobals() {
 
 beforeAll(() => {
   setupGlobals();
+  // happy-dom 下 motion 的退出动画不会自然结束；跳过动画，让「收起后卸载」语义在测试中可用
+  MotionGlobalConfig.skipAnimations = true;
 });
 
 afterAll(() => {
   globalThis.window = originalWindow;
   globalThis.document = originalDocument;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = originalActEnv;
+  MotionGlobalConfig.skipAnimations = originalSkipAnimations;
 });
 
 function render(node: React.ReactElement) {
@@ -55,14 +60,14 @@ afterEach(() => {
   container = null;
 });
 
-function click(el: Element | null) {
-  act(() => {
+async function click(el: Element | null) {
+  await act(async () => {
     (el as HTMLButtonElement).click();
   });
 }
 
-function pressKey(el: Element | null, key: string) {
-  act(() => {
+async function pressKey(el: Element | null, key: string) {
+  await act(async () => {
     el!.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true }));
   });
 }
@@ -129,7 +134,7 @@ const argsContents = () => [...container!.querySelectorAll('[data-testid="tool-a
 const resultContents = () => [...container!.querySelectorAll('[data-testid="tool-result-content"]')];
 
 describe('MergedToolCallsCard', () => {
-  test('头部显示工具名与 ×N，默认收起且为成功配色', () => {
+  test('头部显示工具名与 ×N，默认收起且为成功配色', async () => {
     render(<Harness calls={threeCalls()} msgs={messages} />);
 
     expect(header()!.textContent).toContain('bash');
@@ -139,10 +144,10 @@ describe('MergedToolCallsCard', () => {
     expect(container!.querySelector('.bg-emerald-50')).not.toBeNull();
   });
 
-  test('展开为 N 组：参数默认收起、结果默认展开且各自内容正确', () => {
+  test('展开为 N 组：参数默认收起、结果默认展开且各自内容正确', async () => {
     render(<Harness calls={threeCalls()} msgs={messages} />);
 
-    click(header());
+    await click(header());
 
     expect(entries()).toHaveLength(3);
     expect(argsToggles()).toHaveLength(3);
@@ -152,13 +157,13 @@ describe('MergedToolCallsCard', () => {
     expect(resultContents()[2].textContent).toContain('out 3');
 
     // 合并组内仍走共享 body：bash 参数为表格
-    click(argsToggles()[0]);
+    await click(argsToggles()[0]);
     expect(container!.querySelector('[data-testid="bash-args-table"]')).not.toBeNull();
   });
 
-  test('组间以分割线与间隙隔开（首组无间隙）', () => {
+  test('组间以分割线与间隙隔开（首组无间隙）', async () => {
     render(<Harness calls={threeCalls()} msgs={messages} />);
-    click(header());
+    await click(header());
 
     const list = entries();
     expect(list[0].className).toContain('border-t');
@@ -167,44 +172,44 @@ describe('MergedToolCallsCard', () => {
     expect(list[1].className).toContain('mt-1');
   });
 
-  test('每组参数可独立展开', () => {
+  test('每组参数可独立展开', async () => {
     render(<Harness calls={threeCalls()} msgs={messages} />);
-    click(header());
+    await click(header());
 
-    click(argsToggles()[1]);
+    await click(argsToggles()[1]);
 
     expect(argsContents()).toHaveLength(1);
     expect(argsContents()[0].textContent).toContain('echo 2');
   });
 
-  test('重新展开卡片时子项恢复默认', () => {
+  test('重新展开卡片时子项恢复默认', async () => {
     render(<Harness calls={threeCalls()} msgs={messages} />);
-    click(header());
-    click(argsToggles()[0]);
+    await click(header());
+    await click(argsToggles()[0]);
     expect(argsContents()).toHaveLength(1);
 
-    click(header()); // 收起
-    click(header()); // 重新展开
+    await click(header()); // 收起
+    await click(header()); // 重新展开
 
     expect(argsContents()).toHaveLength(0);
     expect(resultContents()).toHaveLength(3);
   });
 
-  test('键盘可达（Enter 展开 / Space 收起）', () => {
+  test('键盘可达（Enter 展开 / Space 收起）', async () => {
     render(<Harness calls={threeCalls()} msgs={messages} />);
 
-    pressKey(header(), 'Enter');
+    await pressKey(header(), 'Enter');
     expect(entries()).toHaveLength(3);
 
-    pressKey(header(), ' ');
+    await pressKey(header(), ' ');
     expect(entries()).toHaveLength(0);
   });
 
-  test('×2 合并组同样工作', () => {
+  test('×2 合并组同样工作', async () => {
     render(<Harness calls={threeCalls().slice(0, 2)} msgs={messages} />);
     expect(count()!.textContent).toBe('×2');
 
-    click(header());
+    await click(header());
     expect(entries()).toHaveLength(2);
   });
 });

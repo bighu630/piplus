@@ -8,6 +8,7 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import hljs from 'highlight.js';
 import { Check, ChevronRight, Copy, Edit3, FileCode2, FileText, Folder, FolderOpen, PanelLeft, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import MissingWorktreeNotice from './MissingWorktreeNotice';
 import MermaidBlock from './MermaidBlock';
 import { useSessionFileTree, useSessionFileContent, useSaveSessionFileContentMutation, useDeleteSessionFileMutation } from '../lib/hooks';
 import { getApiBaseUrl } from '../lib/runtime-config';
@@ -589,211 +590,214 @@ function TabFiles({
   }, [viewKey, projectId]);
 
   return (
-    <div className="flex-1 flex h-full overflow-hidden bg-slate-50/60 dark:bg-slate-900/10">
-      {!isTreePanelCollapsed && (
-        <aside className="w-[320px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col">
-          <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
-                <FileCode2 className="w-4 h-4 text-blue-500" />
-                <span>{panelTitle ?? 'Files'}</span>
+    <div className="flex-1 flex flex-col h-full overflow-hidden">
+      <MissingWorktreeNotice worktreePath={treeResponse?.missing_worktree_path} />
+      <div className="flex-1 flex h-full overflow-hidden bg-slate-50/60 dark:bg-slate-900/10">
+        {!isTreePanelCollapsed && (
+          <aside className="w-[320px] shrink-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col">
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-bold text-slate-700 dark:text-slate-200">
+                  <FileCode2 className="w-4 h-4 text-blue-500" />
+                  <span>{panelTitle ?? 'Files'}</span>
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
+                  {treeResponse?.root_path ?? '加载中…'}
+                </div>
               </div>
-              <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
-                {treeResponse?.root_path ?? '加载中…'}
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => {
-                  setRefreshSpinning(true);
-                  setTimeout(() => setRefreshSpinning(false), 600);
-                  handleRefresh();
-                }}
-                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
-                title="刷新文件树"
-                aria-label="刷新文件树"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${treeLoading || refreshSpinning ? 'animate-spin' : ''}`} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsTreePanelCollapsed(true)}
-                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
-                title="收起文件树"
-                aria-label="收起文件树"
-              >
-                <PanelLeft className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-2">
-            {treeLoading ? (
-              <div className="h-full flex items-center justify-center text-xs text-slate-400">文件树加载中…</div>
-            ) : treeError ? (
-              <div className="h-full flex items-center justify-center text-xs text-red-500 px-4 text-center">{treeError}</div>
-            ) : isEmptyByFilter ? (
-              <div className="h-full flex items-center justify-center text-xs text-slate-400 px-4 text-center">{emptyMessage ?? defaultEmptyMessage}</div>
-            ) : !treeResponse || filteredTreeNodes.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-xs text-slate-400">当前项目暂无可预览文件</div>
-            ) : (
-              <div className="space-y-0.5">
-                {filteredTreeNodes.map((node) => (
-                  <FileTreeNode
-                    key={node.path}
-                    node={node}
-                    depth={0}
-                    expanded={expanded}
-                    onToggle={toggleExpanded}
-                    selectedPath={selectedPath}
-                    onSelectPath={setSelectedPath}
-                    defaultExpanded={defaultExpanded}
-                    onDeleteFile={handleDeleteFile}
-                    deleting={deletingFile}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </aside>
-      )}
-
-      <section className="flex-1 min-w-0 flex flex-col overflow-hidden">
-        <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            {isTreePanelCollapsed && (
-              <button
-                type="button"
-                onClick={() => setIsTreePanelCollapsed(false)}
-                className="shrink-0 p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
-                title="展开文件树"
-                aria-label="展开文件树"
-              >
-                <PanelLeft className="w-3.5 h-3.5" />
-              </button>
-            )}
-            <div className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">
-              {selectedPath ?? '请选择文件'}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {editingPath !== null ? (
-              <>
-                <span className="text-xs text-slate-400">编辑模式</span>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!selectedPath) return;
-                    setEditError(null);
-                    try {
-                      await handleSaveFileContent(editingPath!, draftContent);
-                      setEditingPath(null);
-                      setDraftContent('');
-                    } catch (err) {
-                      setEditError(err instanceof Error ? err.message : '保存失败');
-                    }
-                  }}
-                  disabled={savingFile}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 cursor-pointer transition"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  保存
-                </button>
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
-                    setEditingPath(null);
-                    setDraftContent('');
-                    setEditError(null);
+                    setRefreshSpinning(true);
+                    setTimeout(() => setRefreshSpinning(false), 600);
+                    handleRefresh();
                   }}
-                  disabled={savingFile}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-50 cursor-pointer transition"
+                  className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="刷新文件树"
+                  aria-label="刷新文件树"
                 >
-                  <X className="w-3.5 h-3.5" />
-                  取消
+                  <RefreshCw className={`w-3.5 h-3.5 ${treeLoading || refreshSpinning ? 'animate-spin' : ''}`} />
                 </button>
-              </>
-            ) : selectedPath && contentResponse && !contentLoading && !contentError && !contentResponse.truncated ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setDraftContent(contentResponse.content);
-                  setEditingPath(selectedPath);
-                }}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer transition"
-              >
-                <Edit3 className="w-3.5 h-3.5" />
-                编辑
-              </button>
-            ) : null}
-          </div>
-          <div className="text-[11px] text-slate-400 shrink-0">
-            {isImageFile(selectedPath) ? '图片预览' : isHtmlFile(selectedPath) ? 'HTML 预览' : isMarkdownFile(selectedPath) ? 'Markdown 预览' : '代码预览'}
-          </div>
-        </div>
-
-        <div className="flex-1 min-h-0 p-5">
-          {selectedPath && isImageFile(selectedPath) ? (
-            <div className="h-full flex items-center justify-center rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 overflow-hidden">
-              <div className="flex flex-col items-center w-full h-full overflow-auto p-4">
-                {imgError ? (
-                  <div className="flex items-center justify-center text-xs text-red-500 h-full">
-                    图片加载失败
-                  </div>
-                ) : (
-                  <img
-                    src={`${getApiBaseUrl()}/api/v1/sessions/${selectedSessionId}/files/image?path=${encodeURIComponent(selectedPath!)}&token=${getToken() ?? ''}`}
-                    alt={selectedPath!}
-                    className="max-w-full max-h-full object-contain"
-                    style={{ background: 'repeating-conic-gradient(rgba(0,0,0,0.03) 0% 25%, transparent 0% 50%) 0px 0px / 20px 20px' }}
-                    onError={() => setImgError(true)}
-                    onLoad={() => setImgError(false)}
-                  />
-                )}
+                <button
+                  type="button"
+                  onClick={() => setIsTreePanelCollapsed(true)}
+                  className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="收起文件树"
+                  aria-label="收起文件树"
+                >
+                  <PanelLeft className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
-          ) : contentLoading ? (
-            <div className="h-full flex items-center justify-center text-xs text-slate-400">文件内容加载中…</div>
-          ) : contentError ? (
-            <div className="h-full flex items-center justify-center text-xs text-red-500 px-4 text-center">{contentError}</div>
-          ) : !selectedPath ? (
-            <div className="h-full flex items-center justify-center text-xs text-slate-400">请选择左侧文件进行预览</div>
-          ) : !contentResponse ? (
-            <div className="h-full flex items-center justify-center text-xs text-slate-400">暂无内容</div>
-          ) : (
-            <div className="h-full flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-              <div className="shrink-0 px-4 py-2 border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between gap-3">
-                <span className="truncate">{isMarkdownFile(selectedPath) ? 'Markdown 渲染' : isHtmlFile(selectedPath) ? 'HTML 渲染' : getLanguageFromPath(selectedPath)}</span>
-                {contentResponse.truncated ? <span>已截断（最多 1MB）</span> : null}
-              </div>
-              <div className="flex-1 min-h-0 overflow-auto">
-                {editingPath !== null ? (
-                  <textarea
-                    value={draftContent}
-                    onChange={(e) => setDraftContent(e.target.value)}
-                    className="w-full min-h-full p-4 text-xs leading-6 font-mono resize-none focus:outline-none bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 border-0"
-                    spellCheck={false}
-                  />
-                ) : (
-                  isMarkdownFile(selectedPath) ? (
-                    <RichMarkdown content={contentResponse.content} />
-                  ) : isHtmlFile(selectedPath) ? (
-                    <HtmlPreview filePath={selectedPath} content={contentResponse.content} />
-                  ) : (
-                    <CodePreview filePath={selectedPath} content={contentResponse.content} />
-                  )
-                )}
-              </div>
-              {editError && (
-                <div className="shrink-0 px-4 py-2 border-t border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 text-xs text-red-600 dark:text-red-400">
-                  保存失败: {editError}
+
+            <div className="flex-1 overflow-y-auto p-2">
+              {treeLoading ? (
+                <div className="h-full flex items-center justify-center text-xs text-slate-400">文件树加载中…</div>
+              ) : treeError ? (
+                <div className="h-full flex items-center justify-center text-xs text-red-500 px-4 text-center">{treeError}</div>
+              ) : isEmptyByFilter ? (
+                <div className="h-full flex items-center justify-center text-xs text-slate-400 px-4 text-center">{emptyMessage ?? defaultEmptyMessage}</div>
+              ) : !treeResponse || filteredTreeNodes.length === 0 ? (
+                <div className="h-full flex items-center justify-center text-xs text-slate-400">当前项目暂无可预览文件</div>
+              ) : (
+                <div className="space-y-0.5">
+                  {filteredTreeNodes.map((node) => (
+                    <FileTreeNode
+                      key={node.path}
+                      node={node}
+                      depth={0}
+                      expanded={expanded}
+                      onToggle={toggleExpanded}
+                      selectedPath={selectedPath}
+                      onSelectPath={setSelectedPath}
+                      defaultExpanded={defaultExpanded}
+                      onDeleteFile={handleDeleteFile}
+                      deleting={deletingFile}
+                    />
+                  ))}
                 </div>
               )}
             </div>
-          )}
-        </div>
-      </section>
+          </aside>
+        )}
+
+        <section className="flex-1 min-w-0 flex flex-col overflow-hidden">
+          <div className="px-5 py-3 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              {isTreePanelCollapsed && (
+                <button
+                  type="button"
+                  onClick={() => setIsTreePanelCollapsed(false)}
+                  className="shrink-0 p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="展开文件树"
+                  aria-label="展开文件树"
+                >
+                  <PanelLeft className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <div className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">
+                {selectedPath ?? '请选择文件'}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {editingPath !== null ? (
+                <>
+                  <span className="text-xs text-slate-400">编辑模式</span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!selectedPath) return;
+                      setEditError(null);
+                      try {
+                        await handleSaveFileContent(editingPath!, draftContent);
+                        setEditingPath(null);
+                        setDraftContent('');
+                      } catch (err) {
+                        setEditError(err instanceof Error ? err.message : '保存失败');
+                      }
+                    }}
+                    disabled={savingFile}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 cursor-pointer transition"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    保存
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingPath(null);
+                      setDraftContent('');
+                      setEditError(null);
+                    }}
+                    disabled={savingFile}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-50 cursor-pointer transition"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    取消
+                  </button>
+                </>
+              ) : selectedPath && contentResponse && !contentLoading && !contentError && !contentResponse.truncated ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDraftContent(contentResponse.content);
+                    setEditingPath(selectedPath);
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer transition"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  编辑
+                </button>
+              ) : null}
+            </div>
+            <div className="text-[11px] text-slate-400 shrink-0">
+              {isImageFile(selectedPath) ? '图片预览' : isHtmlFile(selectedPath) ? 'HTML 预览' : isMarkdownFile(selectedPath) ? 'Markdown 预览' : '代码预览'}
+            </div>
+          </div>
+
+          <div className="flex-1 min-h-0 p-5">
+            {selectedPath && isImageFile(selectedPath) ? (
+              <div className="h-full flex items-center justify-center rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 overflow-hidden">
+                <div className="flex flex-col items-center w-full h-full overflow-auto p-4">
+                  {imgError ? (
+                    <div className="flex items-center justify-center text-xs text-red-500 h-full">
+                      图片加载失败
+                    </div>
+                  ) : (
+                    <img
+                      src={`${getApiBaseUrl()}/api/v1/sessions/${selectedSessionId}/files/image?path=${encodeURIComponent(selectedPath!)}&token=${getToken() ?? ''}`}
+                      alt={selectedPath!}
+                      className="max-w-full max-h-full object-contain"
+                      style={{ background: 'repeating-conic-gradient(rgba(0,0,0,0.03) 0% 25%, transparent 0% 50%) 0px 0px / 20px 20px' }}
+                      onError={() => setImgError(true)}
+                      onLoad={() => setImgError(false)}
+                    />
+                  )}
+                </div>
+              </div>
+            ) : contentLoading ? (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400">文件内容加载中…</div>
+            ) : contentError ? (
+              <div className="h-full flex items-center justify-center text-xs text-red-500 px-4 text-center">{contentError}</div>
+            ) : !selectedPath ? (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400">请选择左侧文件进行预览</div>
+            ) : !contentResponse ? (
+              <div className="h-full flex items-center justify-center text-xs text-slate-400">暂无内容</div>
+            ) : (
+              <div className="h-full flex flex-col rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+                <div className="shrink-0 px-4 py-2 border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between gap-3">
+                  <span className="truncate">{isMarkdownFile(selectedPath) ? 'Markdown 渲染' : isHtmlFile(selectedPath) ? 'HTML 渲染' : getLanguageFromPath(selectedPath)}</span>
+                  {contentResponse.truncated ? <span>已截断（最多 1MB）</span> : null}
+                </div>
+                <div className="flex-1 min-h-0 overflow-auto">
+                  {editingPath !== null ? (
+                    <textarea
+                      value={draftContent}
+                      onChange={(e) => setDraftContent(e.target.value)}
+                      className="w-full min-h-full p-4 text-xs leading-6 font-mono resize-none focus:outline-none bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 border-0"
+                      spellCheck={false}
+                    />
+                  ) : (
+                    isMarkdownFile(selectedPath) ? (
+                      <RichMarkdown content={contentResponse.content} />
+                    ) : isHtmlFile(selectedPath) ? (
+                      <HtmlPreview filePath={selectedPath} content={contentResponse.content} />
+                    ) : (
+                      <CodePreview filePath={selectedPath} content={contentResponse.content} />
+                    )
+                  )}
+                </div>
+                {editError && (
+                  <div className="shrink-0 px-4 py-2 border-t border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 text-xs text-red-600 dark:text-red-400">
+                    保存失败: {editError}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

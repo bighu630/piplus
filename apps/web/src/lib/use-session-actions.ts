@@ -39,6 +39,9 @@ export function useSessionActions({
   onSelectSession,
 }: UseSessionActionsArgs) {
   const queryClient = useQueryClient();
+  // 单独取出字段作为依赖：避免 handleLoadMore 依赖整个 messagesQuery 对象
+  // （每次 render 引用都变）→ TabChat 的 IntersectionObserver 反复重建导致的额外 fetchNextPage。
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = messagesQuery;
   const createSessionMut = useCreateSessionMutation();
   const sendMessageMut = useSendMessageMutation(selectedSessionId);
   const stopSessionMut = useStopSessionMutation();
@@ -128,10 +131,10 @@ export function useSessionActions({
   }, [selectedSessionId, setThinkingLevelMut]);
 
   const handleLoadMore = useCallback(() => {
-    if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
-      messagesQuery.fetchNextPage();
+    if (hasNextPage && !isFetchingNextPage) {
+      fetchNextPage();
     }
-  }, [messagesQuery]);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   return {
     handleCreateSession,

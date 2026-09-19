@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
+import { MotionGlobalConfig } from 'motion/react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import FileToolGroupCard from './FileToolGroupCard';
 
@@ -15,6 +16,7 @@ import FileToolGroupCard from './FileToolGroupCard';
 const originalWindow = globalThis.window;
 const originalDocument = globalThis.document;
 const originalActEnv = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+const originalSkipAnimations = MotionGlobalConfig.skipAnimations;
 
 let window: Window;
 let root: Root | null = null;
@@ -30,12 +32,15 @@ function setupGlobals() {
 
 beforeAll(() => {
   setupGlobals();
+  // happy-dom 下 motion 的退出动画不会自然结束；跳过动画，让「收起后卸载」语义在测试中可用
+  MotionGlobalConfig.skipAnimations = true;
 });
 
 afterAll(() => {
   globalThis.window = originalWindow;
   globalThis.document = originalDocument;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = originalActEnv;
+  MotionGlobalConfig.skipAnimations = originalSkipAnimations;
 });
 
 function render(node: React.ReactElement) {
@@ -58,14 +63,14 @@ afterEach(() => {
   container = null;
 });
 
-function click(el: Element | null) {
-  act(() => {
+async function click(el: Element | null) {
+  await act(async () => {
     (el as HTMLButtonElement).click();
   });
 }
 
-function pressKey(el: Element | null, key: string) {
-  act(() => {
+async function pressKey(el: Element | null, key: string) {
+  await act(async () => {
     el!.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true }));
   });
 }
@@ -152,7 +157,7 @@ const threeWrites = () => [
 ];
 
 describe('FileToolGroupCard 文件列表', () => {
-  test('多行文件列表 + 卡片级只有一个总控按钮', () => {
+  test('多行文件列表 + 卡片级只有一个总控按钮', async () => {
     render(<Harness calls={threeWrites()} />);
 
     expect(rows()).toHaveLength(3);
@@ -165,15 +170,15 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(header()!.textContent).toContain('write × 3');
   });
 
-  test('默认收起：不渲染任何文件明细', () => {
+  test('默认收起：不渲染任何文件明细', async () => {
     render(<Harness calls={threeWrites()} />);
     expect(details()).toHaveLength(0);
   });
 
-  test('点击单个文件行只展开该文件明细，其它行仍收起', () => {
+  test('点击单个文件行只展开该文件明细，其它行仍收起', async () => {
     render(<Harness calls={threeWrites()} />);
 
-    click(rows()[1]);
+    await click(rows()[1]);
 
     expect(details()).toHaveLength(1);
     expect(details()[0].textContent).toContain('b1');
@@ -182,32 +187,32 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(allButton()!.textContent!.trim()).toBe('展开全部');
   });
 
-  test('点击总控按钮展开全部文件，再点收起全部', () => {
+  test('点击总控按钮展开全部文件，再点收起全部', async () => {
     render(<Harness calls={threeWrites()} />);
 
-    click(allButton());
+    await click(allButton());
     expect(details()).toHaveLength(3);
     expect(allButton()!.textContent!.trim()).toBe('收起全部');
     expect(header()!.textContent).toContain('收起全部');
     // 展开态仍然只有卡片级一个总控按钮（明细内无按钮）
     expect(container!.querySelectorAll('button')).toHaveLength(1);
 
-    click(allButton());
+    await click(allButton());
     expect(details()).toHaveLength(0);
     expect(allButton()!.textContent!.trim()).toBe('展开全部');
   });
 
-  test('点击头部同样触发全部展开/收起', () => {
+  test('点击头部同样触发全部展开/收起', async () => {
     render(<Harness calls={threeWrites()} />);
 
-    click(header());
+    await click(header());
     expect(details()).toHaveLength(3);
 
-    click(header());
+    await click(header());
     expect(details()).toHaveLength(0);
   });
 
-  test('单文件组：不显示总控按钮，点行/头部仍可展开', () => {
+  test('单文件组：不显示总控按钮，点行/头部仍可展开', async () => {
     render(<Harness calls={[fileCall('e1-tool-0', 'edit', { path: 'src/only.ts', edits: [{ oldText: 'x', newText: 'y' }] })]} />);
 
     expect(rows()).toHaveLength(1);
@@ -216,14 +221,14 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(header()!.textContent).toContain('edit');
     expect(header()!.textContent).not.toContain('×');
 
-    click(rows()[0]);
+    await click(rows()[0]);
     expect(details()).toHaveLength(1);
 
-    click(header());
+    await click(header());
     expect(details()).toHaveLength(0);
   });
 
-  test('混合工具组：标签合并显示工具名与数量', () => {
+  test('混合工具组：标签合并显示工具名与数量', async () => {
     render(
       <Harness
         calls={[
@@ -236,7 +241,7 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(header()!.textContent).toContain('write + edit + read × 3');
   });
 
-  test('长路径省略前面：目录段可省略、文件名完整（title 提供全路径）', () => {
+  test('长路径省略前面：目录段可省略、文件名完整（title 提供全路径）', async () => {
     const longPath = '/root/data/code/test/test_folder/testfile.txt';
     render(<Harness calls={[fileCall('e1-tool-0', 'write', { path: longPath, content: 'x' })]} />);
 
@@ -248,7 +253,7 @@ describe('FileToolGroupCard 文件列表', () => {
     expect(rows()[0].querySelector('[data-testid="file-path-base"]')!.textContent).toBe('testfile.txt');
   });
 
-  test('running 调用渲染 spinner', () => {
+  test('running 调用渲染 spinner', async () => {
     render(<Harness calls={threeWrites()} runningIds={new Set(['e1-tool-1'])} />);
     expect(container!.querySelector('.animate-spin')).not.toBeNull();
   });
@@ -264,7 +269,7 @@ describe('FileToolGroupCard read 行', () => {
     toolResult('r2', 'read', 'e1-tool-1', 'content of b'),
   ];
 
-  test('行内显示行号范围（无参数则不显示）', () => {
+  test('行内显示行号范围（无参数则不显示）', async () => {
     render(<Harness calls={readCalls} messages={messages} />);
 
     const ranges = [...container!.querySelectorAll('[data-testid="tool-call-line-range"]')];
@@ -272,35 +277,35 @@ describe('FileToolGroupCard read 行', () => {
     expect(ranges[0].textContent).toBe('100-149');
   });
 
-  test('展开某行显示该文件读取内容（不带行号）', () => {
+  test('展开某行显示该文件读取内容（不带行号）', async () => {
     render(<Harness calls={readCalls} messages={messages} />);
 
-    click(rows()[1]);
+    await click(rows()[1]);
 
     expect(details()).toHaveLength(1);
     expect(details()[0].querySelector('pre')!.textContent).toBe('content of b');
   });
 
-  test('展开全部时每行显示各自内容', () => {
+  test('展开全部时每行显示各自内容', async () => {
     render(<Harness calls={readCalls} messages={messages} />);
 
-    click(allButton());
+    await click(allButton());
 
     expect(details()).toHaveLength(2);
     expect(details()[0].textContent).toContain('content of a');
     expect(details()[1].textContent).toContain('content of b');
   });
 
-  test('无结果时回退展示 args', () => {
+  test('无结果时回退展示 args', async () => {
     render(<Harness calls={[readCalls[0]]} />);
 
-    click(rows()[0]);
+    await click(rows()[0]);
     expect(details()[0].textContent).toContain('"offset": 100');
   });
 });
 
 describe('FileToolGroupCard edit 行', () => {
-  test('优先用结果 details.diff 统计 +N -N', () => {
+  test('优先用结果 details.diff 统计 +N -N', async () => {
     const call = fileCall('e1-tool-0', 'edit', { path: 'src/a.ts', edits: [{ oldText: 'x', newText: 'y' }] });
     render(<Harness calls={[call]} messages={[toolResult('r1', 'edit', 'e1-tool-0', 'ok', { diff: '+1 a\n+2 b\n-1 c' })]} />);
 
@@ -308,11 +313,11 @@ describe('FileToolGroupCard edit 行', () => {
     expect(rows()[0].textContent).toContain('-1');
   });
 
-  test('展开 edit 行渲染 diff 明细（+/- 行）', () => {
+  test('展开 edit 行渲染 diff 明细（+/- 行）', async () => {
     const call = fileCall('e1-tool-0', 'edit', { path: 'src/a.ts', edits: [{ oldText: 'a\nb', newText: 'a\nc' }] });
     render(<Harness calls={[call]} />);
 
-    click(rows()[0]);
+    await click(rows()[0]);
     const lineTypes = [...details()[0].querySelectorAll('[data-testid="diff-line"]')].map((el) =>
       el.getAttribute('data-line-type'),
     );
@@ -320,7 +325,7 @@ describe('FileToolGroupCard edit 行', () => {
     expect(lineTypes.filter((t) => t === 'delete')).toHaveLength(1);
   });
 
-  test('纯删除只显示 -N，不出现 +0', () => {
+  test('纯删除只显示 -N，不出现 +0', async () => {
     const call = fileCall('e1-tool-0', 'edit', { path: 'src/a.ts', edits: [{ oldText: 'a\nb', newText: '' }] });
     render(<Harness calls={[call]} />);
 
@@ -332,7 +337,7 @@ describe('FileToolGroupCard edit 行', () => {
 describe('FileToolGroupCard 状态着色与失败展开', () => {
   const okWrite = fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'x' });
 
-  test('全部成功：卡片绿色', () => {
+  test('全部成功：卡片绿色', async () => {
     render(
       <Harness
         calls={[okWrite]}
@@ -347,12 +352,12 @@ describe('FileToolGroupCard 状态着色与失败展开', () => {
     expect(details()).toHaveLength(0);
   });
 
-  test('运行中（结果未回）：保持琥珀色', () => {
+  test('运行中（结果未回）：保持琥珀色', async () => {
     render(<Harness calls={[okWrite]} runningIds={new Set(['e1-tool-0'])} />);
     expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
   });
 
-  test('失败：卡片红色，失败原因默认展开', () => {
+  test('失败：卡片红色，失败原因默认展开', async () => {
     render(
       <Harness
         calls={[okWrite]}
@@ -367,7 +372,7 @@ describe('FileToolGroupCard 状态着色与失败展开', () => {
     expect(header()!.textContent).toContain('失败');
   });
 
-  test('失败行点击可收起原因，再点击重新展开', () => {
+  test('失败行点击可收起原因，再点击重新展开', async () => {
     render(
       <Harness
         calls={[okWrite]}
@@ -375,14 +380,14 @@ describe('FileToolGroupCard 状态着色与失败展开', () => {
       />,
     );
 
-    click(rows()[0]);
+    await click(rows()[0]);
     expect(details()).toHaveLength(0);
 
-    click(rows()[0]);
+    await click(rows()[0]);
     expect(details()[0].textContent).toContain('EACCES');
   });
 
-  test('部分失败：整卡红色，仅失败行标红并默认展开', () => {
+  test('部分失败：整卡红色，仅失败行标红并默认展开', async () => {
     const calls = [
       fileCall('e1-tool-0', 'write', { path: 'ok.ts', content: 'x' }),
       fileCall('e1-tool-1', 'write', { path: 'bad.ts', content: 'y' }),
@@ -405,7 +410,7 @@ describe('FileToolGroupCard 状态着色与失败展开', () => {
     expect(details()[0].textContent).toContain('disk full');
   });
 
-  test('多文件组：全部收起时失败行也收起，全部展开时恢复', () => {
+  test('多文件组：全部收起时失败行也收起，全部展开时恢复', async () => {
     render(
       <Harness
         calls={[okWrite, fileCall('e1-tool-1', 'write', { path: 'src/b.ts', content: 'y' })]}
@@ -420,19 +425,19 @@ describe('FileToolGroupCard 状态着色与失败展开', () => {
     expect(details()).toHaveLength(1);
     expect(allButton()!.textContent!.trim()).toBe('展开全部');
 
-    click(allButton()); // 展开全部
+    await click(allButton()); // 展开全部
     expect(details()).toHaveLength(2);
     expect(allButton()!.textContent!.trim()).toBe('收起全部');
 
-    click(allButton()); // 收起全部（失败行也一并收起）
+    await click(allButton()); // 收起全部（失败行也一并收起）
     expect(details()).toHaveLength(0);
 
-    click(allButton()); // 再次展开全部
+    await click(allButton()); // 再次展开全部
     expect(details()).toHaveLength(2);
     expect(details()[0].textContent).toContain('EACCES');
   });
 
-  test('失败的 edit 不渲染 diff 明细（只显示错误原因）', () => {
+  test('失败的 edit 不渲染 diff 明细（只显示错误原因）', async () => {
     render(
       <Harness
         calls={[fileCall('e1-tool-0', 'edit', { path: 'src/a.ts', edits: [{ oldText: 'a', newText: 'b' }] })]}
@@ -449,7 +454,7 @@ describe('FileToolGroupCard 状态着色与失败展开', () => {
 describe('FileToolGroupCard 状态边界', () => {
   const okWrite = fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'x' });
 
-  test('成功：卡片与行均为 ok', () => {
+  test('成功：卡片与行均为 ok', async () => {
     render(
       <Harness
         calls={[okWrite]}
@@ -460,7 +465,7 @@ describe('FileToolGroupCard 状态边界', () => {
     expect(rows()[0].getAttribute('data-status')).toBe('ok');
   });
 
-  test('结果未回（pending）：卡片琥珀色，行标记 pending（不宣称成功）', () => {
+  test('结果未回（pending）：卡片琥珀色，行标记 pending（不宣称成功）', async () => {
     render(<Harness calls={[okWrite]} />);
     expect(container!.querySelector('[data-testid="tool-group-card"]')!.getAttribute('data-status')).toBe('pending');
     expect(rows()[0].getAttribute('data-status')).toBe('pending');
@@ -468,7 +473,7 @@ describe('FileToolGroupCard 状态边界', () => {
     expect(container!.querySelector('.bg-emerald-50')).toBeNull();
   });
 
-  test('失败优先于运行中：整卡红色', () => {
+  test('失败优先于运行中：整卡红色', async () => {
     const calls = [
       fileCall('e1-tool-0', 'write', { path: 'bad.ts', content: 'x' }),
       fileCall('e1-tool-1', 'write', { path: 'running.ts', content: 'y' }),
@@ -484,7 +489,7 @@ describe('FileToolGroupCard 状态边界', () => {
     expect(rows()[1].getAttribute('data-status')).toBe('pending');
   });
 
-  test('read 失败走错误分支：显示错误原因而非读取内容', () => {
+  test('read 失败走错误分支：显示错误原因而非读取内容', async () => {
     render(
       <Harness
         calls={[fileCall('e1-tool-0', 'read', { path: 'src/missing.ts' })]}
@@ -499,7 +504,7 @@ describe('FileToolGroupCard 状态边界', () => {
     expect(details()[0].querySelector('.max-h-96')).toBeNull();
   });
 
-  test('前导空白 + 大写 ERROR 仍判为失败', () => {
+  test('前导空白 + 大写 ERROR 仍判为失败', async () => {
     render(
       <Harness
         calls={[okWrite]}
@@ -512,7 +517,7 @@ describe('FileToolGroupCard 状态边界', () => {
 });
 
 describe('FileToolGroupCard pending 行配色', () => {
-  test('pending 行使用琥珀色而非绿色（不宣称成功）', () => {
+  test('pending 行使用琥珀色而非绿色（不宣称成功）', async () => {
     render(<Harness calls={[fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'x' })]} />);
 
     const pathSpan = rows()[0].querySelector('span[title]')!;
@@ -520,7 +525,7 @@ describe('FileToolGroupCard pending 行配色', () => {
     expect(pathSpan.className).not.toContain('text-emerald-800');
   });
 
-  test('成功行的路径与图标为绿色系', () => {
+  test('成功行的路径与图标为绿色系', async () => {
     render(
       <Harness
         calls={[fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'x' })]}
@@ -538,41 +543,41 @@ describe('FileToolGroupCard 键盘可达性', () => {
     fileCall('e1-tool-1', 'write', { path: 'src/b.ts', content: 'b' }),
   ];
 
-  test('单文件组（无总控按钮）可用 Enter/Space 展开收起', () => {
+  test('单文件组（无总控按钮）可用 Enter/Space 展开收起', async () => {
     render(<Harness calls={[fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'a' })]} />);
 
-    pressKey(rows()[0], 'Enter');
+    await pressKey(rows()[0], 'Enter');
     expect(details()).toHaveLength(1);
 
-    pressKey(rows()[0], ' ');
+    await pressKey(rows()[0], ' ');
     expect(details()).toHaveLength(0);
 
-    pressKey(header(), 'Enter');
+    await pressKey(header(), 'Enter');
     expect(details()).toHaveLength(1);
 
-    pressKey(header(), ' ');
+    await pressKey(header(), ' ');
     expect(details()).toHaveLength(0);
   });
 
-  test('键盘状态可通过 aria-expanded 播报', () => {
+  test('键盘状态可通过 aria-expanded 播报', async () => {
     render(<Harness calls={[fileCall('e1-tool-0', 'write', { path: 'src/a.ts', content: 'a' })]} />);
 
     expect(header()!.getAttribute('aria-expanded')).toBe('false');
-    pressKey(header(), 'Enter');
+    await pressKey(header(), 'Enter');
     expect(header()!.getAttribute('aria-expanded')).toBe('true');
     expect(rows()[0].getAttribute('aria-expanded')).toBe('true');
   });
 
-  test('多文件组头部可用键盘整组展开', () => {
+  test('多文件组头部可用键盘整组展开', async () => {
     render(<Harness calls={twoCalls()} />);
 
-    pressKey(header(), 'Enter');
+    await pressKey(header(), 'Enter');
     expect(details()).toHaveLength(2);
   });
 });
 
 describe('FileToolGroupCard 路径省略（省略前面）', () => {
-  test('缺少 path 的占位符不显示 tooltip', () => {
+  test('缺少 path 的占位符不显示 tooltip', async () => {
     render(<Harness calls={[fileCall('e1-tool-0', 'write', { content: 'a' })]} />);
 
     const label = rows()[0].querySelector('[data-testid="file-path-label"]')!;

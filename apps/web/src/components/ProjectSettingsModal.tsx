@@ -22,37 +22,8 @@ interface ProjectSettingsModalProps {
   setProjectRoleModelsMut: any;
 }
 
-import { ROLE_ICON_NAMES, renderRoleIcon } from '../lib/role-icons';
-
-const ROLE_CONFIG_KEYS = [
-  { key: 'planner', label: '负责人' },
-  { key: 'worker', label: '执行者' },
-  { key: 'reviewer', label: '审查者' },
-  { key: 'feature_lead', label: '需求负责人' },
-  { key: 'bugfix_lead', label: 'Bug负责人' },
-  { key: 'blank', label: '空白' },
-];
-
-const CONFIGURABLE_ROLE_KEYS = ROLE_CONFIG_KEYS.filter((r) => r.key !== 'planner');
-
-/**
- * Returns all role keys (built-in + custom) with labels for the role-config tab.
- * Built-in roles keep their order, custom roles are appended alphabetically.
- */
-function getAllRoleKeys(templates: Array<{ key: string; name: string; isBuiltin: boolean }> | undefined): Array<{ key: string; label: string }> {
-  const builtinKeys = new Set(ROLE_CONFIG_KEYS.map((r) => r.key));
-  const customTemplates = (templates ?? []).filter((t) => !builtinKeys.has(t.key));
-  const seenCustom = new Set<string>();
-  const customRoles: Array<{ key: string; label: string }> = [];
-  for (const t of customTemplates) {
-    if (!seenCustom.has(t.key)) {
-      seenCustom.add(t.key);
-      customRoles.push({ key: t.key, label: t.name });
-    }
-  }
-  customRoles.sort((a, b) => a.key.localeCompare(b.key));
-  return [...ROLE_CONFIG_KEYS, ...customRoles];
-}
+import { renderRoleIcon } from '../lib/role-icons';
+import { ROLE_KEYS, getAllRoleKeys } from '../lib/role-metadata';
 
 export default function ProjectSettingsModal({
   isOpen,
@@ -150,12 +121,12 @@ export default function ProjectSettingsModal({
       const merged: Record<string, RoleConfigEntry> = {};
 
       // Built-in roles: default enabled if not in project config
-      for (const r of ROLE_CONFIG_KEYS) {
+      for (const r of ROLE_KEYS) {
         merged[r.key] = apiConfig[r.key] ?? { enabled: true };
       }
 
       // Custom roles from templates: default disabled if not in project config
-      const builtinKeys = new Set(ROLE_CONFIG_KEYS.map((r) => r.key));
+      const builtinKeys = new Set(ROLE_KEYS.map((r) => r.key));
       for (const t of roleTemplatesQuery.data ?? []) {
         if (!builtinKeys.has(t.key) && !merged[t.key]) {
           merged[t.key] = apiConfig[t.key] ?? { enabled: false };

@@ -6,14 +6,18 @@ import AskQuestionNotifier from './components/AskQuestionNotifier';
 import ConnectionLostBanner from './components/ConnectionLostBanner';
 import ModelsNotConfiguredBanner from './components/ModelsNotConfiguredBanner';
 import EmptySessionPlaceholder from './components/EmptySessionPlaceholder';
+import AppLoading from './components/AppLoading';
 import TabChat from './components/TabChat';
-import TabSessionInfo from './components/TabSessionInfo';
-import TabGitDiff from './components/TabGitDiff';
-import TabFiles from './components/TabFiles';
 import { LoginScreen } from './components/LoginScreen';
 import { useAppShell } from './lib/use-app-shell';
 
+// 非默认 tab 按需加载：它们各自拖着重依赖（TabFiles 的 highlight.js 全量、
+// TabGitDiff 的 diff、TabTerminal 的 xterm），不应进入首屏 chunk。
+// TabChat 是默认 tab，保留同步引入，避免首屏内容反而变慢。
 const TabTerminal = lazy(() => import('./components/TabTerminal'));
+const TabSessionInfo = lazy(() => import('./components/TabSessionInfo'));
+const TabGitDiff = lazy(() => import('./components/TabGitDiff'));
+const TabFiles = lazy(() => import('./components/TabFiles'));
 
 /**
  * 应用外壳：只组合 useAppShell() 与布局 JSX。
@@ -23,7 +27,7 @@ export default function App() {
   const app = useAppShell();
   const { isLoggedIn, authStatusQuery, loginMutation, modelsStatusQuery } = app;
 
-  if (authStatusQuery.isPending) return null;
+  if (authStatusQuery.isPending) return <AppLoading />;
 
   if (!isLoggedIn) {
     return (
@@ -48,6 +52,11 @@ export default function App() {
     modelsNotConfigured,
   } = app;
 
+  // 懒加载 tab 的占位（比白屏早一步给出反馈）
+  const tabFallback = (
+    <div className="h-full flex items-center justify-center text-xs text-slate-400">加载中…</div>
+  );
+
   return (
     <div className="flex flex-col md:flex-row h-[100dvh] min-h-0 w-full overflow-hidden overscroll-none bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans antialiased">
       <div className={`${isSidebarVisible ? 'flex' : 'hidden'} w-full min-w-0 flex-1 md:w-auto md:flex-none`}>
@@ -64,23 +73,35 @@ export default function App() {
             <>
               {activeTab === 'chat' && <TabChat {...app.tabChat} />}
               {activeTab === 'info' && (
-                <TabSessionInfo selectedSessionId={selectedSessionId} selectedProjectId={selectedProjectId} />
+                <Suspense fallback={tabFallback}>
+                  <TabSessionInfo selectedSessionId={selectedSessionId} selectedProjectId={selectedProjectId} />
+                </Suspense>
               )}
-              {activeTab === 'diff' && <TabGitDiff selectedSessionId={selectedSessionId} activeTab={activeTab} />}
+              {activeTab === 'diff' && (
+                <Suspense fallback={tabFallback}>
+                  <TabGitDiff selectedSessionId={selectedSessionId} activeTab={activeTab} />
+                </Suspense>
+              )}
               {activeTab === 'files' && (
-                <TabFiles selectedSessionId={selectedSessionId} viewKey="files" projectId={selectedProjectId} />
+                <Suspense fallback={tabFallback}>
+                  <TabFiles selectedSessionId={selectedSessionId} viewKey="files" projectId={selectedProjectId} />
+                </Suspense>
               )}
               {activeTab === 'doce' && (
-                <TabFiles
-                  selectedSessionId={selectedSessionId}
-                  rootPathFilter={['doce', 'docs', 'doc']}
-                  panelTitle="Doce"
-                  defaultExpanded={true}
-                  viewKey="doce"
-                  projectId={selectedProjectId}
-                />
+                <Suspense fallback={tabFallback}>
+                  <TabFiles
+                    selectedSessionId={selectedSessionId}
+                    rootPathFilter={['doce', 'docs', 'doc']}
+                    panelTitle="Doce"
+                    defaultExpanded={true}
+                    viewKey="doce"
+                    projectId={selectedProjectId}
+                  />
+                </Suspense>
               )}
-              {/* Terminal tab — keep-alive via display:none */}
+              {/* Terminal tab — keep-alive via display:none。
+                  每个 tab 用独立 Suspense：避免某个 tab 懒加载挂起时把这一整块（含终端子树）隐藏/替换；
+                  同时不依赖 Suspense 的内部隐藏语义（实测 React 19 挂起时是 hide 而非 unmount）。 */}
               <div style={{ display: activeTab === 'terminal' ? 'block' : 'none' }} className="h-full">
                 <Suspense fallback={<div className="h-full flex items-center justify-center text-xs text-slate-400">Terminal 加载中…</div>}>
                   <TabTerminal

@@ -8,6 +8,7 @@ import { useAppTheme } from './use-app-theme';
 import { useSystemNotifications } from './use-system-notifications';
 import { useSessionSelection } from './use-session-selection';
 import { useSessionActions } from './use-session-actions';
+import { computeSessionMessagesRefetchInterval } from './session-messages-refetch';
 import { useTitleEditing } from './use-title-editing';
 import { useTerminalBridge } from './use-terminal-bridge';
 import { useProjectActions } from './use-project-actions';
@@ -118,6 +119,8 @@ export function useAppShell() {
     && settingsQuery.data.vision_model.includes('/');
   // 「隐藏对话框时间戳」：默认关闭，仅 'true' 视为开启（设置保存后经 query invalidate 即时生效）
   const hideChatTimestamps = settingsQuery.data?.hide_chat_timestamps === 'true';
+  // 「运行中允许插话（steer）」：默认关闭，仅 'true' 视为开启
+  const allowRuntimeInjection = settingsQuery.data?.allow_runtime_message_injection === 'true';
 
   const onSessionSelected = useCallback(() => {
     // 标题编辑的复位不在这里做：切换会话时 useTitleEditing 的 session-change effect 会复位，
@@ -151,10 +154,13 @@ export function useAppShell() {
     ? (localRuntimeStatusBySession[selectedSessionId] ?? currentSessionNode?.runtime_status ?? sessionInfo?.session.runtime_status ?? 'idle')
     : 'idle';
 
+  // WS 已连接时不做轮询：流式内容由 useChatStream 驱动；落库消息由 WS 事件 invalidate
+  // （chat_stream complete 按逐条 assistant 消息触发；runtime idle 再兜一次）+ 窗口聚焦/重连触发重拉。
+  // 仅在 running 且 WS 断开时保留 5s 兜底，避免断线期间 UI 卡在运行中。
   const messagesQuery = useSessionMessages(
     activeTab === 'chat' ? selectedSessionId : null,
     20,
-    runtimeStatus === 'running' ? 1500 : false,
+    computeSessionMessagesRefetchInterval(runtimeStatus, wsConnected),
   );
   const messages = useMemo(
     () => messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [],
@@ -303,6 +309,7 @@ export function useAppShell() {
     showPlannerRolePromptButton: isPlannerRoot && runtimeStatus === 'idle',
     isMobile,
     hideChatTimestamps,
+    allowRuntimeInjection,
   };
 
   const modals = {

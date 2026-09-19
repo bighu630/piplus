@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
 import ToolResultView from './ToolResultView';
+import Collapse from './Collapse';
 import { formatBashCommand } from '../lib/format-bash-command';
 import { isToolErrorMessage, parseToolArgsJson } from '../lib/tool-summary';
 import type { ToolCallScheme } from '../lib/tool-call-scheme';
@@ -43,7 +44,7 @@ function useCopyToClipboard(resetMs = 1500) {
  * - 其它工具：参数为 JSON 原文
  * - spawn_session / send_message_to_session / ask_question：保持既有 args 展示（表格 / JSON），不显示结果子项
  *
- * 子项折叠态由本组件内部维护：调用方通过条件挂载（`{expanded && <ToolCallBody/>}`）在重新展开时恢复默认。
+ * 子项折叠态由本组件内部维护：调用方通过 `Collapse`（高度动画，收起后卸载）挂载/卸载本组件，重新展开时恢复默认。
  */
 export interface ToolCallBodyProps {
   call: ChatMessageDTO;
@@ -135,59 +136,57 @@ function ToolCallBody({ call, resultContent, scheme }: ToolCallBodyProps) {
               )}
               <span className={`text-[11px] font-semibold ${scheme.title}`}>执行参数</span>
             </button>
-            {argsOpen && (
-              <div data-testid="tool-args-content" className="px-3 pb-2 pl-6">
-                {toolName === 'bash' && parsedArgs ? (
-                  <>
-                    <div className="flex items-center justify-end mb-1 h-4">
-                      {bashCommand && (
-                        <button
-                          type="button"
-                          data-testid="bash-command-copy"
-                          onClick={() => commandCopy.copy(bashCommand.raw)}
-                          className="text-[10px] font-mono text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer"
-                          title="复制原始命令（可直接执行）"
-                        >
-                          {commandCopy.copied ? '已复制' : '复制命令'}
-                        </button>
-                      )}
-                    </div>
-                    <table data-testid="bash-args-table" className="w-full text-[11px] font-mono leading-relaxed">
-                      <tbody>
-                        {Object.entries(parsedArgs).map(([key, value]) => (
-                          <tr key={key} className={`border-b last:border-b-0 ${scheme.borderSoft}`}>
-                            <td className={`font-semibold pr-3 py-1 align-top whitespace-nowrap ${scheme.key}`}>
-                              {key}
-                            </td>
-                            <td className={`py-1 align-top break-words ${scheme.content}`}>
-                              {key === 'command' && bashCommand ? (
-                                <pre className="whitespace-pre overflow-x-auto">
-                                  {bashCommand.html ? (
-                                    <code dangerouslySetInnerHTML={{ __html: bashCommand.html }} />
-                                  ) : (
-                                    bashCommand.formatted
-                                  )}
-                                </pre>
-                              ) : typeof value === 'object' && value !== null ? (
-                                JSON.stringify(value)
-                              ) : (
-                                String(value)
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </>
-                ) : argsStr ? (
-                  <pre className={`text-[11px] font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed ${scheme.content}`}>
-                    {argsStr}
-                  </pre>
-                ) : (
-                  <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">（无参数）</div>
-                )}
-              </div>
-            )}
+            <Collapse open={argsOpen} testId="tool-args-content" className="px-3 pb-2 pl-6">
+              {toolName === 'bash' && parsedArgs ? (
+                <>
+                  <div className="flex items-center justify-end mb-1 h-4">
+                    {bashCommand && (
+                      <button
+                        type="button"
+                        data-testid="bash-command-copy"
+                        onClick={() => commandCopy.copy(bashCommand.raw)}
+                        className="text-[10px] font-mono text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer"
+                        title="复制原始命令（可直接执行）"
+                      >
+                        {commandCopy.copied ? '已复制' : '复制命令'}
+                      </button>
+                    )}
+                  </div>
+                  <table data-testid="bash-args-table" className="w-full text-[11px] font-mono leading-relaxed">
+                    <tbody>
+                      {Object.entries(parsedArgs).map(([key, value]) => (
+                        <tr key={key} className={`border-b last:border-b-0 ${scheme.borderSoft}`}>
+                          <td className={`font-semibold pr-3 py-1 align-top whitespace-nowrap ${scheme.key}`}>
+                            {key}
+                          </td>
+                          <td className={`py-1 align-top break-words ${scheme.content}`}>
+                            {key === 'command' && bashCommand ? (
+                              <pre className="whitespace-pre overflow-x-auto">
+                                {bashCommand.html ? (
+                                  <code dangerouslySetInnerHTML={{ __html: bashCommand.html }} />
+                                ) : (
+                                  bashCommand.formatted
+                                )}
+                              </pre>
+                            ) : typeof value === 'object' && value !== null ? (
+                              JSON.stringify(value)
+                            ) : (
+                              String(value)
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              ) : argsStr ? (
+                <pre className={`text-[11px] font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed ${scheme.content}`}>
+                  {argsStr}
+                </pre>
+              ) : (
+                <div className="text-[10px] text-slate-400 dark:text-slate-500 italic">（无参数）</div>
+              )}
+            </Collapse>
           </div>
 
           {/* 子项 2：结果（默认展开） */}
@@ -251,17 +250,15 @@ function ToolCallBody({ call, resultContent, scheme }: ToolCallBodyProps) {
                 </button>
               )}
             </div>
-            {resultOpen && (
-              <div data-testid="tool-result-content">
-                {hasResult ? (
-                  <ToolResultView content={resultContent} />
-                ) : (
-                  <div className="px-3 py-2 text-[10px] text-slate-400 dark:text-slate-500 italic">
-                    执行中…
-                  </div>
-                )}
-              </div>
-            )}
+            <Collapse open={resultOpen} testId="tool-result-content">
+              {hasResult ? (
+                <ToolResultView content={resultContent} />
+              ) : (
+                <div className="px-3 py-2 text-[10px] text-slate-400 dark:text-slate-500 italic">
+                  执行中…
+                </div>
+              )}
+            </Collapse>
           </div>
         </>
       )}

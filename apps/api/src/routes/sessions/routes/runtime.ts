@@ -46,7 +46,10 @@ export function registerSessionControlRoutes(app: Hono, piClient: PiClient) {
     await createAuditService(db).record(userId, "session.stopped", "session", sessionId);
 
     const now = nextMessageTime();
-    await db.update(sessions).set({ runtimeStatus: 'stopping', lastStopAt: now, updatedAt: now }).where(eq(sessions.id, sessionId));
+    // lastStopAt 用真实时钟：它与 startSessionRun 写的 lastRunAt（真实时钟）做先后比较
+    // （role-manager-tools 的 waitForChildWriteback 据此判定「子会话 stop 后未被合法重启」）。
+    // nextMessageTime 是「真实时间 + 只增序列」的消息排序时钟，不可用于跨字段时间比较。
+    await db.update(sessions).set({ runtimeStatus: 'stopping', lastStopAt: new Date(), updatedAt: now }).where(eq(sessions.id, sessionId));
     socketHub.sendToSession(sessionId, createEvent('session.runtime_status_changed', { runtime_status: 'stopping' }, { project_id: session.projectId, session_id: sessionId }));
     // 收尾：等 agent 真正停止（带超时），无论结果都收敛回 idle，避免永久卡 stopping。
     void finalizeSessionStop({

@@ -77,6 +77,9 @@ function makePiClient(options?: { sendError?: Error; ensureRuntimeError?: Error;
       state.stopSessionCalls.push(sessionId);
       return { status: 'stopped' as const };
     },
+    async steerSession(sessionId: string) {
+      return { sessionId, queued: 1 };
+    },
     async waitForSessionIdle() {
       return true;
     },
