@@ -33,7 +33,7 @@
     },
     "apps/desktop": {
       "name": "piplus",
-      "version": "0.3.3",
+      "version": "0.3.4",
       "devDependencies": {
         "@types/node": "25.0.0",
         "electron": "^42.4.1",
