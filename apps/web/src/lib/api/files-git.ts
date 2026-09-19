@@ -66,7 +66,7 @@ export function addGitignore(sessionId: string, path: string) {
 export type GitRefType = 'branch' | 'tag';
 
 export function getGitBranches(sessionId: string) {
-  return request<{ session_id: string; cwd: string; current_branch: string; branches: Array<{ name: string; is_current: boolean; is_worktree: boolean; worktree_path: string | null }>; session_worktree_path: string | null; detached: boolean; detached_ref: string | null }>(
+  return request<{ session_id: string; cwd: string; current_branch: string; branches: Array<{ name: string; is_current: boolean; is_worktree: boolean; worktree_path: string | null }>; session_worktree_path: string | null; missing_worktree_path?: string | null; detached: boolean; detached_ref: string | null }>(
     `/api/v1/sessions/${sessionId}/git/branches`,
   );
 }

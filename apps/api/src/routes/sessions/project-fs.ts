@@ -18,17 +18,28 @@ export function resolveProjectDir(c: any, userId: string, sessionId: string) {
   const worktreeDir = session.worktreePath ? path.resolve(session.worktreePath) : null;
 
   // worktree 目录可能被外部清理（rm -rf / git worktree prune）：此时把 cwd 回落到项目根，
-  // 并清除会话上的关联，否则后续所有 git / 文件操作都会在已消失的 cwd 上失败。
+  // 并在每次响应里如实回报原路径，让前端可以持续提示。
+  // 刻意**不在这里清库**：existsSync 对「祖先目录不可访问」（网络盘未挂载、EACCES、挂载延迟）
+  // 也会返回 false，读时清空会把一个暂时不可用的有效关联永久删掉；清空交给既有显式路径
+  // （git/checkout 切到普通分支时会清空，切到 worktree 分支时会写回）。
   // 注：Bun 的 execSync 在 cwd 不存在时报的是误导性的 `posix_spawn '/bin/sh'` ENOENT，
-  // 容易被误判为“缺少 shell”，所以这里必须显式检测而不是依赖下游报错。
+  // 容易被误判为“缺少 shell”，所以必须显式检测而不是依赖下游报错。
   if (worktreeDir && !existsSync(worktreeDir)) {
-    db.update(sessions).set({ worktreePath: null, updatedAt: new Date() }).where(eq(sessions.id, sessionId)).run();
     return {
       cwd: projectDir,
       sessionWorktreePath: null,
       gitConfigJson: project.gitConfigJson ?? '{}',
       missingWorktreePath: worktreeDir,
     };
+  }
+
+  // 项目根也不存在时（projectDir 同样会被 rm -rf / 未挂载），与其让下游报出误导性的
+  // shell / readdir 错误，不如直接给出能看懂的错误。
+  if (!worktreeDir && !existsSync(projectDir)) {
+    return {
+      error: { code: 'PROJECT_DIR_MISSING', message: `项目目录不存在：${projectDir}` },
+      status: 409,
+    } as const;
   }
 
   return {
