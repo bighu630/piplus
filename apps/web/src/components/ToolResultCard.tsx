@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, Terminal } from 'lucide-react';
 import MarkdownRenderer from './MarkdownRenderer';
+import Collapse from './Collapse';
 import { isToolErrorMessage } from '../lib/tool-summary';
 
 /**
@@ -155,21 +156,22 @@ function ToolResultCard({ msg, expanded, onToggle }: ToolResultCardProps) {
         )}
       </div>
 
-      {/* 条件挂载：收起时不渲染正文（Markdown/长文本不参与布局与解析） */}
-      {expanded && spawnSummary && (
-        <div data-testid="standalone-result-body" className={`border-t ${scheme.borderT} px-4 py-3`}>
+      {/* 高度展开/收起动画；收起时 AnimatePresence 在退出动画结束后卸载正文（Markdown/长文本不参与解析） */}
+      <Collapse
+        open={expanded && (Boolean(spawnSummary) || Boolean(contentText))}
+        testId="standalone-result-body"
+        className={`border-t ${scheme.borderT} ${spawnSummary ? 'px-4 py-3' : 'px-3 py-2'}`}
+      >
+        {spawnSummary ? (
           <div className="text-slate-800 dark:text-slate-200 w-full">
             <MarkdownRenderer content={spawnSummary} variant="compact" />
           </div>
-        </div>
-      )}
-      {expanded && !spawnSummary && contentText && (
-        <div data-testid="standalone-result-body" className={`border-t ${scheme.borderT} px-3 py-2`}>
+        ) : contentText ? (
           <div className={`text-[11px] ${scheme.text} font-mono whitespace-pre-wrap leading-relaxed max-h-32 overflow-y-auto`}>
             {summary}
           </div>
-        </div>
-      )}
+        ) : null}
+      </Collapse>
     </div>
   );
 }

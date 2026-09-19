@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, FileCode, LoaderCircle, Wrench } from 'lucide-react';
+import Collapse from './Collapse';
 import DiffViewer from './DiffViewer';
 import FilePathLabel from './FilePathLabel';
 import ReadResultView from './ReadResultView';
@@ -154,31 +155,29 @@ const FileRow = React.memo(function FileRow({
         )}
       </div>
 
-      {expanded && (
-        <div data-testid="tool-file-detail">
-          {isError && result ? (
-            <div className="border-t border-rose-200 dark:border-rose-800 bg-rose-50/50 dark:bg-rose-950/20 px-3 py-2">
-              <pre className="text-[11px] font-mono whitespace-pre-wrap break-all leading-relaxed text-rose-700 dark:text-rose-400">
-                {result.content_text}
-              </pre>
-            </div>
-          ) : writeEditDiff && (toolName === 'write' || toolName === 'edit') ? (
-            <DiffViewer
-              oldText={writeEditDiff.oldText}
-              newText={writeEditDiff.newText}
-              viewType={toolName === 'write' ? 'write' : 'edit'}
-            />
-          ) : readContent !== null ? (
-            <ReadResultView content={readContent} />
-          ) : argsStr ? (
-            <div className="border-t border-amber-200 dark:border-amber-800 px-3 py-2">
-              <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-                {argsStr}
-              </pre>
-            </div>
-          ) : null}
-        </div>
-      )}
+      <Collapse open={expanded} testId="tool-file-detail">
+        {isError && result ? (
+          <div className="border-t border-rose-200 dark:border-rose-800 bg-rose-50/50 dark:bg-rose-950/20 px-3 py-2">
+            <pre className="text-[11px] font-mono whitespace-pre-wrap break-all leading-relaxed text-rose-700 dark:text-rose-400">
+              {result.content_text}
+            </pre>
+          </div>
+        ) : writeEditDiff && (toolName === 'write' || toolName === 'edit') ? (
+          <DiffViewer
+            oldText={writeEditDiff.oldText}
+            newText={writeEditDiff.newText}
+            viewType={toolName === 'write' ? 'write' : 'edit'}
+          />
+        ) : readContent !== null ? (
+          <ReadResultView content={readContent} />
+        ) : argsStr ? (
+          <div className="border-t border-amber-200 dark:border-amber-800 px-3 py-2">
+            <pre className="text-[11px] text-amber-900 dark:text-amber-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+              {argsStr}
+            </pre>
+          </div>
+        ) : null}
+      </Collapse>
     </div>
   );
 });

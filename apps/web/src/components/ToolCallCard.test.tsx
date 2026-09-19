@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
+import { MotionGlobalConfig } from 'motion/react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import ToolCallCard from './ToolCallCard';
 
@@ -13,6 +14,7 @@ import ToolCallCard from './ToolCallCard';
 const originalWindow = globalThis.window;
 const originalDocument = globalThis.document;
 const originalActEnv = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+const originalSkipAnimations = MotionGlobalConfig.skipAnimations;
 
 let window: Window;
 let root: Root | null = null;
@@ -28,12 +30,15 @@ function setupGlobals() {
 
 beforeAll(() => {
   setupGlobals();
+  // happy-dom 下 motion 的退出动画不会自然结束；跳过动画，让「收起后卸载」语义在测试中可用
+  MotionGlobalConfig.skipAnimations = true;
 });
 
 afterAll(() => {
   globalThis.window = originalWindow;
   globalThis.document = originalDocument;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = originalActEnv;
+  MotionGlobalConfig.skipAnimations = originalSkipAnimations;
 });
 
 function render(node: React.ReactElement) {
@@ -56,8 +61,8 @@ afterEach(() => {
   container = null;
 });
 
-function click(el: Element | null) {
-  act(() => {
+async function click(el: Element | null) {
+  await act(async () => {
     (el as HTMLButtonElement).click();
   });
 }
@@ -108,76 +113,76 @@ const resultContent = () => container!.querySelector('[data-testid="tool-result-
 const resultStatus = () => container!.querySelector('[data-testid="tool-result-status"]');
 
 describe('ToolCallCard 普通工具（两个子项）', () => {
-  test('默认收起；点击头部展开后出现「执行参数」与「结果」两个子项', () => {
+  test('默认收起；点击头部展开后出现「执行参数」与「结果」两个子项', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
 
     expect(expandedArea()).toBeNull();
 
-    click(header());
+    await click(header());
 
     expect(expandedArea()).not.toBeNull();
     expect(argsToggle()!.textContent).toContain('执行参数');
     expect(resultToggle()!.textContent).toContain('结果');
   });
 
-  test('执行参数默认收起，点击后显示 args，再点击收起', () => {
+  test('执行参数默认收起，点击后显示 args，再点击收起', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
-    click(header());
+    await click(header());
 
     expect(argsContent()).toBeNull();
 
-    click(argsToggle());
+    await click(argsToggle());
     expect(argsContent()!.textContent).toContain('echo hi');
 
-    click(argsToggle());
+    await click(argsToggle());
     expect(argsContent()).toBeNull();
   });
 
-  test('结果默认展开：显示内容与「成功」标识', () => {
+  test('结果默认展开：显示内容与「成功」标识', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
-    click(header());
+    await click(header());
 
     expect(resultStatus()!.textContent).toBe('成功');
     expect(resultContent()).not.toBeNull();
     expect(resultContent()!.textContent).toContain('hi');
   });
 
-  test('失败结果：红色「失败」标识 + 错误内容', () => {
+  test('失败结果：红色「失败」标识 + 错误内容', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
-    click(header());
+    await click(header());
 
     expect(resultStatus()!.textContent).toBe('失败');
     expect(resultContent()!.querySelector('pre')!.className).toContain('text-rose-700');
     expect(resultContent()!.textContent).toContain('exit code 1');
   });
 
-  test('结果未回：显示「运行中」与执行中占位', () => {
+  test('结果未回：显示「运行中」与执行中占位', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
-    click(header());
+    await click(header());
 
     expect(resultStatus()!.textContent).toBe('运行中');
     expect(resultContent()!.textContent).toContain('执行中');
   });
 
-  test('结果子项可收起', () => {
+  test('结果子项可收起', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
-    click(header());
+    await click(header());
     expect(resultContent()).not.toBeNull();
 
-    click(resultToggle());
+    await click(resultToggle());
     expect(resultContent()).toBeNull();
   });
 
-  test('重新展开主卡片时子项恢复默认（参数收起、结果展开）', () => {
+  test('重新展开主卡片时子项恢复默认（参数收起、结果展开）', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
-    click(header());
-    click(argsToggle()); // 参数展开
-    click(resultToggle()); // 结果收起
+    await click(header());
+    await click(argsToggle()); // 参数展开
+    await click(resultToggle()); // 结果收起
     expect(argsContent()).not.toBeNull();
     expect(resultContent()).toBeNull();
 
-    click(header()); // 收起主卡片
-    click(header()); // 重新展开
+    await click(header()); // 收起主卡片
+    await click(header()); // 重新展开
 
     expect(argsContent()).toBeNull();
     expect(resultContent()).not.toBeNull();
@@ -185,7 +190,7 @@ describe('ToolCallCard 普通工具（两个子项）', () => {
 });
 
 describe('ToolCallCard 例外工具保持现状', () => {
-  test('spawn_session：角色后缀 + args 表格（无子项）', () => {
+  test('spawn_session：角色后缀 + args 表格（无子项）', async () => {
     render(
       <Harness
         msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'do work' })}
@@ -196,7 +201,7 @@ describe('ToolCallCard 例外工具保持现状', () => {
 
     expect(header()!.textContent).toContain('spawn_session (worker)');
 
-    click(header());
+    await click(header());
 
     expect(expandedArea()!.querySelector('table')).not.toBeNull();
     expect(expandedArea()!.textContent).toContain('do work');
@@ -204,39 +209,39 @@ describe('ToolCallCard 例外工具保持现状', () => {
     expect(resultToggle()).toBeNull();
   });
 
-  test('ask_question：JSON args（无子项）', () => {
+  test('ask_question：JSON args（无子项）', async () => {
     render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} />);
 
-    click(header());
+    await click(header());
 
     expect(expandedArea()!.textContent).toContain('"question"');
     expect(argsToggle()).toBeNull();
   });
 
-  test('args JSON 非法：展开「执行参数」显示原始文本', () => {
+  test('args JSON 非法：展开「执行参数」显示原始文本', async () => {
     render(<Harness msg={toolCallMsg('bash', '{invalid json')} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
 
     expect(argsContent()!.textContent).toContain('{invalid json');
   });
 
-  test('无 args：执行参数子项显示「（无参数）」', () => {
+  test('无 args：执行参数子项显示「（无参数）」', async () => {
     render(<Harness msg={toolCallMsg('bash', '')} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
 
     expect(argsContent()!.textContent).toContain('（无参数）');
   });
 
-  test('运行中：头部右侧渲染 spinner', () => {
+  test('运行中：头部右侧渲染 spinner', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
     expect(container!.querySelector('.animate-spin')).not.toBeNull();
   });
 });
 
 describe('ToolCallCard 失败可见性与例外边界', () => {
-  test('折叠态即可看到「失败」徽标', () => {
+  test('折叠态即可看到「失败」徽标', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
 
     // 未展开也应可见
@@ -244,46 +249,46 @@ describe('ToolCallCard 失败可见性与例外边界', () => {
     expect(container!.querySelector('[data-testid="tool-call-error-badge"]')!.textContent).toBe('失败');
   });
 
-  test('成功结果不显示头部失败徽标', () => {
+  test('成功结果不显示头部失败徽标', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'true' })} resultContent={'ok'} />);
     expect(container!.querySelector('[data-testid="tool-call-error-badge"]')).toBeNull();
   });
 
-  test('结果子项提供复制按钮且点击不崩溃', () => {
+  test('结果子项提供复制按钮且点击不崩溃', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
-    click(header());
+    await click(header());
 
     const copyBtn = container!.querySelector('[data-testid="tool-result-copy"]')!;
     expect(copyBtn.textContent).toBe('复制');
 
-    click(copyBtn);
+    await click(copyBtn);
 
     // 点击后显示「已复制」（剪贴板不可用时也复位 UI 状态）；且结果子项未被误收起
     expect(container!.querySelector('[data-testid="tool-result-copy"]')!.textContent).toBe('已复制');
     expect(resultContent()).not.toBeNull();
   });
 
-  test('例外工具 args 为空：显示「（无参数）」且不出现两个子项', () => {
+  test('例外工具 args 为空：显示「（无参数）」且不出现两个子项', async () => {
     render(<Harness msg={toolCallMsg('ask_question', '')} resultContent={'{"answer":"x"}'} />);
-    click(header());
+    await click(header());
 
     expect(expandedArea()!.textContent).toContain('（无参数）');
     expect(argsToggle()).toBeNull();
     expect(resultToggle()).toBeNull();
   });
 
-  test('例外工具 args 非法：回退原始文本且不出现两个子项', () => {
+  test('例外工具 args 非法：回退原始文本且不出现两个子项', async () => {
     render(<Harness msg={toolCallMsg('spawn_session', '{broken')} />);
-    click(header());
+    await click(header());
 
     expect(expandedArea()!.textContent).toContain('{broken');
     expect(argsToggle()).toBeNull();
     expect(resultToggle()).toBeNull();
   });
 
-  test('ask_question 携带 resultContent 也不显示结果子项（结果走专用卡片）', () => {
+  test('ask_question 携带 resultContent 也不显示结果子项（结果走专用卡片）', async () => {
     render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
-    click(header());
+    await click(header());
 
     expect(expandedArea()!.textContent).toContain('"question"');
     expect(resultToggle()).toBeNull();
@@ -291,33 +296,33 @@ describe('ToolCallCard 失败可见性与例外边界', () => {
 });
 
 describe('ToolCallCard 状态着色', () => {
-  test('成功：卡片绿色', () => {
+  test('成功：卡片绿色', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
     expect(container!.querySelector('.bg-emerald-50')).not.toBeNull();
     expect(container!.querySelector('.bg-rose-50')).toBeNull();
     expect(container!.querySelector('.bg-amber-50')).toBeNull();
   });
 
-  test('失败：卡片红色', () => {
+  test('失败：卡片红色', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: exit code 1'} />);
     expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
     expect(container!.querySelector('.bg-emerald-50')).toBeNull();
   });
 
-  test('结果未回（运行中）：保持琥珀色', () => {
+  test('结果未回（运行中）：保持琥珀色', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'sleep 1' })} running />);
     expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
     expect(container!.querySelector('.bg-emerald-50')).toBeNull();
     expect(container!.querySelector('.bg-rose-50')).toBeNull();
   });
 
-  test('ask_question 保持中性琥珀（交互型工具，结果即用户答案）', () => {
+  test('ask_question 保持中性琥珀（交互型工具，结果即用户答案）', async () => {
     render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
     expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
     expect(container!.querySelector('.bg-emerald-50')).toBeNull();
   });
 
-  test('spawn_session 成功同样变绿（例外仅指结果展示位置）', () => {
+  test('spawn_session 成功同样变绿（例外仅指结果展示位置）', async () => {
     render(
       <Harness
         msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })}
@@ -327,17 +332,17 @@ describe('ToolCallCard 状态着色', () => {
     expect(container!.querySelector('.bg-emerald-50')).not.toBeNull();
   });
 
-  test('失败时头部与展开区同色系', () => {
+  test('失败时头部与展开区同色系', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: x'} />);
 
-    click(header());
+    await click(header());
     expect(expandedArea()!.className).toContain('border-rose-200');
     expect(header()!.querySelector('svg')!.getAttribute('class')).toContain('text-rose-600');
   });
 });
 
 describe('ToolCallCard 状态着色边界', () => {
-  test('ask_question 错误态：红色卡片 + 失败徽标（不因交互型而保持琥珀）', () => {
+  test('ask_question 错误态：红色卡片 + 失败徽标（不因交互型而保持琥珀）', async () => {
     render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'Error: 参数非法'} />);
 
     expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
@@ -345,59 +350,59 @@ describe('ToolCallCard 状态着色边界', () => {
     expect(container!.querySelector('[data-testid="tool-call-card"]')!.getAttribute('data-status')).toBe('error');
   });
 
-  test('ask_question 成功态：保持琥珀，data-status=pending', () => {
+  test('ask_question 成功态：保持琥珀，data-status=pending', async () => {
     render(<Harness msg={toolCallMsg('ask_question', { question: 'q' })} resultContent={'{"answer":"x"}'} />);
 
     expect(container!.querySelector('.bg-amber-50')).not.toBeNull();
     expect(container!.querySelector('[data-testid="tool-call-card"]')!.getAttribute('data-status')).toBe('pending');
   });
 
-  test('spawn_session 失败：红色卡片', () => {
+  test('spawn_session 失败：红色卡片', async () => {
     render(
       <Harness msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })} resultContent={'Error: spawn failed'} />,
     );
     expect(container!.querySelector('.bg-rose-50')).not.toBeNull();
   });
 
-  test('卡片带 data-status 与 dark token', () => {
+  test('卡片带 data-status 与 dark token', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
     const card = container!.querySelector('[data-testid="tool-call-card"]')!;
     expect(card.getAttribute('data-status')).toBe('ok');
     expect(card.className).toContain('dark:bg-emerald-950/30');
   });
 
-  test('展开后的参数内容与卡片同色系', () => {
+  test('展开后的参数内容与卡片同色系', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi' })} resultContent={'hi'} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
     // bash 走表格：第 2 个单元格为参数值
     expect(argsContent()!.querySelectorAll('td')[1].className).toContain('text-emerald-900');
   });
 
-  test('失败卡展开后参数内容为 rose 深色', () => {
+  test('失败卡展开后参数内容为 rose 深色', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'false' })} resultContent={'Error: x'} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
     expect(argsContent()!.querySelectorAll('td')[1].className).toContain('text-rose-900');
   });
 
-  test('spawn 表格键名用 key 档（700，保证对比度）', () => {
+  test('spawn 表格键名用 key 档（700，保证对比度）', async () => {
     render(
       <Harness
         msg={toolCallMsg('spawn_session', { role: 'worker', objective: 'x' })}
         resultContent={'{"summary":"done"}'}
       />,
     );
-    click(header());
+    await click(header());
     expect(expandedArea()!.querySelector('td')!.className).toContain('text-emerald-700');
   });
 });
 
 describe('ToolCallCard bash 参数表格与命令格式化', () => {
-  test('bash 执行参数用表格展示（command / timeout 行）', () => {
+  test('bash 执行参数用表格展示（command / timeout 行）', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'echo hi', timeout: 300 })} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
 
     const table = container!.querySelector('[data-testid="bash-args-table"]')!;
     const rows = table.querySelectorAll('tr');
@@ -408,53 +413,53 @@ describe('ToolCallCard bash 参数表格与命令格式化', () => {
     expect(rows[1].textContent).toContain('300');
   });
 
-  test('命令断行缩进（&& 链）', () => {
+  test('命令断行缩进（&& 链）', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'cd /app && npm run build' })} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
 
     const pre = container!.querySelector('[data-testid="bash-args-table"] pre')!;
     expect(pre.textContent).toBe('cd /app\n  && npm run build');
   });
 
-  test('命令语法高亮（hljs token）', () => {
+  test('命令语法高亮（hljs token）', async () => {
     render(<Harness msg={toolCallMsg('bash', { command: 'if [ -f x ]; then echo yes; fi' })} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
 
     const code = container!.querySelector('[data-testid="bash-args-table"] code')!;
     expect(code).not.toBeNull();
     expect(code.querySelector('[class^="hljs-"]')).not.toBeNull();
   });
 
-  test('复制命令按钮：写入剪贴板的是原始命令（非格式化文本）', () => {
+  test('复制命令按钮：写入剪贴板的是原始命令（非格式化文本）', async () => {
     const writeSpy = spyOn(navigator.clipboard, 'writeText');
     render(<Harness msg={toolCallMsg('bash', { command: 'cd /app && npm run build' })} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
 
     const btn = container!.querySelector('[data-testid="bash-command-copy"]')!;
     expect(btn.textContent).toBe('复制命令');
 
-    click(btn);
+    await click(btn);
     expect(container!.querySelector('[data-testid="bash-command-copy"]')!.textContent).toBe('已复制');
     expect(writeSpy).toHaveBeenCalledWith('cd /app && npm run build');
     writeSpy.mockRestore();
   });
 
-  test('bash 缺 command 字段：不渲染复制按钮，参数表仍展示', () => {
+  test('bash 缺 command 字段：不渲染复制按钮，参数表仍展示', async () => {
     render(<Harness msg={toolCallMsg('bash', { timeout: 300 })} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
 
     expect(container!.querySelector('[data-testid="bash-command-copy"]')).toBeNull();
     expect(container!.querySelector('[data-testid="bash-args-table"]')!.textContent).toContain('timeout');
   });
 
-  test('非 bash 工具保持 JSON 原文（无表格）', () => {
+  test('非 bash 工具保持 JSON 原文（无表格）', async () => {
     render(<Harness msg={toolCallMsg('grep', { pattern: 'foo', path: 'src' })} />);
-    click(header());
-    click(argsToggle());
+    await click(header());
+    await click(argsToggle());
 
     expect(container!.querySelector('[data-testid="bash-args-table"]')).toBeNull();
     expect(argsContent()!.querySelector('pre')!.textContent).toContain('"pattern"');

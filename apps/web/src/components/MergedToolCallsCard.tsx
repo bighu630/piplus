@@ -1,6 +1,7 @@
 import React from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, Wrench } from 'lucide-react';
+import Collapse from './Collapse';
 import ToolCallBody from './ToolCallBody';
 import { findToolResultMessage } from '../lib/tool-summary';
 import { TOOL_CALL_SCHEMES } from '../lib/tool-call-scheme';
@@ -69,9 +70,9 @@ function MergedToolCallsCard({ toolName, calls, messages, expanded, onToggle, ti
               </span>
             </div>
 
-            {/* 条件挂载：重新展开时子项状态自动恢复默认 */}
-            {expanded &&
-              calls.map((call, index) => (
+            {/* 高度展开/收起动画；收起动画结束后卸载，重新展开时子项状态自动恢复默认 */}
+            <Collapse open={expanded}>
+              {calls.map((call, index) => (
                 <div
                   key={call.id}
                   data-testid="merged-tool-entry"
@@ -87,6 +88,7 @@ function MergedToolCallsCard({ toolName, calls, messages, expanded, onToggle, ti
                   />
                 </div>
               ))}
+            </Collapse>
           </div>
         </div>
         {timestamp !== null && (

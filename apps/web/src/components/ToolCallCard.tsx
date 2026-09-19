@@ -1,6 +1,7 @@
 import React from 'react';
 import type { ChatMessageDTO } from '@piplus/shared';
 import { ChevronDown, ChevronRight, LoaderCircle, Wrench } from 'lucide-react';
+import Collapse from './Collapse';
 import ToolCallBody from './ToolCallBody';
 import { isToolErrorMessage } from '../lib/tool-summary';
 import { TOOL_CALL_SCHEMES, type ToolCallStatus } from '../lib/tool-call-scheme';
@@ -94,12 +95,14 @@ function ToolCallCard({
               )}
             </div>
 
-            {/* 条件挂载：重新展开时子项状态自动恢复默认（参数收起 / 结果展开） */}
-            {expanded && (
-              <div data-testid="tool-call-expanded" className={`border-t ${scheme.borderT}`}>
-                <ToolCallBody call={msg} resultContent={resultContent} scheme={scheme} />
-              </div>
-            )}
+            {/* 高度展开/收起动画；收起动画结束后卸载，重新展开时子项状态自动恢复默认（参数收起 / 结果展开） */}
+            <Collapse
+              open={expanded}
+              testId="tool-call-expanded"
+              className={`border-t ${scheme.borderT}`}
+            >
+              <ToolCallBody call={msg} resultContent={resultContent} scheme={scheme} />
+            </Collapse>
           </div>
           {running && (
             <div className="ml-2 pt-2 shrink-0">
