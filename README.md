@@ -9,11 +9,9 @@
     智能拆分 需求/bug/可预期任务 给不同角色，让项目决策session '头脑干净'
   </p>
   <br/>
-  <img src="docs/images/1783584659047_image-20260709161054221.png" alt="Piplus Screenshot" width="800" style="border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.12)"/>
+  <img src="https://github.com/user-attachments/assets/c036f462-0b10-4345-9758-fd01830ad0d2" alt="Piplus Screenshot" width="800" style="border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.12)"/>
   <br/><br/>
 </div>
-
-
 
 
 ---
