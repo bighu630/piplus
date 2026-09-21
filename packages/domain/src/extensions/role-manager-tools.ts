@@ -3,7 +3,7 @@ import type { PiClient } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleCatalog } from './role-catalog';
 import type { RoleManagerDb } from '../role-manager/service';
-import { messages, projects, sessions } from '@piplus/db/schema';
+import { messages, projects, roleTemplates, sessions } from '@piplus/db/schema';
 import { and, eq, like } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
 import { markWritebackConsumed, startSessionRun } from '../session/runtime';
@@ -16,7 +16,7 @@ const MAX_NO_OUTPUT_REMINDERS = 1;
 
 /**
  * 这些角色的语义就是「等待子会话返回结果」，不允许异步游离。
- * spawn_session 时统一强制 wait=true，忽略调用方传入值（含 false / 缺省）。
+ * spawn_session / send_message_to_session 统一强制 wait=true，忽略调用方传入值（含 false / 缺省）。
  * 精确匹配角色 key，与角色模板查找（role_template_not_found）的精确 key 语义保持一致。
  */
 const WAIT_FORCED_ROLE_KEYS = new Set(['worker', 'reviewer']);
@@ -124,7 +124,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
           content: { type: 'string', description: 'The message to send to the child session' },
           wait: {
             type: 'boolean',
-            description: 'Whether to wait for the child session to process this message and return its writeback result',
+            description: 'Whether to wait for the child session to process this message and return its writeback result. Note: for `worker` and `reviewer` target sessions this is always forced to true regardless of the value passed.',
           },
         },
         required: ['session_id', 'content'],
@@ -266,26 +266,32 @@ export async function invokeRoleManagerTool(
   if (toolName === 'send_message_to_session') {
     const targetSessionId = String(args.session_id ?? '');
     const content = String(args.content ?? '');
-    const wait = Boolean(args.wait ?? false);
 
     if (!targetSessionId) throw new Error('missing_session_id');
     if (!content) throw new Error('missing_content');
 
-    // 校验目标是当前 session 的直接子 session
+    // 校验目标是当前 session 的直接子 session，并解析目标角色 key（sessions 表只存 roleTemplateId）。
+    // leftJoin：模板行缺失属数据异常，不能把目标会话误判为不存在；此时 roleKey 为 null，按非强制角色处理。
     const [child] = await ctx.db
-      .select({ id: sessions.id, parentSessionId: sessions.parentSessionId })
+      .select({ id: sessions.id, parentSessionId: sessions.parentSessionId, roleKey: roleTemplates.key })
       .from(sessions)
+      .leftJoin(roleTemplates, eq(roleTemplates.id, sessions.roleTemplateId))
       .where(eq(sessions.id, targetSessionId))
       .limit(1);
 
     if (!child) throw new Error('target_session_not_found');
     if (child.parentSessionId !== ctx.sessionId) throw new Error('not_direct_child_session');
 
+    // worker / reviewer 与 spawn_session 共用同一判定集合：必须等服务完成，忽略调用方传入的 wait。
+    const waitForced = WAIT_FORCED_ROLE_KEYS.has(child.roleKey ?? '') && args.wait !== true;
+    const wait = waitForced ? true : Boolean(args.wait ?? false);
+
     const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
 
     console.log('[role-manager-tools] send_message_to_session', {
       parentSessionId: ctx.sessionId,
       targetSessionId,
+      targetRole: child.roleKey ?? null,
       requestId,
       wait,
     });
@@ -294,7 +300,9 @@ export async function invokeRoleManagerTool(
     await startChildSessionRun(ctx, targetSessionId, content, requestId, ctx.onSessionCreated);
 
     if (wait) {
-      return await waitForChildWriteback(ctx, targetSessionId, requestId);
+      const waited = await waitForChildWriteback(ctx, targetSessionId, requestId);
+      // 仅当传入值被覆盖时回传 wait_forced，让调用方知道实际行为与传入的 wait 不同。
+      return waitForced ? { ...(waited as Record<string, unknown>), wait_forced: true } : waited;
     }
 
     return {
