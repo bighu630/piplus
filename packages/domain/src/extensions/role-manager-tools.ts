@@ -15,6 +15,13 @@ const MAX_WRITEBACK_REMINDERS = 3;
 const MAX_NO_OUTPUT_REMINDERS = 1;
 
 /**
+ * 这些角色的语义就是「等待子会话返回结果」，不允许异步游离。
+ * spawn_session 时统一强制 wait=true，忽略调用方传入值（含 false / 缺省）。
+ * 精确匹配角色 key，与角色模板查找（role_template_not_found）的精确 key 语义保持一致。
+ */
+const WAIT_FORCED_ROLE_KEYS = new Set(['worker', 'reviewer']);
+
+/**
  * 决定对空闲子会话的下一步动作（纯函数，便于测试）。
  * 语义与 wait 循环保持一致：先查间隔（间隔未到 → null，即使已达上限也不触发 failed），
  * 再查上限（达上限 → failed），否则返回 remind。
@@ -78,7 +85,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
           task: { type: 'string', description: 'The specific task to execute (optional)' },
           wait: {
             type: 'boolean',
-            description: 'Whether to wait for the child session to complete and return its results (required — must be explicitly true or false). Use true for workers, false for roles that need to interact with the user independently.',
+            description: 'Whether to wait for the child session to complete and return its results (required — must be explicitly true or false). Use true for workers, false for roles that need to interact with the user independently. Note: for `worker` and `reviewer` roles this is always forced to true regardless of the value passed.',
           },
           constraints: {
             type: 'array',
@@ -190,14 +197,20 @@ export async function invokeRoleManagerTool(
       .limit(1);
     if (!parent) throw new Error('parent_session_not_found');
 
+    const role = String(args.role ?? 'worker');
+    // worker / reviewer 必须等待结果（唯一覆盖点）：无论调用方传入 false 还是缺省，一律强制 wait=true，
+    // 下游（waitPrompt / startChildSessionRun / waitForChildWriteback）只认 wait，不再做二次判断。
+    const waitForced = WAIT_FORCED_ROLE_KEYS.has(role) && args.wait !== true;
+    const wait = waitForced ? true : Boolean(args.wait ?? false);
+
     // schema 已要求 wait 必填；此处兜底仅防御平台漏校验/非平台直调路径
     if (args.wait === undefined) {
-      console.warn('[role-manager-tools] spawn_session called without required `wait` argument, defaulting to false', {
+      console.warn('[role-manager-tools] spawn_session called without required `wait` argument', {
         parentSessionId: ctx.sessionId,
+        role,
+        effectiveWait: wait,
       });
     }
-    const wait = Boolean(args.wait ?? false);
-    const role = String(args.role ?? 'worker');
     const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
     const waitPrompt = wait
       ? '所有任务完成后，必须调用`writeback_to_parent`报告结果给父会话'
@@ -238,7 +251,9 @@ export async function invokeRoleManagerTool(
     await startChildSessionRun(ctx, result.sessionId, '', requestId, ctx.onSessionCreated);
 
     if (wait) {
-      return await waitForChildWriteback(ctx, result.sessionId, requestId);
+      const waited = await waitForChildWriteback(ctx, result.sessionId, requestId);
+      // 仅当传入值被覆盖时回传 wait_forced，让调用方知道实际行为与传入的 wait 不同，避免困惑。
+      return waitForced ? { ...(waited as Record<string, unknown>), wait_forced: true } : waited;
     }
 
     return {

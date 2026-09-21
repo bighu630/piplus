@@ -70,13 +70,22 @@ async function waitForChildSettled(db: any, parentSessionId: string, sent: unkno
 }
 
 /**
- * 构建「父会话 running + spawn_session wait=true」测试场景，便于注入子会话 stop / 写回状态。
- * writebackOnReminder=true 时在第 2 次 sendMessage（reminder 轮）插入匹配 requestId 的 writeback。
+ * 构建「父会话 running + spawn_session」测试场景，便于注入子会话 stop / 写回状态。
+ * 默认 worker + wait=true；writebackOnReminder=true 时在第 2 次 sendMessage（reminder 轮）
+ * 插入匹配 requestId 的 writeback。
+ * 可选覆盖 role / wait（wait 传 'omit' 表示不带该字段），以及 writebackOnSendIndex
+ * （在第 N 次 sendMessage 即写回，用于强制 wait 用例，免等 reminder 间隔）。
  */
 async function startChildWaitScenario(opts: {
   parentProjectId: string;
   parentSessionId: string;
   writebackOnReminder?: boolean;
+  /** 覆盖 spawn_session 的 role，默认 'worker' */
+  role?: string;
+  /** 覆盖 spawn_session 的 wait；'omit' = 完全不传该字段，默认 true */
+  wait?: boolean | 'omit';
+  /** 第 N 次 sendMessage（1-based）时插入 writeback；不传则沿用 writebackOnReminder（第 2 次） */
+  writebackOnSendIndex?: number;
 }) {
   const dbPath = makeDbPath();
   createSeedDb(dbPath);
@@ -104,7 +113,8 @@ async function startChildWaitScenario(opts: {
     async getCurrentModel() { return null; },
     async sendMessage(sessionId: string, content: string) {
       state.sent.push({ sessionId, content });
-      if (opts.writebackOnReminder && state.sent.length === 2) {
+      const writebackAt = opts.writebackOnSendIndex ?? (opts.writebackOnReminder ? 2 : 0);
+      if (writebackAt > 0 && state.sent.length === writebackAt) {
         const reqCtx = getRequestContext(sessionId);
         if (reqCtx?.requestId) {
           await db.insert(messages).values({
@@ -182,12 +192,16 @@ async function startChildWaitScenario(opts: {
     compiledPrompt: 'compiled',
   } as any);
 
-  const waitPromise = invokeRoleManagerTool('spawn_session', {
-    role: 'worker',
+  const spawnArgs: Record<string, unknown> = {
+    role: opts.role ?? 'worker',
     objective: 'long running task',
     title: 'Long Running Task',
-    wait: true,
-  }, {
+  };
+  if (opts.wait !== 'omit') {
+    spawnArgs.wait = opts.wait ?? true;
+  }
+
+  const waitPromise = invokeRoleManagerTool('spawn_session', spawnArgs, {
     db,
     piClient,
     sessionId: opts.parentSessionId,
@@ -227,6 +241,8 @@ describe('role manager tools', () => {
     expect(props.constraints).toBeDefined();
     expect(props.wait).toBeDefined();
     expect((props.wait as { type: string }).type).toBe('boolean');
+    // 工具文案必须告知 worker/reviewer 会强制 wait（行为由代码强制覆盖）
+    expect((props.wait as { description: string }).description).toContain('forced to true');
     const required = (spawn!.parameters as Record<string, unknown>).required as string[];
     expect(required).toContain('title');
     expect(required).toContain('objective');
@@ -338,10 +354,10 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       compiledPrompt: 'compiled',
     } as any);
 
-    // wait=false — still auto-starts, no kickoff message
+    // wait=false（非强制角色）— still auto-starts, no kickoff message
     const onSessionCreatedCalls: Array<{ sessionId: string; projectId: string }> = [];
     const result = await invokeRoleManagerTool('spawn_session', {
-      role: 'worker',
+      role: 'feature_lead',
       objective: 'fix runtime status',
       title: 'Fix Runtime Status',
       scope: 'apps/api',
@@ -383,6 +399,82 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     expect(updatedChild?.runtimeStatus).toBe('idle');
     expect(updatedChild?.lastRunAt).toBeTruthy();
     expect(updatedChild?.lastRuntimeError).toBeNull();
+  });
+
+  test('spawn_session role=worker with wait=false forces wait=true and waits for writeback', async () => {
+    const { db, state, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_force_wait_worker',
+      parentSessionId: 'session_force_wait_worker',
+      role: 'worker',
+      wait: false,
+      // 首次 sendMessage（auto-start）即写回：wait 循环第一轮就能拿到结果，无需等 reminder 间隔
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await waitPromise;
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      summary: 'task done before stop',
+      // 传入的 false 被覆盖，回传 wait_forced 让调用方知道实际行为不同
+      wait_forced: true,
+    });
+    // 覆盖 wait 不影响 auto-start：仍然只发一次空 kickoff
+    expect(state.sent).toHaveLength(1);
+    expect(state.sent[0]?.content).toBe('');
+    // 强制 wait=true 的副作用也必须生效：子会话拿到「完成后必须 writeback」提示
+    const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, 'session_force_wait_worker')).limit(1);
+    expect(child?.parentSuppliedPrompt).toContain('writeback_to_parent');
+  });
+
+  test('spawn_session role=reviewer with omitted wait forces wait=true', async () => {
+    const { waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_force_wait_reviewer',
+      parentSessionId: 'session_force_wait_reviewer',
+      role: 'reviewer',
+      wait: 'omit',
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({ status: 'completed', wait_forced: true });
+  });
+
+  test('spawn_session role=worker with wait=true keeps normal behavior (no wait_forced flag)', async () => {
+    const { waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_force_wait_worker_true',
+      parentSessionId: 'session_force_wait_worker_true',
+      role: 'worker',
+      wait: true,
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await waitPromise as Record<string, unknown>;
+    expect(result).toMatchObject({ status: 'completed', summary: 'task done before stop' });
+    expect(result.wait_forced).toBeUndefined();
+  });
+
+  test('spawn_session non-forced roles with wait=false still return created immediately', async () => {
+    for (const role of ['planner', 'feature_lead', 'bugfix_lead', 'blank']) {
+      const { db, waitPromise } = await startChildWaitScenario({
+        parentProjectId: `project_nowait_${role}`,
+        parentSessionId: `session_nowait_${role}`,
+        role,
+        wait: false,
+        // 即便实现误把这些角色也强制 wait，首轮轮询也会命中 writeback 并快速返回，而不是永久挂起
+        writebackOnSendIndex: 1,
+      });
+
+      const result = await Promise.race([
+        waitPromise,
+        new Promise((resolve) => setTimeout(() => resolve({ status: '__still_waiting__' }), 1500)),
+      ]);
+
+      expect(result).toMatchObject({ status: 'created' });
+      // 行为完全不变：不带 wait 提示，子会话无需 writeback
+      const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, `session_nowait_${role}`)).limit(1);
+      expect(child?.parentSuppliedPrompt).toBe('');
+    }
   });
 
   test('spawn_session wait=true auto-starts and waits for writeback', async () => {
