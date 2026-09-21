@@ -1,5 +1,4 @@
 export * from './auth/service';
-export * from './extensions/spawn-session';
 export * from './extensions/writeback-to-parent';
 export * from './extensions/ask-question';
 export * from './extensions/registry';
