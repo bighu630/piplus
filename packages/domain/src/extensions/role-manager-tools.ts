@@ -135,7 +135,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
       description:
         'Ask a question to another project and wait for a reply. The target project\'s agent will process the question and respond. ' +
         'Use this when you need information or help from another project. ' +
-        'The target project must belong to the same user.',
+        '',
       parameters: {
         type: 'object',
         properties: {
