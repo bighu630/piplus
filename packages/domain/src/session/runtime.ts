@@ -241,6 +241,11 @@ export type WakeSessionWithContentInput = {
   requestId: string;
   /** 仅日志标签（如 'writeback-auto-wake' / 'forced-reclaim-rescan'） */
   reason: string;
+  /**
+   * auto-wake 的会话 run 同样需要 WS 事件桥（轮询移除后前端只有事件源）：事件自带
+   * sessionId，平台侧回调按 event.sessionId 路由，可安全复用于被唤醒的会话。
+   */
+  onStreamEvent?: StartSessionRunInput['onStreamEvent'];
   onRuntimeStatusChange?: StartSessionRunInput['onRuntimeStatusChange'];
 };
 
@@ -255,6 +260,7 @@ export async function wakeSessionWithContent(
       userId: input.userId,
       content: input.content,
       requestId: input.requestId,
+      onStreamEvent: input.onStreamEvent,
       onRuntimeStatusChange: input.onRuntimeStatusChange,
     });
     console.log('[session-runtime] session woken with content', { sessionId: input.sessionId, reason: input.reason });
@@ -987,6 +993,9 @@ export async function startSessionRun(input: StartSessionRunInput) {
           sessionId: input.sessionId,
           userId: input.userId,
           onSessionCreated: input.onToolSessionCreated,
+          // 该 ctx 会被透传给 domain 内发起的 run（spawn 子会话、writeback auto-wake 父会话、
+          // 跨项目询问），因此事件桥必须一并下发；事件自带 sessionId，平台侧按它路由。
+          onStreamEvent: input.onStreamEvent,
           onRuntimeStatusChange: input.onRuntimeStatusChange,
         });
       },
@@ -1343,10 +1352,11 @@ export async function startSessionRun(input: StartSessionRunInput) {
 
   // Activity-based timeout: reset on every stream event so the safety
   // timeout only fires when the agent is truly stuck (no events at all).
-  // 安全计时器是 runtime 内部职责，不能依赖调用方传 onStreamEvent：
-  // startChildSessionRun（spawn_session 的 worker 子会话）没有 UI 消费方、
-  // 从不传 onStreamEvent，但流事件必须照样重置计时器，否则 10 分钟硬超时
-  // 会误杀仍在正常思考/执行工具的子会话。onStreamEvent 仅为可选转发。
+  // 安全计时器是 runtime 内部职责，不能依赖调用方传 onStreamEvent：该回调对内部调用方
+  // 始终可选（例如强杀补投递的 replay run 目前只透传 onRuntimeStatusChange），但流事件
+  // 必须照样重置计时器，否则 10 分钟硬超时会误杀仍在正常思考/执行工具的子会话。
+  // onStreamEvent 仅为可选转发：有 UI 消费方的 run（用户发起、spawn 子会话、auto-wake 的
+  // 父会话）都会传入并据此实时推送（子会话可被点开，不再是「没有 UI 消费方」）。
   const wrappedListener = (event: PiSessionStreamEvent) => {
     resetTimeout();
     // Track whether any output has been produced

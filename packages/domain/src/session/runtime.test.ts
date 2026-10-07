@@ -303,6 +303,72 @@ describe('startSessionRun', () => {
     expect(state.unsubscribed).toEqual(['session_test_runtime']);
   });
 
+  // R1 入口链路：父 run 的 onStreamEvent 必须装进 toolHandler ctx，随 spawn_session 下发给
+  // 子会话 run（子会话可被点开，否则其 spinner/流式文本没有事件源）。
+  test('toolHandler ctx 透传 onStreamEvent：spawn_session 子会话的流事件到达父 run 回调', async () => {
+    const { db } = await setupSession();
+    const { client, state } = makePiClient();
+    const streamEvents: PiSessionStreamEvent[] = [];
+    let parentToolHandler: ((toolName: string, args: Record<string, unknown>, context: { sessionId: string }) => Promise<unknown>) | null = null;
+    let childId: string | null = null;
+
+    const baseEnsure = client.ensureRuntime.bind(client);
+    client.ensureRuntime = async (sessionId, options) => {
+      await baseEnsure(sessionId, options);
+      if (sessionId === 'session_test_runtime') parentToolHandler = options.toolHandler;
+    };
+
+    // spawn_session 会经 role-manager service 调 createSession 建子会话（默认 mock 抛 not_implemented）
+    client.createSession = async (input) => {
+      const piSessionId = `pi_child_${crypto.randomUUID().slice(0, 8)}`;
+      return {
+        sessionId: piSessionId,
+        locator: { piSessionId, sessionFile: `/tmp/${piSessionId}.jsonl` },
+        model: input.model ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` } : undefined,
+      };
+    };
+
+    const baseSend = client.sendMessage.bind(client);
+    let spawned = false;
+    client.sendMessage = async (sessionId, content, options) => {
+      // 模拟模型在父 run 中发起 spawn_session：走 runtime 按 input.* 装配出来的真实 toolHandler ctx
+      if (sessionId === 'session_test_runtime' && parentToolHandler !== null && !spawned) {
+        spawned = true;
+        const handler = parentToolHandler;
+        await handler('spawn_session', { role: 'blank', objective: 'child task', title: 'Child', wait: false }, { sessionId: 'session_test_runtime' });
+      }
+      return baseSend(sessionId, content, options);
+    };
+
+    try {
+      await startSessionRun({
+        db,
+        piClient: client,
+        sessionId: 'session_test_runtime',
+        userId: 'user_seed',
+        content: 'parent with spawn',
+        onStreamEvent: async (event) => { streamEvents.push(event); },
+      });
+
+      // 子会话 run 由父 run 的 toolHandler 异步启动（attemptSend 是 fire-and-forget）：
+      // 轮询等子会话落库且其流事件（makePiClient 在 subscribeSession 时回放）到达父回调。
+      expect(await waitUntil(async () => {
+        const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, 'session_test_runtime')).limit(1);
+        const id = child?.id ?? null;
+        childId = id;
+        return id !== null && state.subscribed.includes(id) && streamEvents.some((event) => event.sessionId === id);
+      })).toBe(true);
+
+      expect(childId).not.toBeNull();
+      // 原有路径不丢：父会话自己的流事件照常转发；且不得把子会话事件打成父会话
+      expect(streamEvents.some((event) => event.sessionId === 'session_test_runtime')).toBe(true);
+      expect(streamEvents.every((event) => event.sessionId === childId || event.sessionId === 'session_test_runtime')).toBe(true);
+    } finally {
+      clearIdleRuntimeCleanup('session_test_runtime');
+      if (childId) clearIdleRuntimeCleanup(childId);
+    }
+  });
+
   test('ask_question 工具存在时 ensureRuntime 收到 ASK_QUESTION_SYSTEM_PROMPT（before_agent_start 注入接线）', async () => {
     const { db } = await setupSession();
     const { client, state } = makePiClient();
@@ -1133,8 +1199,8 @@ describe('startSessionRun', () => {
     expect(state.unsubscribed).toContain('session_test_runtime');
   });
 
-  // ─── 子会话安全计时器：不传 onStreamEvent 也必须订阅流事件 ─────────────
-  test('subscribes to stream events even without onStreamEvent (child sessions)', async () => {
+  // ─── 安全计时器：不传 onStreamEvent（可选回调）也必须订阅流事件 ─────────────
+  test('subscribes to stream events even without onStreamEvent (callers without UI bridge)', async () => {
     const { db } = await setupSession({ sessionId: 'session_subscribe_no_ui' });
     const { client, state } = makePiClient();
 
@@ -1145,13 +1211,13 @@ describe('startSessionRun', () => {
       userId: 'user_seed',
       content: 'x',
       safetyTimeoutMs: 150,
-      // 不传 onStreamEvent：startChildSessionRun（spawn_session 的 worker 子会话）
-      // 没有 UI 消费方，正是这种调用方式。安全计时器重置不能依赖它。
+      // 不传 onStreamEvent：该回调对内部调用方始终可选（如强杀补投递的 replay run
+      // 目前只透传 onRuntimeStatusChange）。安全计时器重置不能依赖它。
       onRuntimeStatusChange: async () => {},
     });
 
     try {
-      // 即使没有 UI 消费方，runtime 也必须订阅流事件（否则 10 分钟硬超时必杀子会话）
+      // 即使调用方没有 UI 桥，runtime 也必须订阅流事件（否则 10 分钟硬超时必杀会话）
       expect(state.subscribed).toContain('session_subscribe_no_ui');
 
       // sendMessage 正常 resolve → 会话正常回到 idle，订阅随之解除

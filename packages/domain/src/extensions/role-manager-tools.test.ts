@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
 import { messages, projects, sessionEvents, sessions } from '@piplus/db/schema';
+import type { PiSessionStreamEvent } from '@piplus/pi-client';
 import { getRequestContext, isCrossProjectWaiting, clearCrossProjectWait } from '../session/request-context';
 import { buildRoleManagerToolDefs, decideReminderAction, invokeRoleManagerTool } from './role-manager-tools';
 
@@ -86,6 +87,10 @@ async function startChildWaitScenario(opts: {
   wait?: boolean | 'omit';
   /** 第 N 次 sendMessage（1-based）时插入 writeback；不传则沿用 writebackOnReminder（第 2 次） */
   writebackOnSendIndex?: number;
+  /** R1 观测点：spawn 出的子会话 run 的流事件应经此回调透传（sessionId 必须是子会话） */
+  onStreamEvent?: (event: PiSessionStreamEvent) => void;
+  /** R1：subscribeSession 时立即回放一条 tool_result_end，模拟子会话 run 的流输出 */
+  emitStreamOnSubscribe?: boolean;
 }) {
   const dbPath = makeDbPath();
   createSeedDb(dbPath);
@@ -105,7 +110,12 @@ async function startChildWaitScenario(opts: {
       };
     },
     async restoreRuntime() { return; },
-    async subscribeSession() { return () => {}; },
+    async subscribeSession(sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>) {
+      if (opts.emitStreamOnSubscribe) {
+        await listener({ type: 'tool_result_end', sessionId, runId: 'run_stream' });
+      }
+      return () => {};
+    },
     async getHistory() { return { messages: [], nextCursor: null }; },
     async stopSession() { return { status: 'stopped' as const }; },
     async closeRuntime() { return; },
@@ -206,6 +216,7 @@ async function startChildWaitScenario(opts: {
     piClient,
     sessionId: opts.parentSessionId,
     userId: 'user_seed',
+    onStreamEvent: opts.onStreamEvent,
   });
 
   return { db, state, waitPromise };
@@ -225,6 +236,8 @@ async function startSendMessageScenario(opts: {
   childParentSessionId?: string;
   /** 第 N 次 sendMessage（1-based）时插入 writeback；不传 = 不写回 */
   writebackOnSendIndex?: number;
+  /** 父会话初始 runtimeStatus，默认 'running'（wait 期间）；writeback auto-wake 场景需要 'idle' */
+  parentRuntimeStatus?: 'running' | 'idle';
 }) {
   const dbPath = makeDbPath();
   createSeedDb(dbPath);
@@ -331,8 +344,9 @@ async function startSendMessageScenario(opts: {
     piSessionId: 'pi_parent',
     piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_parent', sessionFile: '/tmp/pi-parent.jsonl' }),
     title: 'Parent',
-    // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
-    runtimeStatus: 'running',
+    // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle；
+    // auto-wake 场景由 opts.parentRuntimeStatus 覆盖为 idle。
+    runtimeStatus: opts.parentRuntimeStatus ?? 'running',
   } as any);
 
   await db.insert(sessions).values({
@@ -613,6 +627,75 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       // 行为完全不变：不带 wait 提示，子会话无需 writeback
       const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, `session_nowait_${role}`)).limit(1);
       expect(child?.parentSuppliedPrompt).toBe('');
+    }
+  });
+
+  // R1 回归：spawn_session 的子会话 run 与父会话一样有 UI 消费方（Sidebar 可点开子会话），
+  // 必须把子会话流事件透传给平台回调（tool_result_end → messages_changed 让工具结果与 tool_call 分两次
+  // 到达，TabChat 的 isToolCallPending 才有「有 tool_call、尚无 result」的中间态 → spinner 出现；
+  // text_delta → chat_stream 让纯文本回合实时显示），否则只剩「run 结束后 refetch」一条路。
+  test('spawn_session 子会话 run 的流事件透传到 ctx.onStreamEvent（带子会话 sessionId）', async () => {
+    const streamEvents: PiSessionStreamEvent[] = [];
+    const { db, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_child_stream',
+      parentSessionId: 'session_child_stream',
+      role: 'blank', // 非强制 wait 角色：wait=false 立即返回，无需 writeback
+      wait: false,
+      emitStreamOnSubscribe: true,
+      onStreamEvent: (event) => { streamEvents.push(event); },
+    });
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({ status: 'created' });
+
+    const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, 'session_child_stream')).limit(1);
+    expect(child).toBeDefined();
+    // 流事件必须到达平台回调，且 sessionId 是子会话（不能串到父会话）
+    expect(streamEvents.length).toBeGreaterThan(0);
+    expect(streamEvents.every((event) => event.sessionId === child!.id)).toBe(true);
+    expect(streamEvents.some((event) => event.type === 'tool_result_end')).toBe(true);
+  });
+
+  // R2 入口链路：writeback_to_parent 工具层必须把 ctx 的平台回调转交 auto-wake 的父会话 run，
+  // 否则父会话（用户可能正看着）在轮询移除后完全没有事件源。
+  test('writeback_to_parent 工具层把 ctx 回调转交 auto-wake 父会话 run（running/idle + 流事件）', async () => {
+    const { db, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_wb_tool_bridge',
+      parentSessionId: 'session_wb_tool_bridge',
+      childSessionId: 'session_wb_tool_child',
+      childRoleTemplateId: 'rt_blank',
+      parentRuntimeStatus: 'idle',
+    });
+
+    const statuses: Array<{ sessionId: string; runtimeStatus: 'running' | 'idle' }> = [];
+    const streamEvents: PiSessionStreamEvent[] = [];
+    // 父会话 run 订阅流：回放一条 text_delta，验证工具层转交的 onStreamEvent 生效
+    (piClient as { subscribeSession: (sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>) => Promise<() => void> }).subscribeSession = async (sessionId, listener) => {
+      await listener({ type: 'text_delta', sessionId, runId: 'run_stream', messageId: 'msg_stream', delta: 'auto-wake via tool' });
+      return () => {};
+    };
+
+    try {
+      await invokeRoleManagerTool('writeback_to_parent', { summary: 'tool-level writeback' }, {
+        db,
+        piClient,
+        sessionId: 'session_wb_tool_child',
+        userId: 'user_seed',
+        onStreamEvent: (event) => { streamEvents.push(event); },
+        onRuntimeStatusChange: (payload) => { statuses.push({ sessionId: payload.sessionId, runtimeStatus: payload.runtimeStatus }); },
+      });
+
+      // startSessionRun 的 attemptSend 是 fire-and-forget：轮询等 idle 广播到达再断言。
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && !statuses.some((s) => s.sessionId === 'session_wb_tool_bridge' && s.runtimeStatus === 'idle')) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(statuses.filter((s) => s.sessionId === 'session_wb_tool_bridge').map((s) => s.runtimeStatus)).toEqual(['running', 'idle']);
+      expect(streamEvents).toHaveLength(1);
+      expect(streamEvents[0]).toMatchObject({ type: 'text_delta', sessionId: 'session_wb_tool_bridge', delta: 'auto-wake via tool' });
+    } finally {
+      const { clearIdleRuntimeCleanup } = await import('../session/runtime');
+      clearIdleRuntimeCleanup('session_wb_tool_bridge');
     }
   });
 

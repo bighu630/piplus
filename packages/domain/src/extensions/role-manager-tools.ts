@@ -1,5 +1,4 @@
-import type { PiToolDef } from '@piplus/pi-client';
-import type { PiClient } from '@piplus/pi-client';
+import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleCatalog } from './role-catalog';
 import type { RoleManagerDb } from '../role-manager/service';
@@ -174,6 +173,8 @@ export type RoleManagerToolContext = {
   sessionId: string;
   userId: string;
   onSessionCreated?: (payload: { sessionId: string; projectId: string }) => void | Promise<void>;
+  /** pi 流事件转发（事件自带 sessionId，转发方按 event.sessionId 路由） */
+  onStreamEvent?: (event: PiSessionStreamEvent) => void | Promise<void>;
   onRuntimeStatusChange?: (payload: {
     sessionId: string;
     projectId: string;
@@ -471,6 +472,10 @@ export async function invokeRoleManagerTool(
       childSessionId: ctx.sessionId,
       summary: String(args.summary ?? ''),
       blocks: Array.isArray(args.blocks) ? args.blocks : null,
+      // auto-wake 拉起的父会话 run 必须与用户发起的 run 一样有 WS 事件源，否则前端无反应。
+      // 两个回调的 payload/event 都自带 sessionId，平台侧可安全复用于父会话。
+      onStreamEvent: ctx.onStreamEvent,
+      onRuntimeStatusChange: ctx.onRuntimeStatusChange,
     });
     return { ok: true };
   }
@@ -519,6 +524,9 @@ async function startChildSessionRun(
     requestId,
     candidateModels,
     onToolSessionCreated,
+    // 子会话同样有 UI 消费方（Sidebar 可点开、TabChat 对任意 selectedSessionId 渲染），
+    // 轮询移除后必须把子会话的流事件继续透传给平台回调（事件自带子会话 sessionId）。
+    onStreamEvent: ctx.onStreamEvent,
     onRuntimeStatusChange: ctx.onRuntimeStatusChange,
   });
 }
