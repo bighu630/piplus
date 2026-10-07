@@ -236,6 +236,8 @@ async function startSendMessageScenario(opts: {
   childParentSessionId?: string;
   /** 第 N 次 sendMessage（1-based）时插入 writeback；不传 = 不写回 */
   writebackOnSendIndex?: number;
+  /** 父会话初始 runtimeStatus，默认 'running'（wait 期间）；writeback auto-wake 场景需要 'idle' */
+  parentRuntimeStatus?: 'running' | 'idle';
 }) {
   const dbPath = makeDbPath();
   createSeedDb(dbPath);
@@ -342,8 +344,9 @@ async function startSendMessageScenario(opts: {
     piSessionId: 'pi_parent',
     piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_parent', sessionFile: '/tmp/pi-parent.jsonl' }),
     title: 'Parent',
-    // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle
-    runtimeStatus: 'running',
+    // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle；
+    // auto-wake 场景由 opts.parentRuntimeStatus 覆盖为 idle。
+    runtimeStatus: opts.parentRuntimeStatus ?? 'running',
   } as any);
 
   await db.insert(sessions).values({
@@ -651,6 +654,49 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     expect(streamEvents.length).toBeGreaterThan(0);
     expect(streamEvents.every((event) => event.sessionId === child!.id)).toBe(true);
     expect(streamEvents.some((event) => event.type === 'tool_result_end')).toBe(true);
+  });
+
+  // R2 入口链路：writeback_to_parent 工具层必须把 ctx 的平台回调转交 auto-wake 的父会话 run，
+  // 否则父会话（用户可能正看着）在轮询移除后完全没有事件源。
+  test('writeback_to_parent 工具层把 ctx 回调转交 auto-wake 父会话 run（running/idle + 流事件）', async () => {
+    const { db, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_wb_tool_bridge',
+      parentSessionId: 'session_wb_tool_bridge',
+      childSessionId: 'session_wb_tool_child',
+      childRoleTemplateId: 'rt_blank',
+      parentRuntimeStatus: 'idle',
+    });
+
+    const statuses: Array<{ sessionId: string; runtimeStatus: 'running' | 'idle' }> = [];
+    const streamEvents: PiSessionStreamEvent[] = [];
+    // 父会话 run 订阅流：回放一条 text_delta，验证工具层转交的 onStreamEvent 生效
+    (piClient as { subscribeSession: (sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>) => Promise<() => void> }).subscribeSession = async (sessionId, listener) => {
+      await listener({ type: 'text_delta', sessionId, runId: 'run_stream', messageId: 'msg_stream', delta: 'auto-wake via tool' });
+      return () => {};
+    };
+
+    try {
+      await invokeRoleManagerTool('writeback_to_parent', { summary: 'tool-level writeback' }, {
+        db,
+        piClient,
+        sessionId: 'session_wb_tool_child',
+        userId: 'user_seed',
+        onStreamEvent: (event) => { streamEvents.push(event); },
+        onRuntimeStatusChange: (payload) => { statuses.push({ sessionId: payload.sessionId, runtimeStatus: payload.runtimeStatus }); },
+      });
+
+      // startSessionRun 的 attemptSend 是 fire-and-forget：轮询等 idle 广播到达再断言。
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && !statuses.some((s) => s.sessionId === 'session_wb_tool_bridge' && s.runtimeStatus === 'idle')) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(statuses.filter((s) => s.sessionId === 'session_wb_tool_bridge').map((s) => s.runtimeStatus)).toEqual(['running', 'idle']);
+      expect(streamEvents).toHaveLength(1);
+      expect(streamEvents[0]).toMatchObject({ type: 'text_delta', sessionId: 'session_wb_tool_bridge', delta: 'auto-wake via tool' });
+    } finally {
+      const { clearIdleRuntimeCleanup } = await import('../session/runtime');
+      clearIdleRuntimeCleanup('session_wb_tool_bridge');
+    }
   });
 
   test('send_message_to_session target=worker with wait=false forces wait=true and waits for writeback', async () => {
