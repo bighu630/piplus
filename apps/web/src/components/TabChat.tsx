@@ -88,6 +88,7 @@ const ImageThumbnail = React.memo(function ImageThumbnail({
 import { THINKING_LEVEL_LABELS, THINKING_LEVEL_DISPLAY_LABELS } from '../lib/thinking-levels';
 import ChatInput from './ChatInput';
 import { useChatStream, useWebSocket } from '../lib/ws-provider';
+import { useOptimisticUserMessages } from '../lib/use-optimistic-user-messages';
 
 // 距容器底部多少像素内视为"在底部"（跟随吸底与按钮显示共用）
 const FOLLOW_THRESHOLD = 100;
@@ -258,6 +259,9 @@ function TabChat({
   hideChatTimestamps,
   allowRuntimeInjection,
 }: TabChatProps) {
+  // 运行/停止态提前推导：乐观消息 hook 依赖 isRunning 决定是否启动兜底计时
+  const isRunning = runtimeStatus === 'running';
+  const isStopping = runtimeStatus === 'stopping';
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [expandedToolIds, setExpandedToolIds] = useState<Set<string>>(new Set());
   // 稳定引用：配合 ToolCallCard 的 React.memo，避免内联闭包导致工具卡片全量重渲染
@@ -298,7 +302,16 @@ function TabChat({
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
   const prevScrollHeightRef = useRef<number | null>(null);
-  const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
+  // 乐观用户消息（含过期策略）统一由 hook 管理：运行中不移除、run 结束时清理、非 running 才兜底计时
+  const {
+    pendingUserMessages,
+    addPendingUserMessage,
+    removePendingUserMessage,
+  } = useOptimisticUserMessages({
+    sessionId: selectedSessionId ?? null,
+    isRunning,
+    messages,
+  });
   const [submittedAskIds, setSubmittedAskIds] = useState<Set<string>>(new Set());
   const [submittingAskId, setSubmittingAskId] = useState<string | null>(null);
   const [askSubmitError, setAskSubmitError] = useState<string | null>(null);
@@ -514,18 +527,8 @@ function TabChat({
     }
   }, [runtimeStatus, messages.length]);
 
-  // 运行结束（running→idle）时清空暂存用户消息；流式快照由 ws-provider 自行重置
-  const prevRuntimeStatus = useRef(runtimeStatus);
-  useEffect(() => {
-    if (runtimeStatus === 'idle' && prevRuntimeStatus.current === 'running') {
-      setPendingUserMessages([]);
-    }
-    prevRuntimeStatus.current = runtimeStatus;
-  }, [runtimeStatus]);
-
-
-  // 流式订阅已迁移至 useChatStream：ws-provider 按 sessionId 累积快照（含切会话自动切换），
-  // 不再需要本地订阅 effect 与切会话清空逻辑
+  // 运行结束（running→idle）的乐观消息清理、切会话清空、非 running 兜底计时
+  // 均已收敛到 useOptimisticUserMessages；流式快照由 ws-provider 自行重置。
 
   // Internal send handler that manages pending user messages
   const handleSendInternal = useCallback(async (content: string, attachments: SessionMessageImageAttachment[]) => {
@@ -552,36 +555,22 @@ function TabChat({
       ],
       created_at: new Date().toISOString(),
     };
-    setPendingUserMessages((prev) => [...prev, optimisticMessage]);
+    addPendingUserMessage(optimisticMessage);
     // 发送消息后强制开启底部跟随：乐观消息插入渲染后由滚动协调 effect 吸底，
     // 无论用户之前在哪个位置都能看到新消息与回复
     isNearBottomRef.current = true;
     setIsNearBottom(true);
     try {
       await onSend(content, attachments);
-      // 成功后不移除：等待 messages query 轮询拉到真实消息后由 reconcile 确认，
-      // 避免 POST 返回与 refetch 完成之间的窗口期用户消息闪白（60s 兜底见下方 effect）
+      // 成功后不移除：等待 messages 刷新出真实消息后由渲染层 reconcile 确认，
+      // 避免 POST 返回与 refetch 完成之间的窗口期用户消息闪白。
+      // 过期策略见 useOptimisticUserMessages：运行中绝不移除（首轮回答可能远超 60s），
+      // 仅在非 running 时才兜底计时，并在任何 messages 刷新时重置。
     } catch (err) {
-      setPendingUserMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+      removePendingUserMessage(optimisticId);
       throw err;
     }
-  }, [onSend, clearStreamRuntimeErrors, selectedSessionId]);
-
-  // 兜底：乐观消息 60s 未被真实消息确认则强制移除（正常由 refetch/1.5s 轮询确认）
-  useEffect(() => {
-    if (pendingUserMessages.length === 0) return;
-    const timers = pendingUserMessages.map((pm) =>
-      setTimeout(() => {
-        setPendingUserMessages((prev) => prev.filter((m) => m.id !== pm.id));
-      }, 60_000),
-    );
-    return () => timers.forEach((t) => clearTimeout(t));
-  }, [pendingUserMessages]);
-
-  // 切换会话时清空乐观消息（跨会话 reconcile 不匹配，避免 A 的乐观消息渲染进 B）
-  useEffect(() => {
-    setPendingUserMessages([]);
-  }, [selectedSessionId]);
+  }, [onSend, clearStreamRuntimeErrors, selectedSessionId, addPendingUserMessage, removePendingUserMessage]);
 
   // 通用复制逻辑：navigator.clipboard 优先，fallback textarea + execCommand
   const copyText = async (text: string) => {
@@ -631,8 +620,6 @@ function TabChat({
   const contextPercent = contextUsageQuery.data?.percent ?? null;
   const showCompactButton = contextPercent !== null && contextPercent > 60;
 
-  const isRunning = runtimeStatus === 'running';
-  const isStopping = runtimeStatus === 'stopping';
   // 等待用户回答（ask_question 阻塞）：与 "正在运行" 同等处理，闪烁灯改为琥珀色
   // 仅统计当前会话未提交的待回答，提交后即不再视为等待（即使 pending 仍在全局 map 中）
   const hasWaitingAsk = useMemo(() => {
