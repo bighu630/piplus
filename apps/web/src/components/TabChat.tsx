@@ -336,7 +336,6 @@ function TabChat({
   const userScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 最近一次由代码写入的 scrollTop：用于把「自身补偿/吸底触发的 scroll」与「用户滚动」区分开
   const lastAppliedScrollTopRef = useRef<number | null>(null);
-  const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
   const [submittedAskIds, setSubmittedAskIds] = useState<Set<string>>(new Set());
   const [submittingAskId, setSubmittingAskId] = useState<string | null>(null);
   const [askSubmitError, setAskSubmitError] = useState<string | null>(null);
