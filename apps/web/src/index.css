@@ -42,3 +42,43 @@ html, body, #root {
 .dark *:hover::-webkit-scrollbar-thumb {
   background: oklch(0.8 0 0 / 0.25);
 }
+
+/*
+ * 历史分页 prepend 新消息的淡入：
+ * - 只用 opacity + 轻微 translateY，且 `backwards` 填充（结束后不保留 transform），
+ *   避免给消息建立 fixed 定位包含块（lightbox 等 fixed 浮层不受影响）
+ * - 动画加在槽位的**子元素**上（`> *`）而不是槽位本身：槽位承载 data-message-id 且是
+ *   scroll anchor 的测量对象，子元素 transform 不影响槽位的 getBoundingClientRect，
+ *   避免淡入动画被当成内容位移而触发错误的残差校正
+ * - 时长由 TabChat.tsx 通过 CSS 变量 --chat-prepend-in-ms 注入（单一来源）
+ * - 尊重 prefers-reduced-motion
+ */
+@keyframes chat-prepend-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chat-prepend-in > * {
+  animation: chat-prepend-in var(--chat-prepend-in-ms, 180ms) ease-out backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-prepend-in > * {
+    animation: none;
+  }
+}
+
+/*
+ * 聊天消息滚动容器：
+ * - 关闭浏览器原生 scroll anchoring。历史 prepend 由 TabChat 手动补偿 scrollTop，
+ *   若原生锚定也自动补偿会双重叠加，或改动 scrollTop 导致手动二次校正误判为用户滚动而放弃。
+ */
+.chat-scroll-container {
+  overflow-anchor: none;
+}
