@@ -70,6 +70,9 @@ describe('server config', () => {
   test('derives projects root from HOME when PROJECTS_ROOT is unset', async () => {
     Bun.env.HOME = '/tmp/piplus-home';
     delete Bun.env.PROJECTS_ROOT;
+    // 隔离宿主环境变量（如 PIPLUS_DATA_DIR/DATABASE_URL），保证任何环境下都从 HOME 推导
+    delete Bun.env.PIPLUS_DATA_DIR;
+    delete Bun.env.DATABASE_URL;
 
     const { getServerConfig } = await import(`./server-config?case=${crypto.randomUUID()}`);
     const config = getServerConfig();

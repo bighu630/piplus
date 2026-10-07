@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { createWorkspaceSocket, nextReconnectDelay } from './ws-client';
+import {
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_SILENCE_TIMEOUT_MS,
+  createWorkspaceSocket,
+  nextReconnectDelay,
+} from './ws-client';
 
 type Listener = (event?: MessageEvent | Event) => void;
 
@@ -49,6 +54,14 @@ class FakeWebSocket {
     }
   }
 }
+
+describe('心跳默认参数', () => {
+  test('生产默认：心跳周期在 25-30s，静默容忍窗口为 2 个周期', () => {
+    expect(HEARTBEAT_INTERVAL_MS).toBeGreaterThanOrEqual(25_000);
+    expect(HEARTBEAT_INTERVAL_MS).toBeLessThanOrEqual(30_000);
+    expect(HEARTBEAT_SILENCE_TIMEOUT_MS).toBe(HEARTBEAT_INTERVAL_MS * 2);
+  });
+});
 
 describe('nextReconnectDelay', () => {
   test('exponential backoff with cap', () => {
@@ -175,6 +188,97 @@ describe('createWorkspaceSocket', () => {
     expect(dispatched).toContain('piplus:logout');
 
     socket.close();
+  });
+
+  test('心跳：空闲超过 2 个周期未收到任何消息时主动关闭，并触发既有重连', async () => {
+    globalThis.window = {
+      location: { protocol: 'https:', host: 'demo.example.com' },
+      piplusConfig: {},
+    } as unknown as Window & typeof globalThis;
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+
+    let closeCount = 0;
+    // 注入短周期：production 为 25s/50s，这里 20ms/40ms
+    const socket = createWorkspaceSocket({
+      onMessage() {},
+      onClose() { closeCount += 1; },
+      heartbeatIntervalMs: 20,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+
+    // 静默窗口 = 2 * 20ms：一个周期后仍在等（未误判），两个周期后主动关闭；期间应至少发过一次 ping
+    await new Promise((resolve) => setTimeout(resolve, 27));
+    expect(first.closeCalls).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const pingCount = first.sent
+      .map((raw) => JSON.parse(raw) as { type?: string })
+      .filter((m) => m.type === 'ping').length;
+    expect(pingCount).toBeGreaterThanOrEqual(1);
+    expect(first.closeCalls).toBeGreaterThanOrEqual(1);
+    expect(closeCount).toBeGreaterThanOrEqual(1);
+
+    // 关闭走既有 close → 指数退避重连路径（首次退避 2000ms）
+    await new Promise((resolve) => setTimeout(resolve, 2100));
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+
+    socket.close();
+  });
+
+  test('心跳：收到任何消息（如 connection.pong）会重置静默窗口，不误判断线', async () => {
+    globalThis.window = {
+      location: { protocol: 'https:', host: 'demo.example.com' },
+      piplusConfig: {},
+    } as unknown as Window & typeof globalThis;
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+
+    const socket = createWorkspaceSocket({
+      onMessage() {},
+      heartbeatIntervalMs: 20,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+
+    // 每 15ms 来一条消息（< 40ms 静默窗口），心跳不得关闭连接
+    const keepAlive = setInterval(() => {
+      first.dispatch('message', { data: JSON.stringify({ kind: 'event', type: 'connection.pong', payload: {} }) } as MessageEvent);
+    }, 15);
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    clearInterval(keepAlive);
+    expect(first.closeCalls).toBe(0);
+
+    // 停止消息后仍会因静默超时关闭（证明判定逻辑没有失效）
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(first.closeCalls).toBeGreaterThanOrEqual(1);
+
+    socket.close();
+  });
+
+  test('心跳：close() 清理定时器，不再发送 ping', async () => {
+    globalThis.window = {
+      location: { protocol: 'https:', host: 'demo.example.com' },
+      piplusConfig: {},
+    } as unknown as Window & typeof globalThis;
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+
+    const socket = createWorkspaceSocket({ onMessage() {}, heartbeatIntervalMs: 20 });
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const first = FakeWebSocket.instances[0]!;
+    first.open();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const sentBeforeClose = first.sent.length;
+
+    socket.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(first.sent.length).toBe(sentBeforeClose);
+    expect(first.closeCalls).toBe(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
   test('normal close still schedules a reconnect', async () => {

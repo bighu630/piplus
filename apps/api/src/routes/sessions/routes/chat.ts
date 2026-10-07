@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import { createDb } from '@piplus/db/client';
 import { messages, messageInjections, projects, roleTemplates, sessionEvents, sessionSyncStates, sessions } from '@piplus/db/schema';
-import type { PiClient, PiContentBlock } from '@piplus/pi-client';
+import type { PiClient, PiContentBlock, PiSessionStreamEvent } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import { and, asc, desc, eq, inArray, like } from 'drizzle-orm';
 import { getDbPath } from '../../../db-context';
@@ -24,6 +24,20 @@ import {
   VISION_MERGED_MARKER,
 } from '../vision';
 import { randomId, nextMessageTime, log } from '../shared';
+
+/**
+ * 把一个 pi 流事件转发给订阅该会话的 WS 连接。
+ *
+ * 必须按 event.sessionId 路由，而不是发起 run 的路由 sessionId：该回调会被透传给 domain 内
+ * 发起的 run（spawn 的子会话、writeback auto-wake 的父会话、跨项目询问），这些事件的 sessionId
+ * 与路由 sessionId 不同。用闭包会把子会话的流文本/工具刷新事件打进父会话（前端按
+ * scope.session_id 归档流式快照 + invalidate 消息列表），比「没有事件」更糟。
+ */
+export function forwardPiStreamEventToSubscribers(event: PiSessionStreamEvent) {
+  for (const frame of mapPiStreamEventToFrames(event.sessionId, event)) {
+    socketHub.sendToSession(event.sessionId, frame);
+  }
+}
 
 export function registerChatRoutes(app: Hono, piClient: PiClient) {
 
@@ -585,9 +599,7 @@ export function registerChatRoutes(app: Hono, piClient: PiClient) {
         images: effectiveImages,
         startedAt: now,
         onStreamEvent: async (event) => {
-          for (const frame of mapPiStreamEventToFrames(sessionId, event)) {
-            socketHub.sendToSession(sessionId, frame);
-          }
+          forwardPiStreamEventToSubscribers(event);
         },
         onRuntimeStatusChange: async ({ sessionId: eventSessionId, projectId, runtimeStatus, error }) => {
           socketHub.sendToSession(eventSessionId, createEvent('session.runtime_status_changed', { runtime_status: runtimeStatus, error }, { project_id: projectId, session_id: eventSessionId }));

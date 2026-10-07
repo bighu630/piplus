@@ -1,9 +1,8 @@
-import type { PiToolDef } from '@piplus/pi-client';
-import type { PiClient } from '@piplus/pi-client';
+import type { PiClient, PiSessionStreamEvent, PiToolDef } from '@piplus/pi-client';
 import { parseLocator } from '@piplus/pi-client/locator';
 import type { RoleCatalog } from './role-catalog';
 import type { RoleManagerDb } from '../role-manager/service';
-import { messages, projects, sessions } from '@piplus/db/schema';
+import { messages, projects, roleTemplates, sessions } from '@piplus/db/schema';
 import { and, eq, like } from 'drizzle-orm';
 import { createRoleManagerService } from '../role-manager/service';
 import { markWritebackConsumed, startSessionRun } from '../session/runtime';
@@ -13,6 +12,13 @@ import { getSubagentTimeoutMs } from '../settings/service';
 const WRITEBACK_REMINDER_INTERVAL_MS = 15 * 1000;
 const MAX_WRITEBACK_REMINDERS = 3;
 const MAX_NO_OUTPUT_REMINDERS = 1;
+
+/**
+ * 这些角色的语义就是「等待子会话返回结果」，不允许异步游离。
+ * spawn_session / send_message_to_session 统一强制 wait=true，忽略调用方传入值（含 false / 缺省）。
+ * 精确匹配角色 key，与角色模板查找（role_template_not_found）的精确 key 语义保持一致。
+ */
+const WAIT_FORCED_ROLE_KEYS = new Set(['worker', 'reviewer']);
 
 /**
  * 决定对空闲子会话的下一步动作（纯函数，便于测试）。
@@ -78,7 +84,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
           task: { type: 'string', description: 'The specific task to execute (optional)' },
           wait: {
             type: 'boolean',
-            description: 'Whether to wait for the child session to complete and return its results (required — must be explicitly true or false). Use true for workers, false for roles that need to interact with the user independently.',
+            description: 'Whether to wait for the child session to complete and return its results (required — must be explicitly true or false). Use true for workers, false for roles that need to interact with the user independently. Note: for `worker` and `reviewer` roles this is always forced to true regardless of the value passed.',
           },
           constraints: {
             type: 'array',
@@ -117,7 +123,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
           content: { type: 'string', description: 'The message to send to the child session' },
           wait: {
             type: 'boolean',
-            description: 'Whether to wait for the child session to process this message and return its writeback result',
+            description: 'Whether to wait for the child session to process this message and return its writeback result. Note: for `worker` and `reviewer` target sessions this is always forced to true regardless of the value passed.',
           },
         },
         required: ['session_id', 'content'],
@@ -128,7 +134,7 @@ export function buildRoleManagerToolDefs(catalog: RoleCatalog): PiToolDef[] {
       description:
         'Ask a question to another project and wait for a reply. The target project\'s agent will process the question and respond. ' +
         'Use this when you need information or help from another project. ' +
-        'The target project must belong to the same user.',
+        '',
       parameters: {
         type: 'object',
         properties: {
@@ -167,6 +173,8 @@ export type RoleManagerToolContext = {
   sessionId: string;
   userId: string;
   onSessionCreated?: (payload: { sessionId: string; projectId: string }) => void | Promise<void>;
+  /** pi 流事件转发（事件自带 sessionId，转发方按 event.sessionId 路由） */
+  onStreamEvent?: (event: PiSessionStreamEvent) => void | Promise<void>;
   onRuntimeStatusChange?: (payload: {
     sessionId: string;
     projectId: string;
@@ -190,14 +198,20 @@ export async function invokeRoleManagerTool(
       .limit(1);
     if (!parent) throw new Error('parent_session_not_found');
 
+    const role = String(args.role ?? 'worker');
+    // worker / reviewer 必须等待结果（唯一覆盖点）：无论调用方传入 false 还是缺省，一律强制 wait=true，
+    // 下游（waitPrompt / startChildSessionRun / waitForChildWriteback）只认 wait，不再做二次判断。
+    const waitForced = WAIT_FORCED_ROLE_KEYS.has(role) && args.wait !== true;
+    const wait = waitForced ? true : Boolean(args.wait ?? false);
+
     // schema 已要求 wait 必填；此处兜底仅防御平台漏校验/非平台直调路径
     if (args.wait === undefined) {
-      console.warn('[role-manager-tools] spawn_session called without required `wait` argument, defaulting to false', {
+      console.warn('[role-manager-tools] spawn_session called without required `wait` argument', {
         parentSessionId: ctx.sessionId,
+        role,
+        effectiveWait: wait,
       });
     }
-    const wait = Boolean(args.wait ?? false);
-    const role = String(args.role ?? 'worker');
     const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
     const waitPrompt = wait
       ? '所有任务完成后，必须调用`writeback_to_parent`报告结果给父会话'
@@ -238,7 +252,9 @@ export async function invokeRoleManagerTool(
     await startChildSessionRun(ctx, result.sessionId, '', requestId, ctx.onSessionCreated);
 
     if (wait) {
-      return await waitForChildWriteback(ctx, result.sessionId, requestId);
+      const waited = await waitForChildWriteback(ctx, result.sessionId, requestId);
+      // 仅当传入值被覆盖时回传 wait_forced，让调用方知道实际行为与传入的 wait 不同，避免困惑。
+      return waitForced ? { ...(waited as Record<string, unknown>), wait_forced: true } : waited;
     }
 
     return {
@@ -251,26 +267,32 @@ export async function invokeRoleManagerTool(
   if (toolName === 'send_message_to_session') {
     const targetSessionId = String(args.session_id ?? '');
     const content = String(args.content ?? '');
-    const wait = Boolean(args.wait ?? false);
 
     if (!targetSessionId) throw new Error('missing_session_id');
     if (!content) throw new Error('missing_content');
 
-    // 校验目标是当前 session 的直接子 session
+    // 校验目标是当前 session 的直接子 session，并解析目标角色 key（sessions 表只存 roleTemplateId）。
+    // leftJoin：模板行缺失属数据异常，不能把目标会话误判为不存在；此时 roleKey 为 null，按非强制角色处理。
     const [child] = await ctx.db
-      .select({ id: sessions.id, parentSessionId: sessions.parentSessionId })
+      .select({ id: sessions.id, parentSessionId: sessions.parentSessionId, roleKey: roleTemplates.key })
       .from(sessions)
+      .leftJoin(roleTemplates, eq(roleTemplates.id, sessions.roleTemplateId))
       .where(eq(sessions.id, targetSessionId))
       .limit(1);
 
     if (!child) throw new Error('target_session_not_found');
     if (child.parentSessionId !== ctx.sessionId) throw new Error('not_direct_child_session');
 
+    // worker / reviewer 与 spawn_session 共用同一判定集合：必须等服务完成，忽略调用方传入的 wait。
+    const waitForced = WAIT_FORCED_ROLE_KEYS.has(child.roleKey ?? '') && args.wait !== true;
+    const wait = waitForced ? true : Boolean(args.wait ?? false);
+
     const requestId = `req_${crypto.randomUUID().slice(0, 12)}`;
 
     console.log('[role-manager-tools] send_message_to_session', {
       parentSessionId: ctx.sessionId,
       targetSessionId,
+      targetRole: child.roleKey ?? null,
       requestId,
       wait,
     });
@@ -279,7 +301,9 @@ export async function invokeRoleManagerTool(
     await startChildSessionRun(ctx, targetSessionId, content, requestId, ctx.onSessionCreated);
 
     if (wait) {
-      return await waitForChildWriteback(ctx, targetSessionId, requestId);
+      const waited = await waitForChildWriteback(ctx, targetSessionId, requestId);
+      // 仅当传入值被覆盖时回传 wait_forced，让调用方知道实际行为与传入的 wait 不同。
+      return waitForced ? { ...(waited as Record<string, unknown>), wait_forced: true } : waited;
     }
 
     return {
@@ -448,6 +472,10 @@ export async function invokeRoleManagerTool(
       childSessionId: ctx.sessionId,
       summary: String(args.summary ?? ''),
       blocks: Array.isArray(args.blocks) ? args.blocks : null,
+      // auto-wake 拉起的父会话 run 必须与用户发起的 run 一样有 WS 事件源，否则前端无反应。
+      // 两个回调的 payload/event 都自带 sessionId，平台侧可安全复用于父会话。
+      onStreamEvent: ctx.onStreamEvent,
+      onRuntimeStatusChange: ctx.onRuntimeStatusChange,
     });
     return { ok: true };
   }
@@ -496,6 +524,9 @@ async function startChildSessionRun(
     requestId,
     candidateModels,
     onToolSessionCreated,
+    // 子会话同样有 UI 消费方（Sidebar 可点开、TabChat 对任意 selectedSessionId 渲染），
+    // 轮询移除后必须把子会话的流事件继续透传给平台回调（事件自带子会话 sessionId）。
+    onStreamEvent: ctx.onStreamEvent,
     onRuntimeStatusChange: ctx.onRuntimeStatusChange,
   });
 }

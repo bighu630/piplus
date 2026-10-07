@@ -1,7 +1,7 @@
 import { createDb } from '@piplus/db/client';
 import { messages, projects, roleTemplates, sessionEvents, sessions } from '@piplus/db/schema';
 import { and, desc, eq, isNull } from 'drizzle-orm';
-import type { PiClient } from '@piplus/pi-client';
+import type { PiClient, PiSessionStreamEvent } from '@piplus/pi-client';
 import { stringifyLocator } from '@piplus/pi-client/locator';
 import { getRequestContext } from '../session/request-context';
 
@@ -44,6 +44,18 @@ export type WritebackToParentInput = {
   childSessionId: string;
   summary: string;
   blocks?: unknown[] | null;
+  /**
+   * auto-wake 的父会话 run 必须与用户发起的 run 一样有平台侧 WS 事件桥：轮询移除后
+   * 没有这两个回调 → 父会话 UI 完全没有事件源（新内容不出现、状态可能永久卡 running）。
+   * 由调用方（toolHandler ctx）透传；事件/payload 自带 sessionId，可安全复用于父会话。
+   */
+  onStreamEvent?: (event: PiSessionStreamEvent) => void | Promise<void>;
+  onRuntimeStatusChange?: (payload: {
+    sessionId: string;
+    projectId: string;
+    runtimeStatus: 'running' | 'idle';
+    error: string | null;
+  }) => void | Promise<void>;
 };
 
 type SessionTemplateRow = {
@@ -603,6 +615,9 @@ export function createRoleManagerService(db: RoleManagerDb, piClient: PiClient) 
           content,
           requestId: `wb_${messageId}`,
           reason: 'writeback-auto-wake',
+          // 轮询移除后前端只剩事件源：这两个回调让 auto-wake 的父会话 run 与强杀补投递路径同形。
+          onStreamEvent: input.onStreamEvent,
+          onRuntimeStatusChange: input.onRuntimeStatusChange,
         });
         if (wakeResult === 'started') {
           console.log('[role-manager] parent auto-woken', { parentSessionId, messageId });

@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
 import { messages, projects, sessionEvents, sessions } from '@piplus/db/schema';
+import type { PiSessionStreamEvent } from '@piplus/pi-client';
 import { getRequestContext, isCrossProjectWaiting, clearCrossProjectWait } from '../session/request-context';
 import { buildRoleManagerToolDefs, decideReminderAction, invokeRoleManagerTool } from './role-manager-tools';
 
@@ -70,13 +71,26 @@ async function waitForChildSettled(db: any, parentSessionId: string, sent: unkno
 }
 
 /**
- * 构建「父会话 running + spawn_session wait=true」测试场景，便于注入子会话 stop / 写回状态。
- * writebackOnReminder=true 时在第 2 次 sendMessage（reminder 轮）插入匹配 requestId 的 writeback。
+ * 构建「父会话 running + spawn_session」测试场景，便于注入子会话 stop / 写回状态。
+ * 默认 worker + wait=true；writebackOnReminder=true 时在第 2 次 sendMessage（reminder 轮）
+ * 插入匹配 requestId 的 writeback。
+ * 可选覆盖 role / wait（wait 传 'omit' 表示不带该字段），以及 writebackOnSendIndex
+ * （在第 N 次 sendMessage 即写回，用于强制 wait 用例，免等 reminder 间隔）。
  */
 async function startChildWaitScenario(opts: {
   parentProjectId: string;
   parentSessionId: string;
   writebackOnReminder?: boolean;
+  /** 覆盖 spawn_session 的 role，默认 'worker' */
+  role?: string;
+  /** 覆盖 spawn_session 的 wait；'omit' = 完全不传该字段，默认 true */
+  wait?: boolean | 'omit';
+  /** 第 N 次 sendMessage（1-based）时插入 writeback；不传则沿用 writebackOnReminder（第 2 次） */
+  writebackOnSendIndex?: number;
+  /** R1 观测点：spawn 出的子会话 run 的流事件应经此回调透传（sessionId 必须是子会话） */
+  onStreamEvent?: (event: PiSessionStreamEvent) => void;
+  /** R1：subscribeSession 时立即回放一条 tool_result_end，模拟子会话 run 的流输出 */
+  emitStreamOnSubscribe?: boolean;
 }) {
   const dbPath = makeDbPath();
   createSeedDb(dbPath);
@@ -96,7 +110,12 @@ async function startChildWaitScenario(opts: {
       };
     },
     async restoreRuntime() { return; },
-    async subscribeSession() { return () => {}; },
+    async subscribeSession(sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>) {
+      if (opts.emitStreamOnSubscribe) {
+        await listener({ type: 'tool_result_end', sessionId, runId: 'run_stream' });
+      }
+      return () => {};
+    },
     async getHistory() { return { messages: [], nextCursor: null }; },
     async stopSession() { return { status: 'stopped' as const }; },
     async closeRuntime() { return; },
@@ -104,7 +123,8 @@ async function startChildWaitScenario(opts: {
     async getCurrentModel() { return null; },
     async sendMessage(sessionId: string, content: string) {
       state.sent.push({ sessionId, content });
-      if (opts.writebackOnReminder && state.sent.length === 2) {
+      const writebackAt = opts.writebackOnSendIndex ?? (opts.writebackOnReminder ? 2 : 0);
+      if (writebackAt > 0 && state.sent.length === writebackAt) {
         const reqCtx = getRequestContext(sessionId);
         if (reqCtx?.requestId) {
           await db.insert(messages).values({
@@ -182,19 +202,166 @@ async function startChildWaitScenario(opts: {
     compiledPrompt: 'compiled',
   } as any);
 
-  const waitPromise = invokeRoleManagerTool('spawn_session', {
-    role: 'worker',
+  const spawnArgs: Record<string, unknown> = {
+    role: opts.role ?? 'worker',
     objective: 'long running task',
     title: 'Long Running Task',
-    wait: true,
-  }, {
+  };
+  if (opts.wait !== 'omit') {
+    spawnArgs.wait = opts.wait ?? true;
+  }
+
+  const waitPromise = invokeRoleManagerTool('spawn_session', spawnArgs, {
     db,
     piClient,
     sessionId: opts.parentSessionId,
     userId: 'user_seed',
+    onStreamEvent: opts.onStreamEvent,
   });
 
   return { db, state, waitPromise };
+}
+
+/**
+ * 构建「父会话 running + 已存在子会话」场景，用于 send_message_to_session 测试。
+ * 子会话直接写入 DB，roleTemplateId 可指定（传不存在的 id 可覆盖「角色模板缺失」边界）；
+ * 默认不写回，writebackOnSendIndex=N 时在第 N 次 sendMessage 按请求上下文插入匹配 writeback。
+ */
+async function startSendMessageScenario(opts: {
+  parentProjectId: string;
+  parentSessionId: string;
+  childSessionId: string;
+  childRoleTemplateId: string;
+  /** 子会话的 parentSessionId，默认等于 parentSessionId（非直接子会话场景可覆盖） */
+  childParentSessionId?: string;
+  /** 第 N 次 sendMessage（1-based）时插入 writeback；不传 = 不写回 */
+  writebackOnSendIndex?: number;
+  /** 父会话初始 runtimeStatus，默认 'running'（wait 期间）；writeback auto-wake 场景需要 'idle' */
+  parentRuntimeStatus?: 'running' | 'idle';
+}) {
+  const dbPath = makeDbPath();
+  createSeedDb(dbPath);
+  const db = createDb(`file:${dbPath}`);
+  const state = { sent: [] as Array<{ sessionId: string; content: string }> };
+
+  const piClient = {
+    async createSession(input: { title?: string; prompt: string; cwd?: string; model?: { provider: string; id: string } }) {
+      const sessionId = `pi_${crypto.randomUUID().slice(0, 8)}`;
+      return {
+        sessionId,
+        locator: {
+          piSessionId: sessionId,
+          sessionFile: `/tmp/${sessionId}.jsonl`,
+        },
+        model: input.model ? { provider: input.model.provider, id: input.model.id, label: `${input.model.provider}/${input.model.id}` } : undefined,
+      };
+    },
+    async restoreRuntime() { return; },
+    async subscribeSession() { return () => {}; },
+    async getHistory() { return { messages: [], nextCursor: null }; },
+    async stopSession() { return { status: 'stopped' as const }; },
+    async closeRuntime() { return; },
+    async listAvailableModels() { return []; },
+    async getCurrentModel() { return null; },
+    async sendMessage(sessionId: string, content: string) {
+      state.sent.push({ sessionId, content });
+      const writebackAt = opts.writebackOnSendIndex ?? 0;
+      if (writebackAt > 0 && state.sent.length === writebackAt) {
+        const reqCtx = getRequestContext(sessionId);
+        if (reqCtx?.requestId) {
+          await db.insert(messages).values({
+            id: `msg_${crypto.randomUUID().slice(0, 8)}`,
+            sessionId: opts.parentSessionId,
+            piMessageId: null,
+            messageKind: 'writeback',
+            sourceSessionId: sessionId,
+            role: 'assistant',
+            contentText: 'task done before stop',
+            contentBlocksJson: null,
+            contentVersion: 1,
+            requestId: reqCtx.requestId,
+            createdAt: new Date(),
+          } as any);
+        }
+      }
+      return { sessionId, runId: 'run' };
+    },
+    async ensureRuntime() { return; },
+    async injectPromptIfNeeded() { return; },
+    isFirstConversation() { return false; },
+    getRuntimeState() { return null; },
+    async bindToolRuntime() { return; },
+    async setSessionModel(_sessionId: string, _locator: unknown, modelRef: { provider: string; id: string }) {
+      return { provider: modelRef.provider, id: modelRef.id, label: `${modelRef.provider}/${modelRef.id}` };
+    },
+  } as any;
+
+  const now = new Date();
+  await db.insert(projects).values({
+    id: opts.parentProjectId,
+    name: 'Role Tools Project',
+    createdBy: 'user_seed',
+    status: 'active',
+    projectPath: '',
+    sourceType: 'existing',
+    sourceUrl: '',
+    archivedAt: null,
+    archivedBy: null,
+    lastActivityAt: now,
+    createdAt: now,
+    updatedAt: now,
+  } as any);
+
+  const baseSession = {
+    projectId: opts.parentProjectId,
+    rootSessionId: opts.parentSessionId,
+    requestedByMessageId: null,
+    titleSource: 'default',
+    status: 'active',
+    currentModelProvider: 'anthropic',
+    currentModelId: 'claude-sonnet-4-20250514',
+    lastActivityAt: now,
+    lastRunAt: null,
+    lastStopAt: null,
+    lastRuntimeError: null,
+    createdBy: 'user_seed',
+    archivedAt: null,
+    archivedBy: null,
+    createdAt: now,
+    updatedAt: now,
+    roleBasePromptSnapshot: 'base',
+    userSuppliedPrompt: '',
+    parentSuppliedPrompt: '',
+    compiledPrompt: 'compiled',
+  };
+
+  await db.insert(sessions).values({
+    ...baseSession,
+    id: opts.parentSessionId,
+    parentSessionId: null,
+    depth: 0,
+    roleTemplateId: 'role_planner',
+    piSessionId: 'pi_parent',
+    piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_parent', sessionFile: '/tmp/pi-parent.jsonl' }),
+    title: 'Parent',
+    // 父会话在 wait 期间为 running（toolHandler 运行中），只有被中止后才变 idle；
+    // auto-wake 场景由 opts.parentRuntimeStatus 覆盖为 idle。
+    runtimeStatus: opts.parentRuntimeStatus ?? 'running',
+  } as any);
+
+  await db.insert(sessions).values({
+    ...baseSession,
+    id: opts.childSessionId,
+    parentSessionId: opts.childParentSessionId ?? opts.parentSessionId,
+    depth: 1,
+    roleTemplateId: opts.childRoleTemplateId,
+    piSessionId: 'pi_child',
+    piSessionLocatorJson: JSON.stringify({ piSessionId: 'pi_child', sessionFile: '/tmp/pi-child.jsonl' }),
+    title: 'Child',
+    runtimeStatus: 'idle',
+  } as any);
+
+  return { db, state, piClient };
 }
 
 describe('role manager tools', () => {
@@ -227,6 +394,8 @@ describe('role manager tools', () => {
     expect(props.constraints).toBeDefined();
     expect(props.wait).toBeDefined();
     expect((props.wait as { type: string }).type).toBe('boolean');
+    // 工具文案必须告知 worker/reviewer 会强制 wait（行为由代码强制覆盖）
+    expect((props.wait as { description: string }).description).toContain('forced to true');
     const required = (spawn!.parameters as Record<string, unknown>).required as string[];
     expect(required).toContain('title');
     expect(required).toContain('objective');
@@ -338,10 +507,10 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       compiledPrompt: 'compiled',
     } as any);
 
-    // wait=false — still auto-starts, no kickoff message
+    // wait=false（非强制角色）— still auto-starts, no kickoff message
     const onSessionCreatedCalls: Array<{ sessionId: string; projectId: string }> = [];
     const result = await invokeRoleManagerTool('spawn_session', {
-      role: 'worker',
+      role: 'feature_lead',
       objective: 'fix runtime status',
       title: 'Fix Runtime Status',
       scope: 'apps/api',
@@ -383,6 +552,310 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
     expect(updatedChild?.runtimeStatus).toBe('idle');
     expect(updatedChild?.lastRunAt).toBeTruthy();
     expect(updatedChild?.lastRuntimeError).toBeNull();
+  });
+
+  test('spawn_session role=worker with wait=false forces wait=true and waits for writeback', async () => {
+    const { db, state, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_force_wait_worker',
+      parentSessionId: 'session_force_wait_worker',
+      role: 'worker',
+      wait: false,
+      // 首次 sendMessage（auto-start）即写回：wait 循环第一轮就能拿到结果，无需等 reminder 间隔
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await waitPromise;
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      summary: 'task done before stop',
+      // 传入的 false 被覆盖，回传 wait_forced 让调用方知道实际行为不同
+      wait_forced: true,
+    });
+    // 覆盖 wait 不影响 auto-start：仍然只发一次空 kickoff
+    expect(state.sent).toHaveLength(1);
+    expect(state.sent[0]?.content).toBe('');
+    // 强制 wait=true 的副作用也必须生效：子会话拿到「完成后必须 writeback」提示
+    const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, 'session_force_wait_worker')).limit(1);
+    expect(child?.parentSuppliedPrompt).toContain('writeback_to_parent');
+  });
+
+  test('spawn_session role=reviewer with omitted wait forces wait=true', async () => {
+    const { waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_force_wait_reviewer',
+      parentSessionId: 'session_force_wait_reviewer',
+      role: 'reviewer',
+      wait: 'omit',
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({ status: 'completed', wait_forced: true });
+  });
+
+  test('spawn_session role=worker with wait=true keeps normal behavior (no wait_forced flag)', async () => {
+    const { waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_force_wait_worker_true',
+      parentSessionId: 'session_force_wait_worker_true',
+      role: 'worker',
+      wait: true,
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await waitPromise as Record<string, unknown>;
+    expect(result).toMatchObject({ status: 'completed', summary: 'task done before stop' });
+    expect(result.wait_forced).toBeUndefined();
+  });
+
+  test('spawn_session non-forced roles with wait=false still return created immediately', async () => {
+    for (const role of ['planner', 'feature_lead', 'bugfix_lead', 'blank']) {
+      const { db, waitPromise } = await startChildWaitScenario({
+        parentProjectId: `project_nowait_${role}`,
+        parentSessionId: `session_nowait_${role}`,
+        role,
+        wait: false,
+        // 即便实现误把这些角色也强制 wait，首轮轮询也会命中 writeback 并快速返回，而不是永久挂起
+        writebackOnSendIndex: 1,
+      });
+
+      const result = await Promise.race([
+        waitPromise,
+        new Promise((resolve) => setTimeout(() => resolve({ status: '__still_waiting__' }), 1500)),
+      ]);
+
+      expect(result).toMatchObject({ status: 'created' });
+      // 行为完全不变：不带 wait 提示，子会话无需 writeback
+      const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, `session_nowait_${role}`)).limit(1);
+      expect(child?.parentSuppliedPrompt).toBe('');
+    }
+  });
+
+  // R1 回归：spawn_session 的子会话 run 与父会话一样有 UI 消费方（Sidebar 可点开子会话），
+  // 必须把子会话流事件透传给平台回调（tool_result_end → messages_changed 让工具结果与 tool_call 分两次
+  // 到达，TabChat 的 isToolCallPending 才有「有 tool_call、尚无 result」的中间态 → spinner 出现；
+  // text_delta → chat_stream 让纯文本回合实时显示），否则只剩「run 结束后 refetch」一条路。
+  test('spawn_session 子会话 run 的流事件透传到 ctx.onStreamEvent（带子会话 sessionId）', async () => {
+    const streamEvents: PiSessionStreamEvent[] = [];
+    const { db, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_child_stream',
+      parentSessionId: 'session_child_stream',
+      role: 'blank', // 非强制 wait 角色：wait=false 立即返回，无需 writeback
+      wait: false,
+      emitStreamOnSubscribe: true,
+      onStreamEvent: (event) => { streamEvents.push(event); },
+    });
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({ status: 'created' });
+
+    const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, 'session_child_stream')).limit(1);
+    expect(child).toBeDefined();
+    // 流事件必须到达平台回调，且 sessionId 是子会话（不能串到父会话）
+    expect(streamEvents.length).toBeGreaterThan(0);
+    expect(streamEvents.every((event) => event.sessionId === child!.id)).toBe(true);
+    expect(streamEvents.some((event) => event.type === 'tool_result_end')).toBe(true);
+  });
+
+  // R2 入口链路：writeback_to_parent 工具层必须把 ctx 的平台回调转交 auto-wake 的父会话 run，
+  // 否则父会话（用户可能正看着）在轮询移除后完全没有事件源。
+  test('writeback_to_parent 工具层把 ctx 回调转交 auto-wake 父会话 run（running/idle + 流事件）', async () => {
+    const { db, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_wb_tool_bridge',
+      parentSessionId: 'session_wb_tool_bridge',
+      childSessionId: 'session_wb_tool_child',
+      childRoleTemplateId: 'rt_blank',
+      parentRuntimeStatus: 'idle',
+    });
+
+    const statuses: Array<{ sessionId: string; runtimeStatus: 'running' | 'idle' }> = [];
+    const streamEvents: PiSessionStreamEvent[] = [];
+    // 父会话 run 订阅流：回放一条 text_delta，验证工具层转交的 onStreamEvent 生效
+    (piClient as { subscribeSession: (sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>) => Promise<() => void> }).subscribeSession = async (sessionId, listener) => {
+      await listener({ type: 'text_delta', sessionId, runId: 'run_stream', messageId: 'msg_stream', delta: 'auto-wake via tool' });
+      return () => {};
+    };
+
+    try {
+      await invokeRoleManagerTool('writeback_to_parent', { summary: 'tool-level writeback' }, {
+        db,
+        piClient,
+        sessionId: 'session_wb_tool_child',
+        userId: 'user_seed',
+        onStreamEvent: (event) => { streamEvents.push(event); },
+        onRuntimeStatusChange: (payload) => { statuses.push({ sessionId: payload.sessionId, runtimeStatus: payload.runtimeStatus }); },
+      });
+
+      // startSessionRun 的 attemptSend 是 fire-and-forget：轮询等 idle 广播到达再断言。
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && !statuses.some((s) => s.sessionId === 'session_wb_tool_bridge' && s.runtimeStatus === 'idle')) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(statuses.filter((s) => s.sessionId === 'session_wb_tool_bridge').map((s) => s.runtimeStatus)).toEqual(['running', 'idle']);
+      expect(streamEvents).toHaveLength(1);
+      expect(streamEvents[0]).toMatchObject({ type: 'text_delta', sessionId: 'session_wb_tool_bridge', delta: 'auto-wake via tool' });
+    } finally {
+      const { clearIdleRuntimeCleanup } = await import('../session/runtime');
+      clearIdleRuntimeCleanup('session_wb_tool_bridge');
+    }
+  });
+
+  test('send_message_to_session target=worker with wait=false forces wait=true and waits for writeback', async () => {
+    const { db, state, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_msg_force_worker',
+      parentSessionId: 'session_msg_force_worker',
+      childSessionId: 'session_msg_force_worker_child',
+      childRoleTemplateId: 'role_worker',
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await invokeRoleManagerTool('send_message_to_session', {
+      session_id: 'session_msg_force_worker_child',
+      content: 'please continue the review',
+      wait: false,
+    }, {
+      db,
+      piClient,
+      sessionId: 'session_msg_force_worker',
+      userId: 'user_seed',
+    });
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      summary: 'task done before stop',
+      // 传入的 false 被覆盖，回传 wait_forced 让调用方知道实际行为不同
+      wait_forced: true,
+    });
+    // 覆盖 wait 不改变「把消息发给目标会话并启动 run」
+    expect(state.sent).toHaveLength(1);
+    expect(state.sent[0]).toEqual({ sessionId: 'session_msg_force_worker_child', content: 'please continue the review' });
+  });
+
+  test('send_message_to_session target=reviewer with omitted wait forces wait=true', async () => {
+    const { db, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_msg_force_reviewer',
+      parentSessionId: 'session_msg_force_reviewer',
+      childSessionId: 'session_msg_force_reviewer_child',
+      childRoleTemplateId: 'role_reviewer',
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await invokeRoleManagerTool('send_message_to_session', {
+      session_id: 'session_msg_force_reviewer_child',
+      content: 'please re-review after fixes',
+    }, {
+      db,
+      piClient,
+      sessionId: 'session_msg_force_reviewer',
+      userId: 'user_seed',
+    });
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      summary: 'task done before stop',
+      wait_forced: true,
+    });
+  });
+
+  test('send_message_to_session non-forced target with wait=false still returns sent immediately', async () => {
+    const { db, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_msg_nowait_feature_lead',
+      parentSessionId: 'session_msg_nowait_feature_lead',
+      childSessionId: 'session_msg_nowait_feature_lead_child',
+      childRoleTemplateId: 'role_feature_lead',
+      // 不写回：若实现误把非强制角色也 wait，则只能等超时（默认无超时）→ 由 race 判失败
+    });
+
+    const result = await Promise.race([
+      invokeRoleManagerTool('send_message_to_session', {
+        session_id: 'session_msg_nowait_feature_lead_child',
+        content: 'keep talking to the user',
+        wait: false,
+      }, {
+        db,
+        piClient,
+        sessionId: 'session_msg_nowait_feature_lead',
+        userId: 'user_seed',
+      }),
+      new Promise((resolve) => setTimeout(() => resolve({ status: '__still_waiting__' }), 1500)),
+    ]);
+
+    expect(result).toMatchObject({ status: 'sent', session_id: 'session_msg_nowait_feature_lead_child' });
+    expect((result as Record<string, unknown>).wait_forced).toBeUndefined();
+  });
+
+  test('send_message_to_session non-forced target with explicit wait=true waits but does not report wait_forced', async () => {
+    const { db, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_msg_wait_feature_lead',
+      parentSessionId: 'session_msg_wait_feature_lead',
+      childSessionId: 'session_msg_wait_feature_lead_child',
+      childRoleTemplateId: 'role_feature_lead',
+      writebackOnSendIndex: 1,
+    });
+
+    const result = await invokeRoleManagerTool('send_message_to_session', {
+      session_id: 'session_msg_wait_feature_lead_child',
+      content: 'wait for my answer',
+      wait: true,
+    }, {
+      db,
+      piClient,
+      sessionId: 'session_msg_wait_feature_lead',
+      userId: 'user_seed',
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({ status: 'completed', summary: 'task done before stop' });
+    expect(result.wait_forced).toBeUndefined();
+  });
+
+  test('send_message_to_session rejects missing target and non-direct child', async () => {
+    const { db, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_msg_boundary',
+      parentSessionId: 'session_msg_boundary',
+      childSessionId: 'session_msg_boundary_child',
+      childRoleTemplateId: 'role_worker',
+      // 目标是别人的子会话：存在但不是当前会话的直接子会话
+      childParentSessionId: 'session_other_parent',
+    });
+    const ctx = { db, piClient, sessionId: 'session_msg_boundary', userId: 'user_seed' };
+
+    await expect(invokeRoleManagerTool('send_message_to_session', {
+      session_id: 'session_missing_target',
+      content: 'hello',
+      wait: false,
+    }, ctx)).rejects.toThrow('target_session_not_found');
+
+    await expect(invokeRoleManagerTool('send_message_to_session', {
+      session_id: 'session_msg_boundary_child',
+      content: 'hello',
+      wait: false,
+    }, ctx)).rejects.toThrow('not_direct_child_session');
+  });
+
+  test('send_message_to_session with unresolvable role template falls back to caller wait (no wait_forced)', async () => {
+    const { db, piClient } = await startSendMessageScenario({
+      parentProjectId: 'project_msg_orphan_role',
+      parentSessionId: 'session_msg_orphan_role',
+      childSessionId: 'session_msg_orphan_role_child',
+      // 角色模板行缺失：无法判定目标角色 → 保守尊重调用方传入的 wait，不强制
+      childRoleTemplateId: 'role_template_missing',
+    });
+
+    const result = await Promise.race([
+      invokeRoleManagerTool('send_message_to_session', {
+        session_id: 'session_msg_orphan_role_child',
+        content: 'hello',
+        wait: false,
+      }, {
+        db,
+        piClient,
+        sessionId: 'session_msg_orphan_role',
+        userId: 'user_seed',
+      }),
+      new Promise((resolve) => setTimeout(() => resolve({ status: '__still_waiting__' }), 1500)),
+    ]);
+
+    expect(result).toMatchObject({ status: 'sent' });
+    expect((result as Record<string, unknown>).wait_forced).toBeUndefined();
   });
 
   test('spawn_session wait=true auto-starts and waits for writeback', async () => {

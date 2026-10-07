@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { ServerMessage, ProjectDTO, SessionTreeNodeDTO, AskQuestionPendingPayload } from '@piplus/shared';
-import { isAskQuestionPending } from '@piplus/shared';
+import { WS_EVENT_SUBSCRIPTION_DENIED, isAskQuestionPending } from '@piplus/shared';
 import { createWorkspaceSocket } from './ws-client';
 import { getAllAskPending, getAskPending } from './api';
 import { useQueryClient } from '@tanstack/react-query';
@@ -14,6 +14,11 @@ import {
   type ChatStreamEvent,
   type ChatStreamSnapshot,
 } from './chat-stream-state';
+import {
+  SUBSCRIPTION_DENIED_RETRY_DELAY_MS,
+  decideSubscriptionDenied,
+  subscriptionDeniedNotice,
+} from './ws-subscription-denied';
 
 type RuntimeStatus = 'running' | 'idle' | 'stopping';
 
@@ -57,6 +62,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const socketRef = useRef<ReturnType<typeof createWorkspaceSocket> | null>(null);
   const stoppingFallbackTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const reconcileInFlightRef = useRef<Promise<void> | null>(null);
+  // R7：订阅被拒次数与延迟重订阅定时器（按 sessionId）。重连/卸载时统一清理，避免泄漏与幽灵订阅。
+  const subscriptionDeniedAttemptsRef = useRef<Map<string, number>>(new Map());
+  const subscriptionRetryTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // 登录态：与 App.tsx 同源（auth status/session 查询）。WS 建连 effect 依赖它：
   // 4401 登出后 isLoggedIn 变 false → 关闭死连接；重新登录后变 true → 用新 token 重建连接。
@@ -87,6 +95,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       socketRef.current?.unsubscribeSession(prev);
     }
     if (sessionId && sessionId !== prev) {
+      // 用户主动切回该会话：重置被拒计数，给一次手动重试机会（重试次数仍由策略封顶，不会无限循环）
+      subscriptionDeniedAttemptsRef.current.delete(sessionId);
       socketRef.current?.subscribeSession(sessionId);
       queryClient.invalidateQueries({ queryKey: ['session', 'messages', sessionId] });
       // 刷新后重建：WS 事件在刷新前已发送，内存已清，需从后端拉取待回答以重建表单/琥珀灯
@@ -175,6 +185,26 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
   // Main WS connection effect — 随登录态重建（登出关闭旧连接，重新登录以新 token 新建）
   useEffect(() => {
+    const cancelResubscribe = (sessionId: string) => {
+      const timer = subscriptionRetryTimersRef.current.get(sessionId);
+      if (timer) {
+        clearTimeout(timer);
+        subscriptionRetryTimersRef.current.delete(sessionId);
+      }
+    };
+
+    const scheduleResubscribe = (sessionId: string) => {
+      cancelResubscribe(sessionId);
+      const timer = setTimeout(() => {
+        subscriptionRetryTimersRef.current.delete(sessionId);
+        // 只在仍是当前会话且仍登录时重订阅：切走/登出后的重订阅属于幽灵订阅
+        if (!isLoggedInRef.current) return;
+        if (selectedSessionIdRef.current !== sessionId) return;
+        socketRef.current?.subscribeSession(sessionId);
+      }, SUBSCRIPTION_DENIED_RETRY_DELAY_MS);
+      subscriptionRetryTimersRef.current.set(sessionId, timer);
+    };
+
     if (!isLoggedIn) {
       // 未登录 / 已登出：确保旧 socket（含 4401 停摆后的死连接）被关闭，不发起建连。
       socketRef.current?.close();
@@ -203,6 +233,30 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             const payload = message.payload;
             if (payload?.questionId) {
               publishAskPending([payload]);
+            }
+          }
+
+          // ═══ 订阅被拒 subscription.denied ═══
+          // 归属校验未通过（含认证握手竞争）时后端回发该事件；不处理则本会话永久收不到
+          // chat_stream/私有事件（无提示、无重试）。策略：提示用户 + 有限次延迟重订阅。
+          if (message.kind === 'event' && message.type === WS_EVENT_SUBSCRIPTION_DENIED) {
+            const deniedSessionId = (message.payload as { session_id?: string } | undefined)?.session_id;
+            // 只处理仍是当前会话的拒绝：已切走的旧会话无重订阅意义，也不打扰用户
+            if (deniedSessionId && deniedSessionId === currentSessionId) {
+              const previousAttempts = subscriptionDeniedAttemptsRef.current.get(deniedSessionId) ?? 0;
+              const decision = decideSubscriptionDenied(previousAttempts);
+              subscriptionDeniedAttemptsRef.current.set(deniedSessionId, decision.attempt);
+              if (decision.retry) {
+                scheduleResubscribe(deniedSessionId);
+              } else {
+                // 放弃：取消挂起的重试定时器，并刷新一次 HTTP 消息，让用户至少看到已落库内容
+                cancelResubscribe(deniedSessionId);
+                queryClient.invalidateQueries({ queryKey: ['session', 'messages', deniedSessionId] });
+              }
+              if (decision.notify && systemNotificationsEnabled()) {
+                const notice = subscriptionDeniedNotice(decision.outcome);
+                sendSystemNotification(notice.title, { body: notice.body });
+              }
             }
           }
 
@@ -445,6 +499,26 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       onOpen() {
         setConnected(true);
         setLocalRuntimeStatusBySession({});
+        // R4：重连后清理残留的 streaming 快照。
+        // 断线期间 run 可能已结束（idle 事件丢失）：重连补拉能拿到完整落库消息，
+        // 但半截流式快照会一直渲染（TabChat 的 streaming 气泡常驻）。
+        // 这里把残留 streaming 快照复位为初始快照并通知订阅者（同步 useChatStream 本地 state）。
+        // 取舍：若断线时 run 仍在跑，会丢失已收到的半截内容（服务端不重放流），
+        // 但重连补拉的落库消息 + 后续 delta 会继续呈现，优于半截气泡永久残留。
+        for (const sessionId of Object.keys(streamSnapshotsRef.current)) {
+          const snapshot = streamSnapshotsRef.current[sessionId];
+          if (snapshot?.phase !== 'streaming') continue;
+          streamSnapshotsRef.current[sessionId] = INITIAL_CHAT_STREAM_SNAPSHOT;
+          streamListenersRef.current.forEach(cb => cb({ sessionId, snapshot: INITIAL_CHAT_STREAM_SNAPSHOT }));
+          // 与 idle 分支同策略：非当前会话的快照无人读取，删除条目防止 map 无限增长
+          if (sessionId !== selectedSessionIdRef.current) {
+            delete streamSnapshotsRef.current[sessionId];
+          }
+        }
+        // R7：新连接是干净起点，清空被拒计数与挂起的重订阅（onOpen 会重新订阅当前会话）
+        subscriptionDeniedAttemptsRef.current.clear();
+        subscriptionRetryTimersRef.current.forEach((timer) => clearTimeout(timer));
+        subscriptionRetryTimersRef.current.clear();
         socket.hello();
         socket.setContext({
           project_id: selectedProjectIdRef.current ?? undefined,
@@ -476,6 +550,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       // 避免 cleanup 早于其定义执行时的 TDZ 问题）
       stoppingFallbackTimersRef.current.forEach(t => clearTimeout(t));
       stoppingFallbackTimersRef.current.clear();
+      subscriptionRetryTimersRef.current.forEach((timer) => clearTimeout(timer));
+      subscriptionRetryTimersRef.current.clear();
     };
   }, [isLoggedIn]); // 登录态变化时重建连接
 

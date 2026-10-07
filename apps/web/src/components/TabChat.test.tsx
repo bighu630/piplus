@@ -112,6 +112,9 @@ interface ExtraProps {
   showArchiveButton?: boolean;
   onArchiveSession?: () => void;
   archivePending?: boolean;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 function element(messages: ChatMessageDTO[], extra: ExtraProps, queryClient: QueryClient) {
@@ -223,6 +226,42 @@ describe('TabChat 行为', () => {
     });
 
     expect(archiveCalls).toBe(0);
+  });
+
+  test('每条消息渲染为带 data-message-id 的槽位（可视区锚点残差校正的结构约定）', async () => {
+    await renderTabChat([
+      msg({ id: 'u1', role: 'user', content_text: 'a', created_at: T(0) }),
+      msg({ id: 'a1', content_text: 'b', created_at: T(1) }),
+    ]);
+
+    const slots = Array.from(container!.querySelectorAll('[data-message-id]'));
+    expect(slots.map((el) => el.getAttribute('data-message-id'))).toEqual(['u1', 'a1']);
+    // 消息内容确实在槽位内部（槽位是包裹层而非替代层）
+    expect(slots[0]!.textContent).toContain('a');
+    expect(slots[1]!.textContent).toContain('b');
+  });
+
+  test('历史加载态：loadingMore 时按钮显示「加载中…」且禁用', async () => {
+    await renderTabChat(
+      [msg({ id: 'u1', role: 'user', content_text: 'hi', created_at: T(0) })],
+      { hasMore: true, loadingMore: true },
+    );
+
+    const button = buttonByText('加载中…');
+    expect(button.disabled).toBe(true);
+  });
+
+  test('历史加载态：非 loadingMore 时按钮可点且文案为「加载更早消息」', async () => {
+    let loads = 0;
+    await renderTabChat(
+      [msg({ id: 'u1', role: 'user', content_text: 'hi', created_at: T(0) })],
+      { hasMore: true, loadingMore: false, onLoadMore: () => { loads += 1; } },
+    );
+
+    const button = buttonByText('加载更早消息');
+    expect(button.disabled).toBe(false);
+    await act(async () => { button.click(); });
+    expect(loads).toBe(1);
   });
 
   // 未覆盖：发送消息路径（输入草稿 → 回车 → onSend）。

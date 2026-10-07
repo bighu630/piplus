@@ -358,6 +358,8 @@ v1 需要在 PI 之上注入平台级扩展 tools。
 - `spawn_session`
 - `writeback_to_parent`
 
+（后续加入的平台 tool 还有 `send_message_to_session`：向已有子会话发送后续消息，见 6.3.1 修订说明。）
+
 #### 6.3.1 spawn_session
 用途：
 - 基于当前 session 上下文创建子 session
@@ -387,6 +389,13 @@ v1 需要在 PI 之上注入平台级扩展 tools。
 - 立即返回 `child_session_id`、`pi_session_id` 和创建状态
 - 子 session 后续真正运行是异步的，不阻塞当前 tool 调用
 
+> **修订（2026-09-22）**：`spawn_session` 现支持 `wait` 参数；上文「立即返回」与输入字段列表为 v1 初始结论，当前语义如下（原文保留以记录设计演进）。
+> - `wait` 为必填参数。`wait=true` 时 tool 调用阻塞，等待子会话通过 `writeback_to_parent` 写回结果后才返回：`completed`（带 `summary` 与可选 `blocks`）/ `failed` / `timeout` / `cancelled`；`wait=false` 时才立即返回创建状态（`created`）。
+> - `worker` 与 `reviewer` 强制 `wait=true`：这两类角色的语义就是等待返回，忽略调用方传入的 `wait`（含 `false` 或缺省）。仅当传入值确实被覆盖时，返回值额外带 `wait_forced: true`，便于调用方区分实际行为；传入 `wait=true` 时不带该字段。
+> - 其他角色（`planner` / `blank` / `feature_lead` / `bugfix_lead` 等）仍按调用方传入的 `wait` 执行，可异步返回。
+> - 面向 LLM 的输入字段现为 `role` / `title` / `objective` / `scope` / `task` / `wait` / `constraints`；原文的 `target` 已由 `objective` / `scope` / `task` 取代。
+> - 后续加入的 `send_message_to_session` 采用同一 wait 语义：目标为 `worker` / `reviewer` 子会话时同样强制 `wait=true`（仅覆盖时回传 `wait_forced: true`），其他角色尊重调用方传入的 `wait`。
+
 #### 6.3.2 writeback_to_parent
 用途：
 - 显式把子 session 的结果摘要写回父 session
@@ -408,6 +417,8 @@ v1 需要在 PI 之上注入平台级扩展 tools。
 - v1 不做按 role 或按 session 的 tool allowlist。
 - 平台 tools 由 PI 集成层统一加载。
 - 平台此阶段不增加额外 tool 能力权限系统。
+
+> **修订（2026-09-22）**：`planner` 会话当前不暴露 `writeback_to_parent` 与 `send_message_to_session`（planner 是根节点，直接向用户报告，不参与父子写回编排）。
 
 ## 7. 数据层设计
 
@@ -725,6 +736,8 @@ Blank role 的语义：
 - 写回结果在父 chat 中表现为一条 assistant 消息，并带 writeback 标记与 `source_session_id`。
 - 写回内容既要有可读文本，也允许同时带结构化摘要块。
 
+> **修订（2026-09-22）**：`worker` / `reviewer` 子会话现在总是以 `wait=true` 创建（见 6.3.1 修订说明），父会话会阻塞等待它们写回；因此这两类子会话的预期是「完成工作后必须调用 `writeback_to_parent`」。写回仍然是显式 tool 动作，平台不会绕过 LLM 自动生成写回内容。
+
 ## 9. 技术决策摘要
 
 已确认的技术基线：
@@ -777,8 +790,9 @@ Blank role 的语义：
 平台内部动作包括：
 - spawn_session
 - writeback_to_parent
+- send_message_to_session（后续加入）
 
-spawn_session 与 writeback_to_parent 不属于前端主公开 API，它们是通过 extension / tool 链路触发、再由角色管理层执行的内部编排能力。
+spawn_session、writeback_to_parent 与 send_message_to_session 不属于前端主公开 API，它们都是通过 extension / tool 链路触发、再由角色管理层执行的内部编排能力。
 
 ### 11.2 HTTP API 基线
 - 统一基础路径：`/api/v1`
