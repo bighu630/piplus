@@ -38,9 +38,11 @@ cd packages/domain && bun test src/session/runtime.test.ts
 cd apps/api && bun test                       # 16.1s
 cd packages/domain && bun test                # 27.7s
 cd packages/pi-client && bun test             # 10.9s
-cd apps/web && bun test                       # 4.1s
+cd apps/web && bun test --isolate             # 4.1s
 cd packages/db && bun test                    # 0.6s
 ```
+
+> `apps/web` 必须加 `--isolate`：跨文件全局状态（happy-dom / 全局 mock）会互相污染，裸跑 `bun test` 产生假失败。
 
 有测试的包：`apps/api`、`apps/web`、`packages/db`、`packages/domain`、`packages/pi-client`、`packages/shared`。
 改动哪个包就测哪个包；跨包改动时，额外补跑被影响的那个下游包。
