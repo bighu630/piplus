@@ -1,4 +1,4 @@
-import type { PiClient } from '@piplus/pi-client';
+import type { PiClient, PiSessionStreamEvent } from '@piplus/pi-client';
 import type { RoleManagerDb } from '../role-manager/service';
 import { loadRoleCatalog } from './role-catalog';
 import { buildRoleManagerToolDefs, invokeRoleManagerTool } from './role-manager-tools';
@@ -10,6 +10,12 @@ export type PlatformToolContext = {
   sessionId: string;
   userId: string;
   onSessionCreated?: (payload: { sessionId: string; projectId: string }) => void | Promise<void>;
+  /**
+   * pi 流事件转发（可选）：由 api 层接成 WS 帧。
+   * 事件自身带 sessionId，转发方必须按 event.sessionId 路由：该回调会被透传给 domain 内
+   * 发起的 run（spawn 的子会话、writeback auto-wake 的父会话），其 sessionId 与当前 run 不同。
+   */
+  onStreamEvent?: (event: PiSessionStreamEvent) => void | Promise<void>;
   onRuntimeStatusChange?: (payload: {
     sessionId: string;
     projectId: string;

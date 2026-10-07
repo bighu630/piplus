@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
 import { messages, projects, sessionEvents, sessions } from '@piplus/db/schema';
+import type { PiSessionStreamEvent } from '@piplus/pi-client';
 import { getRequestContext, isCrossProjectWaiting, clearCrossProjectWait } from '../session/request-context';
 import { buildRoleManagerToolDefs, decideReminderAction, invokeRoleManagerTool } from './role-manager-tools';
 
@@ -86,6 +87,10 @@ async function startChildWaitScenario(opts: {
   wait?: boolean | 'omit';
   /** 第 N 次 sendMessage（1-based）时插入 writeback；不传则沿用 writebackOnReminder（第 2 次） */
   writebackOnSendIndex?: number;
+  /** R1 观测点：spawn 出的子会话 run 的流事件应经此回调透传（sessionId 必须是子会话） */
+  onStreamEvent?: (event: PiSessionStreamEvent) => void;
+  /** R1：subscribeSession 时立即回放一条 tool_result_end，模拟子会话 run 的流输出 */
+  emitStreamOnSubscribe?: boolean;
 }) {
   const dbPath = makeDbPath();
   createSeedDb(dbPath);
@@ -105,7 +110,12 @@ async function startChildWaitScenario(opts: {
       };
     },
     async restoreRuntime() { return; },
-    async subscribeSession() { return () => {}; },
+    async subscribeSession(sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>) {
+      if (opts.emitStreamOnSubscribe) {
+        await listener({ type: 'tool_result_end', sessionId, runId: 'run_stream' });
+      }
+      return () => {};
+    },
     async getHistory() { return { messages: [], nextCursor: null }; },
     async stopSession() { return { status: 'stopped' as const }; },
     async closeRuntime() { return; },
@@ -206,6 +216,7 @@ async function startChildWaitScenario(opts: {
     piClient,
     sessionId: opts.parentSessionId,
     userId: 'user_seed',
+    onStreamEvent: opts.onStreamEvent,
   });
 
   return { db, state, waitPromise };
@@ -614,6 +625,32 @@ test('spawn_session wait=false auto-starts with empty content', async () => {
       const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, `session_nowait_${role}`)).limit(1);
       expect(child?.parentSuppliedPrompt).toBe('');
     }
+  });
+
+  // R1 回归：spawn_session 的子会话 run 与父会话一样有 UI 消费方（Sidebar 可点开子会话），
+  // 必须把子会话流事件透传给平台回调（tool_result_end → messages_changed 让工具结果与 tool_call 分两次
+  // 到达，TabChat 的 isToolCallPending 才有「有 tool_call、尚无 result」的中间态 → spinner 出现；
+  // text_delta → chat_stream 让纯文本回合实时显示），否则只剩「run 结束后 refetch」一条路。
+  test('spawn_session 子会话 run 的流事件透传到 ctx.onStreamEvent（带子会话 sessionId）', async () => {
+    const streamEvents: PiSessionStreamEvent[] = [];
+    const { db, waitPromise } = await startChildWaitScenario({
+      parentProjectId: 'project_child_stream',
+      parentSessionId: 'session_child_stream',
+      role: 'blank', // 非强制 wait 角色：wait=false 立即返回，无需 writeback
+      wait: false,
+      emitStreamOnSubscribe: true,
+      onStreamEvent: (event) => { streamEvents.push(event); },
+    });
+
+    const result = await waitPromise;
+    expect(result).toMatchObject({ status: 'created' });
+
+    const [child] = await db.select().from(sessions).where(eq(sessions.parentSessionId, 'session_child_stream')).limit(1);
+    expect(child).toBeDefined();
+    // 流事件必须到达平台回调，且 sessionId 是子会话（不能串到父会话）
+    expect(streamEvents.length).toBeGreaterThan(0);
+    expect(streamEvents.every((event) => event.sessionId === child!.id)).toBe(true);
+    expect(streamEvents.some((event) => event.type === 'tool_result_end')).toBe(true);
   });
 
   test('send_message_to_session target=worker with wait=false forces wait=true and waits for writeback', async () => {

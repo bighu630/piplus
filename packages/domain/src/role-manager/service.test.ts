@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { createDb } from '@piplus/db/client';
 import { createSeedDb } from '@piplus/db/init';
 import { messages, projects, roleTemplates, sessions } from '@piplus/db/schema';
+import type { PiSessionStreamEvent } from '@piplus/pi-client';
 import { createRoleManagerService } from './service';
 
 function makeDbPath() {
@@ -355,6 +356,50 @@ describe('role manager service', () => {
     expect(message?.role).toBe('assistant');
     expect(message?.messageKind).toBe('writeback');
     expect(message?.contentText).toBe('Task completed');
+  });
+
+  // R2 回归：writeback auto-wake 拉起的父会话 run 与强杀补投递一样必须透传平台回调。
+  // 轮询移除后前端只剩 WS 事件源：不广播 running/idle → 新 assistant 文本不 invalidate、
+  // 本地状态无法复位（DB 一旦被读到 running 就再也没有 idle 事件）；流事件不转发 → 没有实时文本。
+  test('writeback auto-wake 父会话 run 透传流事件与运行状态（带父会话 sessionId）', async () => {
+    const { roleManager, piClient } = await setupDomain();
+    const { parentSessionId, childSessionId } = await setupParentWithChild(roleManager, 'Auto Wake Visibility');
+
+    const statuses: Array<{ sessionId: string; runtimeStatus: 'running' | 'idle' }> = [];
+    const streamEvents: PiSessionStreamEvent[] = [];
+    // 父会话 run 订阅流：回放一条 text_delta，验证 auto-wake run 也把事件交给平台回调
+    (piClient as unknown as {
+      subscribeSession: (sessionId: string, listener: (event: PiSessionStreamEvent) => void | Promise<void>) => Promise<() => void>;
+    }).subscribeSession = async (sessionId, listener) => {
+      await listener({ type: 'text_delta', sessionId, runId: 'run_stream', messageId: 'msg_stream', delta: 'auto-wake text' });
+      return () => {};
+    };
+
+    try {
+      const result = await roleManager.writebackToParent({
+        childSessionId,
+        summary: 'wake parent with visibility',
+        onRuntimeStatusChange: (payload) => { statuses.push({ sessionId: payload.sessionId, runtimeStatus: payload.runtimeStatus }); },
+        onStreamEvent: (event) => { streamEvents.push(event); },
+      });
+      expect(result.parentSessionId).toBe(parentSessionId);
+
+      // startSessionRun 的 attemptSend 是 fire-and-forget（`void attemptSend()`）：
+      // writebackToParent 返回时 run 可能尚未收尾 → 轮询等待 idle 广播到达再断言。
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && !statuses.some((s) => s.sessionId === parentSessionId && s.runtimeStatus === 'idle')) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      // running → idle 两端都必须广播给父会话（前端据此 invalidate + 复位本地状态）
+      expect(statuses.filter((s) => s.sessionId === parentSessionId).map((s) => s.runtimeStatus)).toEqual(['running', 'idle']);
+      // 流事件也必须带父会话 sessionId 到达回调（不能是别的会话）
+      expect(streamEvents).toHaveLength(1);
+      expect(streamEvents[0]).toMatchObject({ type: 'text_delta', sessionId: parentSessionId, delta: 'auto-wake text' });
+    } finally {
+      const { clearIdleRuntimeCleanup } = await import('../session/runtime');
+      clearIdleRuntimeCleanup(parentSessionId);
+    }
   });
 
   test('writeback does not wake running parent', async () => {
