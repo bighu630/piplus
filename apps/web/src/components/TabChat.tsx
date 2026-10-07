@@ -29,6 +29,7 @@ import Select from './Select';
 import { useSessionContextUsage } from '../lib/hooks';
 import { buildFileToolGroups, collectCoveredToolResultIds, collectMergedToolCallGroups, findToolResultMessage, parseToolArgsJson } from '../lib/tool-summary';
 import { computeVisibleTimestampIds, pickTimestampText } from '../lib/chat-timestamps';
+import { derivePrependedIds } from '../lib/chat-prepend';
 
 /** 图片缩略图：canvas 降采样生成小尺寸 data URL，避免大 base64 原图常驻 DOM 解码（保留原始比例） */
 const ImageThumbnail = React.memo(function ImageThumbnail({
@@ -92,6 +93,15 @@ import { useOptimisticUserMessages } from '../lib/use-optimistic-user-messages';
 
 // 距容器底部多少像素内视为"在底部"（跟随吸底与按钮显示共用）
 const FOLLOW_THRESHOLD = 100;
+// 新 prepend 消息的淡入时长（通过 CSS 变量 --chat-prepend-in-ms 传给 index.css，单一来源）
+const PREPEND_ANIM_MS = 180;
+/** 在滚动容器内按 data-message-id 查找消息槽（避免 CSS 选择器转义问题） */
+function findMessageSlot(container: HTMLElement, id: string): HTMLElement | null {
+  for (const el of container.querySelectorAll<HTMLElement>('[data-message-id]')) {
+    if (el.dataset.messageId === id) return el;
+  }
+  return null;
+}
 
 interface ModelOption {
   provider: string;
@@ -299,6 +309,7 @@ function TabChat({
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevSessionIdRef = useRef<string | null | undefined>(selectedSessionId);
   const prevScrollHeightRef = useRef<number | null>(null);
@@ -312,6 +323,20 @@ function TabChat({
     isRunning,
     messages,
   });
+  // 上一次渲染的消息 id 列表：首条变化判定 prepend，全量列表用于推导「本次新增的前置消息」
+  const prevMessageIdsRef = useRef<string[]>([]);
+  // 本次 prepend 新增的前置消息 id（淡入动画目标）；动画结束前保持，避免中途重渲染截断动画
+  const [prependAnimIds, setPrependAnimIds] = useState<Set<string> | null>(null);
+  const prependAnimTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 可视区锚点（getBoundingClientRect 残差校正）：第一个进入视口的消息槽 id + 其相对容器顶部的视觉 top。
+  // 内容异步长高（图片解码/缩略图切换等）后，用同一锚点的新视觉位置与旧位置求差补偿 scrollTop。
+  const scrollAnchorRef = useRef<{ id: string; top: number } | null>(null);
+  // 用户是否正在主动滚动（手势/惯性期间不做残差校正，避免与手势打架）
+  const userScrollingRef = useRef(false);
+  const userScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 最近一次由代码写入的 scrollTop：用于把「自身补偿/吸底触发的 scroll」与「用户滚动」区分开
+  const lastAppliedScrollTopRef = useRef<number | null>(null);
+  const [pendingUserMessages, setPendingUserMessages] = useState<ChatMessageDTO[]>([]);
   const [submittedAskIds, setSubmittedAskIds] = useState<Set<string>>(new Set());
   const [submittingAskId, setSubmittingAskId] = useState<string | null>(null);
   const [askSubmitError, setAskSubmitError] = useState<string | null>(null);
@@ -336,13 +361,76 @@ function TabChat({
   const [isNearBottom, setIsNearBottom] = useState(true);
   const isNearBottomRef = useRef(true);
 
+  /** 写入 scrollTop 并记录实际值：用于区分「自身补偿/吸底」与「用户滚动」 */
+  const applyScrollTop = useCallback((container: HTMLElement, value: number) => {
+    container.scrollTop = value;
+    lastAppliedScrollTopRef.current = container.scrollTop;
+  }, []);
+
+  /** 记录当前可视区锚点（第一个进入视口的消息槽 + 其相对容器顶部的视觉 top） */
+  const recordScrollAnchor = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) {
+      scrollAnchorRef.current = null;
+      return;
+    }
+    const containerTop = container.getBoundingClientRect().top;
+    for (const el of container.querySelectorAll<HTMLElement>('[data-message-id]')) {
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom > containerTop + 1) {
+        scrollAnchorRef.current = { id: el.dataset.messageId ?? '', top: rect.top - containerTop };
+        return;
+      }
+    }
+    scrollAnchorRef.current = null;
+  }, []);
+
+  /**
+   * getBoundingClientRect 残差校正：内容异步长高后，把锚点拉回记录的视觉位置。
+   * - 与「上方长高还是下方追加」无关：锚点的视觉位移直接反映需要补偿的量，
+   *   底部流式追加不改变锚点位置，因此不会误补偿；
+   * - 只在用户未主动滚动且不在底部跟随时生效（底部跟随与手动滚动手势优先）。
+   */
+  const correctScrollAnchor = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    // 内容尺寸已变化：无论本次是否需要补偿，都先同步高度基准。否则「锚点下方的异步长高」（delta === 0）
+    // 或在 near-bottom / 用户滚动期间的长高不会同步，会被下一次 prepend 的 heightDelta 重复计入，
+    // 导致 scrollTop 过补偿（视口上跳）。
+    prevScrollHeightRef.current = container.scrollHeight;
+    const anchor = scrollAnchorRef.current;
+    if (!anchor || isNearBottomRef.current || userScrollingRef.current) return;
+    const el = findMessageSlot(container, anchor.id);
+    if (!el) {
+      // 锚点槽已被卸载（如覆盖型工具结果重组）：清掉，避免后续每次 RO 回调都白跑一次扫描
+      scrollAnchorRef.current = null;
+      return;
+    }
+    const containerTop = container.getBoundingClientRect().top;
+    const top = el.getBoundingClientRect().top - containerTop;
+    const delta = top - anchor.top;
+    if (Math.abs(delta) >= 1) {
+      applyScrollTop(container, container.scrollTop + delta);
+    }
+  }, [applyScrollTop]);
+
   const handleScrollToBottom = () => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    container.scrollTop = container.scrollHeight;
+    applyScrollTop(container, container.scrollHeight);
+    scrollAnchorRef.current = null;
     setIsNearBottom(true);
     isNearBottomRef.current = true;
   };
+
+  // 内容区尺寸变化（图片解码/缩略图切换/新消息等）后做一次残差校正，保证阅读位置不漂
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => correctScrollAnchor());
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [correctScrollAnchor]);
 
   const imageBlockToDataUrl = (block: ChatImageContentBlockDTO) => {
     if (!block.data_base64 || !block.mime_type) return block.uri;
@@ -446,30 +534,34 @@ function TabChat({
     setLightboxOpen(true);
   }, [sessionImageSlides]);
 
-  // 触顶加载判定：首消息 id 变化即视为 prepend（排除底部流式增长误判）
-  const prevFirstMsgIdRef = useRef<string | undefined>(displayMessages[0]?.id);
+  // 触顶加载更早消息的判定见 derivePrependedIds（旧首条仍存在且位置 > 0 才算 prepend）
 
-  // 单一滚动协调：会话切换跳底 / 触顶加载补偿 / 底部跟随（统一瞬时 scrollTo，无 smooth 动画竞争）
+  // 单一滚动协调：会话切换跳底 / 触顶加载补偿 / 底部跟随（统一瞬时 scrollTo，无 smooth 动画竞争）。
+  // 异步内容长高的残差由 ResizeObserver + getBoundingClientRect 锚点校正兜底（见 correctScrollAnchor）。
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
+
+    const currentIds = displayMessages.map((m) => m.id);
+    const prevIds = prevMessageIdsRef.current;
+    prevMessageIdsRef.current = currentIds;
 
     const sessionSwitched = prevSessionIdRef.current !== selectedSessionId;
     prevSessionIdRef.current = selectedSessionId;
 
     if (sessionSwitched) {
       // 会话切换：真实消息渲染后（layout effect 时机）直接跳底，无需 rAF
-      container.scrollTop = container.scrollHeight;
+      applyScrollTop(container, container.scrollHeight);
+      scrollAnchorRef.current = null;
       setIsNearBottom(true);
       isNearBottomRef.current = true;
       prevScrollHeightRef.current = container.scrollHeight;
-      prevFirstMsgIdRef.current = displayMessages[0]?.id;
       return;
     }
 
-    const firstId = displayMessages[0]?.id;
-    const prepended = prevFirstMsgIdRef.current !== firstId;
-    prevFirstMsgIdRef.current = firstId;
+    // 新增的前置消息 id（纯函数）：旧首条仍存在且位置 > 0 才算 prepend，排除整体替换/占位消息
+    const newIds = derivePrependedIds(prevIds, currentIds);
+    const prepended = newIds.length > 0;
 
     const prevHeight = prevScrollHeightRef.current;
     prevScrollHeightRef.current = container.scrollHeight;
@@ -478,16 +570,41 @@ function TabChat({
 
     // 触顶加载更早消息（首消息 id 变化且高度增长）：补偿 scrollTop 保持阅读位置
     if (prepended && heightDelta > 0 && !isNearBottomRef.current) {
-      container.scrollTop += heightDelta;
+      applyScrollTop(container, container.scrollTop + heightDelta);
+      // 立刻记录补偿后的可视区锚点，后续异步长高由 ResizeObserver 做残差校正
+      recordScrollAnchor();
+      // 新前置消息淡入（并集合并：180ms 内连续 prepend 不会把上一批的动画截断）
+      setPrependAnimIds((prev) => {
+        const next = new Set(prev ?? []);
+        for (const id of newIds) next.add(id);
+        return next;
+      });
+      if (prependAnimTimerRef.current) clearTimeout(prependAnimTimerRef.current);
+      prependAnimTimerRef.current = setTimeout(() => {
+        prependAnimTimerRef.current = null;
+        setPrependAnimIds(null);
+      }, PREPEND_ANIM_MS);
       return;
     }
 
     // 底部跟随：用户停留在底部附近时，任何内容变化（流式 delta/append/乐观消息）都瞬时吸底
     if (isNearBottomRef.current) {
-      container.scrollTop = container.scrollHeight;
+      applyScrollTop(container, container.scrollHeight);
       setIsNearBottom(true);
     }
-  }, [displayMessages, streamingContent, selectedSessionId]);
+  }, [displayMessages, streamingContent, selectedSessionId, applyScrollTop, recordScrollAnchor]);
+
+  // 卸载时清理淡入与用户滚动定时器
+  useEffect(() => () => {
+    if (prependAnimTimerRef.current) {
+      clearTimeout(prependAnimTimerRef.current);
+      prependAnimTimerRef.current = null;
+    }
+    if (userScrollTimerRef.current) {
+      clearTimeout(userScrollTimerRef.current);
+      userScrollTimerRef.current = null;
+    }
+  }, []);
 
   // Auto-load more when scrolling to the top (sentinel becomes visible)
   useEffect(() => {
@@ -600,7 +717,9 @@ function TabChat({
     }
   };
 
-  // 滚动监听：同步更新按钮状态和跟随标记（两者共用同一 FOLLOW_THRESHOLD 阈值）
+  // 滚动监听：同步更新按钮状态与跟随标记，并维护可视区锚点：
+  // - 用户主动滚动（与自身写入的 scrollTop 不一致）期间标记 userScrolling，停手 120ms 后再记录锚点；
+  // - 自身补偿/吸底触发的 scroll 立即刷新锚点基准，避免被当成内容位移。
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -609,12 +728,42 @@ function TabChat({
       const near = container.scrollHeight - container.scrollTop - container.clientHeight < FOLLOW_THRESHOLD;
       setIsNearBottom(near);
       isNearBottomRef.current = near;
+      return near;
+    };
+
+    const handleScroll = () => {
+      const near = checkNearBottom();
+      const applied = lastAppliedScrollTopRef.current;
+      const isSelfScroll = applied !== null && Math.abs(container.scrollTop - applied) < 1;
+      if (isSelfScroll) {
+        // 自身补偿/吸底：立即刷新锚点基准，避免被当成内容位移
+        if (near) scrollAnchorRef.current = null;
+        else recordScrollAnchor();
+        return;
+      }
+      // 用户滑动：手势/惯性期间不做残差校正，也不逐帧扫描锚点（避免长列表 O(n) 抖动），
+      // 停手 120ms 后再建立锚点作为后续异步长高的基准
+      userScrollingRef.current = true;
+      scrollAnchorRef.current = null;
+      if (userScrollTimerRef.current) clearTimeout(userScrollTimerRef.current);
+      userScrollTimerRef.current = setTimeout(() => {
+        userScrollTimerRef.current = null;
+        userScrollingRef.current = false;
+        if (!isNearBottomRef.current) recordScrollAnchor();
+      }, 120);
     };
 
     checkNearBottom();
-    container.addEventListener('scroll', checkNearBottom, { passive: true });
-    return () => container.removeEventListener('scroll', checkNearBottom);
-  }, []);
+    if (!isNearBottomRef.current) recordScrollAnchor();
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', handleScroll);
+      if (userScrollTimerRef.current) {
+        clearTimeout(userScrollTimerRef.current);
+        userScrollTimerRef.current = null;
+      }
+    };
+  }, [recordScrollAnchor]);
 
   const contextUsageQuery = useSessionContextUsage(selectedSessionId ?? null);
   const contextPercent = contextUsageQuery.data?.percent ?? null;
@@ -725,435 +874,454 @@ function TabChat({
     }
   }
 
+  const renderMessage = (msg: ChatMessageDTO): React.ReactNode => {
+    // 单条消息的可见时间戳：设置关闭时为 undefined（沿用默认渲染）
+    const timestampText = pickTimestampText(visibleTimestampIds, [msg]);
+
+    // ═══ 文件工具聚合卡片：同回合的 write/edit/read 合并为一张卡片（多行文件列表，每行可独立展开）═══
+    if (fileToolMemberIds.has(msg.id)) {
+      const group = fileToolGroups.get(msg.id);
+      if (!group) return null;
+      return (
+        <FileToolGroupCard
+          key={group.id}
+          calls={group.calls}
+          messages={messages}
+          expandedIds={expandedToolIds}
+          onToggleOne={toggleToolExpanded}
+          onToggleAll={toggleAllToolFiles}
+          runningIds={runningToolIds}
+          timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, group.calls, coveredToolResultIds))}
+        />
+      );
+    }
+
+    // ═══ 连续同工具的普通调用合并卡片（头部 ×N，展开为多组「参数 + 结果」）═══
+    if (mergedToolMemberIds.has(msg.id)) {
+      const group = mergedToolGroups.get(msg.id);
+      if (!group) return null;
+      return (
+        <MergedToolCallsCard
+          key={group.id}
+          toolName={group.toolName}
+          calls={group.calls}
+          messages={messages}
+          expanded={expandedToolIds.has(group.id)}
+          onToggle={toggleToolExpanded}
+          timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, group.calls, coveredToolResultIds))}
+        />
+      );
+    }
+
+    const isUser = msg.role === 'user';
+    const isToolCall = msg.message_kind === 'tool_call';
+    const isTool = msg.message_kind === 'tool' || msg.role === 'tool';
+    const isErrorKind = msg.message_kind === 'error';
+
+    // Error message (vision relay failure etc.): red notice card
+    if (isErrorKind) {
+      return (
+        <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+          <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
+            <div className="w-full rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 space-y-1">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-red-700 dark:text-red-400">
+                <OctagonX className="w-3.5 h-3.5" />
+                系统提示
+              </div>
+              <div className="text-xs text-red-700 dark:text-red-400 whitespace-pre-wrap">
+                {msg.content_text}
+              </div>
+            </div>
+            {timestampText !== null && (
+              <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
+                {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // Tool call message: collapsible card
+    if (isToolCall) {
+      const toolName = msg.tool_name || 'unknown';
+
+      // ask_question 待回答匹配与 spawn_session 角色后缀仍需解析后的 args；卡片展示交由 ToolCallCard
+      const { parsedArgs } = parseToolArgsJson(msg.tool_args_json);
+      const spawnSessionRole = toolName === 'spawn_session' && typeof parsedArgs?.role === 'string'
+        ? parsedArgs.role
+        : null;
+
+      // ═══ ask_question：待回答时渲染表单卡片（WS pending 事件按内容特征与 tool_call 关联）═══
+      const askAnswered = toolName === 'ask_question' && !isToolCallPending(msg.id, toolName, messages);
+      const askPendingSig =
+        toolName === 'ask_question' && parsedArgs
+          ? askQuestionSignature(asAskQuestionParts(parsedArgs))
+          : null;
+      let askPendingPayload: AskQuestionPendingPayload | null = null;
+      if (askPendingSig) {
+        for (const key of Object.keys(pendingAskMap)) {
+          const p = pendingAskMap[key];
+          if (!p) continue;
+          if (selectedSessionId && p.sessionId && p.sessionId !== selectedSessionId) continue;
+          if (askQuestionSignature(asAskQuestionParts(p as unknown as Record<string, unknown>)) === askPendingSig) {
+            askPendingPayload = p;
+            break;
+          }
+        }
+      }
+      const renderAskPendingForm = toolName === 'ask_question' && !askAnswered && askPendingPayload !== null;
+
+      if (renderAskPendingForm) {
+        return (
+          <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+            <div className="flex flex-col items-start max-w-full flex-1 min-w-0 gap-1">
+              <AskQuestionCard
+                mode="pending"
+                sessionId={selectedSessionId ?? ''}
+                pending={askPendingPayload!}
+                disabled={submittingAskId === askPendingPayload!.questionId}
+                submitted={submittedAskIds.has(askPendingPayload!.questionId)}
+                onSubmit={handleAskQuestionAnswer}
+                onCancel={handleAskQuestionAnswer}
+              />
+              {askSubmitError && (
+                <div className="text-[11px] text-red-600 dark:text-red-400 px-1">提交失败：{askSubmitError}</div>
+              )}
+              {timestampText !== null && (
+                <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
+                  {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      const toolResult = findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id);
+
+      return (
+        <ToolCallCard
+          key={msg.id}
+          msg={msg}
+          expanded={expandedToolIds.has(msg.id)}
+          onToggle={toggleToolExpanded}
+          running={runningToolIds.has(msg.id)}
+          roleSuffix={spawnSessionRole}
+          resultContent={toolResult?.content_text ?? null}
+          timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, [msg], coveredToolResultIds))}
+        />
+      );
+    }
+
+    // Tool result message
+    if (isTool) {
+      const toolName = msg.tool_name || 'unknown';
+
+      // 已被工具卡片承载的结果不渲染独立卡片：
+      // - 文件类（write/edit/read）：文件聚合卡片承载状态与失败原因
+      // - 普通工具（bash/grep 等）：ToolCallCard 的「结果」子项承载
+      // 例外（ask_question / spawn_session / send_message_to_session）与孤立结果（调用不在当前
+      // 视图内，分页边界）继续走独立卡片，避免信息丢失
+      if (coveredToolResultIds.has(msg.id)) return null;
+
+      // ═══ ask_question 已回答：渲染结果卡片（单选✓/自己输入/多选逐行/取消warning/问卷逐题）。
+      //     优先用透传的 details，缺失时降级为 content text。 ═══
+      if (toolName === 'ask_question') {
+        const details = parseAskQuestionDetails(msg);
+        return (
+          <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
+            <div className="flex flex-col items-start max-w-full flex-1 min-w-0 gap-1">
+              <AskQuestionCard
+                mode="result"
+                sessionId={selectedSessionId ?? ''}
+                details={details}
+                content={msg.content_text ?? ''}
+              />
+              {timestampText !== null && (
+                <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
+                  {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // ═══ 独立结果卡片：spawn/send 摘要、以及调用不在视图内的孤立结果 ═══
+      // 默认展开；点击卡片头部收起/再展开（折叠态按消息 id 记录在本组件）
+      return (
+        <div key={msg.id} className="flex justify-start items-start w-full min-w-0 group">
+          <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
+            <ToolResultCard
+              msg={msg}
+              expanded={!collapsedResultIds.has(msg.id)}
+              onToggle={toggleResultCollapsed}
+            />
+            {/* 时间戳隐藏时（桌面端）该行高度归零：复制按钮绝对定位浮在消息间隙，
+                移动端保持原样（按钮常显、需占位）。
+                约束：chip 高度需小于容器 space-y 间隙（当前约 15px < 16px），否则会压到下一条消息 */}
+            <div className={`relative flex items-center gap-2 px-1 mt-1 ${timestampText === null ? 'md:mt-0' : ''}`}>
+              {msg.content_text ? (
+                <button
+                  type="button"
+                  onClick={() => handleCopyMessage(msg.id, msg.content_text)}
+                  className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer whitespace-nowrap order-2 ${timestampText === null ? 'md:absolute md:top-0 md:left-1' : ''}`}
+                  title="复制消息"
+                >
+                  {copiedMessageId === msg.id ? (
+                    <>
+                      <Check className="w-3 h-3 text-green-600" />
+                      <span className="text-green-600 font-medium">已复制</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>复制</span>
+                    </>
+                  )}
+                </button>
+              ) : null}
+              {timestampText !== null && (
+                <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 font-mono order-1">
+                  {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start w-full min-w-0 group`}>
+        <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0 ${isUser ? 'max-w-[85%]' : 'max-w-full flex-1'}`}>
+          {isUser ? (
+            <div className="space-y-2 max-w-full">
+              {imageBlocks(msg).length > 0 && (
+                <div className="flex flex-wrap justify-end gap-2">
+                  {imageBlocks(msg).map((block, index) => {
+                    const src = imageBlockToDataUrl(block);
+                    if (!src) return null;
+                    return (
+                      <button
+                        key={`${msg.id}-image-${index}`}
+                        type="button"
+                        onClick={() => openImagePreview(block)}
+                        className="overflow-hidden rounded-xl border border-blue-400/30 bg-blue-500/10 hover:opacity-95 transition cursor-pointer shrink-0"
+                        title={block.filename ?? '预览图片'}
+                      >
+                        <ImageThumbnail
+                          src={src}
+                          alt={block.filename ?? `attachment-${index + 1}`}
+                          mimeType={block.mime_type}
+                          className="max-h-20 max-w-56 h-auto w-auto object-contain transition-transform duration-150 hover:scale-[1.03]"
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {(msg.content_text || textBlocks(msg).length > 0) && (
+                <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed break-words overflow-hidden">
+                  <MarkdownRenderer content={msg.content_text ?? ''} variant="user" />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
+              {msg.content_text?.includes('</think>') ? (
+                <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-3 my-2 text-slate-600 dark:text-slate-400 rounded-r-lg text-[13px] leading-relaxed whitespace-pre-wrap">
+                  {msg.content_text.replace(/<\/?think>|<\/?thinking>/gi, '').trim()}
+                </blockquote>
+              ) : (
+                <MarkdownRenderer content={msg.content_text ?? ''} variant="assistant" blockIdPrefix={msg.id} />
+              )}
+          </div>
+        )}
+          {/* 时间戳隐藏时（桌面端）该行高度归零：复制按钮绝对定位浮在消息间隙（用户消息靠右、助手消息靠左），
+              移动端保持原样（按钮常显、需占位）。
+              约束：chip 高度需小于容器 space-y 间隙（当前约 15px < 16px），否则会压到下一条消息 */}
+          <div className={`relative flex items-center gap-2 px-1 ${timestampText === null ? 'mt-1 md:mt-0' : 'mt-2'}`}>
+            {msg.content_text ? (
+              <button
+                type="button"
+                onClick={() => handleCopyMessage(msg.id, msg.content_text)}
+                className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer whitespace-nowrap ${timestampText === null ? `md:absolute md:top-0 ${isUser ? 'md:right-1' : 'md:left-1'}` : (isUser ? '' : 'order-2')}`}
+                title="复制消息"
+              >
+                {copiedMessageId === msg.id ? (
+                  <>
+                    <Check className="w-3 h-3 text-green-600" />
+                    <span className="text-green-600 font-medium">已复制</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3 h-3" />
+                    <span>复制</span>
+                  </>
+                )}
+              </button>
+            ) : null}
+            {timestampText !== null && (
+              <span data-testid="message-timestamp" className={`text-[10px] text-slate-400 dark:text-slate-500 font-mono ${isUser ? '' : 'order-1'}`}>
+                {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-100/40 dark:bg-slate-900/10 relative overflow-x-hidden">
       {/* Messages */}
       <div
         ref={scrollContainerRef}
-        className={`flex-1 overflow-y-auto overflow-x-hidden px-6 py-4 ${hideChatTimestamps === true ? 'space-y-4' : 'space-y-6'}`}
+        className="chat-scroll-container flex-1 overflow-y-auto overflow-x-hidden px-6 py-4"
+        style={{ '--chat-prepend-in-ms': `${PREPEND_ANIM_MS}ms` } as React.CSSProperties}
       >
-        {/* Sentinel for IntersectionObserver auto-load */}
-        <div ref={sentinelRef} className="h-0.5" />
+        {/* 内容包裹层：ResizeObserver 观察目标，异步长高的残差校正基准；space-y 间距下移到这里 */}
+        <div ref={contentRef} className={hideChatTimestamps === true ? 'space-y-4' : 'space-y-6'}>
+          {/* Sentinel for IntersectionObserver auto-load */}
+          <div ref={sentinelRef} className="h-0.5" />
 
-        {hasMore && (
-          <div className="flex justify-center">
-            <button
-              className="flex items-center space-x-1.5 px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-50"
-              disabled={loadingMore}
-              onClick={onLoadMore}
-            >
-              <ScrollText className="w-3.5 h-3.5" />
-              <span>{loadingMore ? '加载中…' : '加载更早消息'}</span>
-            </button>
-          </div>
-        )}
+          {hasMore && (
+            <div className="flex justify-center">
+              <button
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition cursor-pointer disabled:opacity-50"
+                disabled={loadingMore}
+                onClick={onLoadMore}
+              >
+                <ScrollText className="w-3.5 h-3.5" />
+                <span>{loadingMore ? '加载中…' : '加载更早消息'}</span>
+              </button>
+            </div>
+          )}
 
-        {displayMessages.map((msg) => {
-          // 单条消息的可见时间戳：设置关闭时为 undefined（沿用默认渲染）
-          const timestampText = pickTimestampText(visibleTimestampIds, [msg]);
-
-          // ═══ 文件工具聚合卡片：同回合的 write/edit/read 合并为一张卡片（多行文件列表，每行可独立展开）═══
-          if (fileToolMemberIds.has(msg.id)) {
-            const group = fileToolGroups.get(msg.id);
-            if (!group) return null;
+          {displayMessages.map((msg) => {
+            const node = renderMessage(msg);
+            if (!node) return null;
             return (
-              <FileToolGroupCard
-                key={group.id}
-                calls={group.calls}
-                messages={messages}
-                expandedIds={expandedToolIds}
-                onToggleOne={toggleToolExpanded}
-                onToggleAll={toggleAllToolFiles}
-                runningIds={runningToolIds}
-                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, group.calls, coveredToolResultIds))}
-              />
-            );
-          }
-
-          // ═══ 连续同工具的普通调用合并卡片（头部 ×N，展开为多组「参数 + 结果」）═══
-          if (mergedToolMemberIds.has(msg.id)) {
-            const group = mergedToolGroups.get(msg.id);
-            if (!group) return null;
-            return (
-              <MergedToolCallsCard
-                key={group.id}
-                toolName={group.toolName}
-                calls={group.calls}
-                messages={messages}
-                expanded={expandedToolIds.has(group.id)}
-                onToggle={toggleToolExpanded}
-                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, group.calls, coveredToolResultIds))}
-              />
-            );
-          }
-
-          const isUser = msg.role === 'user';
-          const isToolCall = msg.message_kind === 'tool_call';
-          const isTool = msg.message_kind === 'tool' || msg.role === 'tool';
-          const isErrorKind = msg.message_kind === 'error';
-
-          // Error message (vision relay failure etc.): red notice card
-          if (isErrorKind) {
-            return (
-              <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
-                <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                  <div className="w-full rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 p-3 space-y-1">
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-red-700 dark:text-red-400">
-                      <OctagonX className="w-3.5 h-3.5" />
-                      系统提示
-                    </div>
-                    <div className="text-xs text-red-700 dark:text-red-400 whitespace-pre-wrap">
-                      {msg.content_text}
-                    </div>
-                  </div>
-                  {timestampText !== null && (
-                    <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-1 px-1 font-mono">
-                      {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          }
-
-          // Tool call message: collapsible card
-          if (isToolCall) {
-            const toolName = msg.tool_name || 'unknown';
-
-            // ask_question 待回答匹配与 spawn_session 角色后缀仍需解析后的 args；卡片展示交由 ToolCallCard
-            const { parsedArgs } = parseToolArgsJson(msg.tool_args_json);
-            const spawnSessionRole = toolName === 'spawn_session' && typeof parsedArgs?.role === 'string'
-              ? parsedArgs.role
-              : null;
-
-            // ═══ ask_question：待回答时渲染表单卡片（WS pending 事件按内容特征与 tool_call 关联）═══
-            const askAnswered = toolName === 'ask_question' && !isToolCallPending(msg.id, toolName, messages);
-            const askPendingSig =
-              toolName === 'ask_question' && parsedArgs
-                ? askQuestionSignature(asAskQuestionParts(parsedArgs))
-                : null;
-            let askPendingPayload: AskQuestionPendingPayload | null = null;
-            if (askPendingSig) {
-              for (const key of Object.keys(pendingAskMap)) {
-                const p = pendingAskMap[key];
-                if (!p) continue;
-                if (selectedSessionId && p.sessionId && p.sessionId !== selectedSessionId) continue;
-                if (askQuestionSignature(asAskQuestionParts(p as unknown as Record<string, unknown>)) === askPendingSig) {
-                  askPendingPayload = p;
-                  break;
-                }
-              }
-            }
-            const renderAskPendingForm = toolName === 'ask_question' && !askAnswered && askPendingPayload !== null;
-
-            if (renderAskPendingForm) {
-              return (
-                <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
-                  <div className="flex flex-col items-start max-w-full flex-1 min-w-0 gap-1">
-                    <AskQuestionCard
-                      mode="pending"
-                      sessionId={selectedSessionId ?? ''}
-                      pending={askPendingPayload!}
-                      disabled={submittingAskId === askPendingPayload!.questionId}
-                      submitted={submittedAskIds.has(askPendingPayload!.questionId)}
-                      onSubmit={handleAskQuestionAnswer}
-                      onCancel={handleAskQuestionAnswer}
-                    />
-                    {askSubmitError && (
-                      <div className="text-[11px] text-red-600 dark:text-red-400 px-1">提交失败：{askSubmitError}</div>
-                    )}
-                    {timestampText !== null && (
-                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
-                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            }
-
-            const toolResult = findToolResultMessage(messages, msg.id, toolName, msg.tool_call_id);
-
-            return (
-              <ToolCallCard
+              <div
                 key={msg.id}
-                msg={msg}
-                expanded={expandedToolIds.has(msg.id)}
-                onToggle={toggleToolExpanded}
-                running={runningToolIds.has(msg.id)}
-                roleSuffix={spawnSessionRole}
-                resultContent={toolResult?.content_text ?? null}
-                timestamp={visibleTimestampIds === null ? undefined : pickTimestampText(visibleTimestampIds, timestampCandidates(messages, [msg], coveredToolResultIds))}
-              />
-            );
-          }
-
-          // Tool result message
-          if (isTool) {
-            const toolName = msg.tool_name || 'unknown';
-
-            // 已被工具卡片承载的结果不渲染独立卡片：
-            // - 文件类（write/edit/read）：文件聚合卡片承载状态与失败原因
-            // - 普通工具（bash/grep 等）：ToolCallCard 的「结果」子项承载
-            // 例外（ask_question / spawn_session / send_message_to_session）与孤立结果（调用不在当前
-            // 视图内，分页边界）继续走独立卡片，避免信息丢失
-            if (coveredToolResultIds.has(msg.id)) return null;
-
-            // ═══ ask_question 已回答：渲染结果卡片（单选✓/自己输入/多选逐行/取消warning/问卷逐题）。
-            //     优先用透传的 details，缺失时降级为 content text。 ═══
-            if (toolName === 'ask_question') {
-              const details = parseAskQuestionDetails(msg);
-              return (
-                <div key={msg.id} className="flex justify-start items-start w-full min-w-0">
-                  <div className="flex flex-col items-start max-w-full flex-1 min-w-0 gap-1">
-                    <AskQuestionCard
-                      mode="result"
-                      sessionId={selectedSessionId ?? ''}
-                      details={details}
-                      content={msg.content_text ?? ''}
-                    />
-                    {timestampText !== null && (
-                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 px-1 font-mono">
-                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            }
-
-            // ═══ 独立结果卡片：spawn/send 摘要、以及调用不在视图内的孤立结果 ═══
-            // 默认展开；点击卡片头部收起/再展开（折叠态按消息 id 记录在本组件）
-            return (
-              <div key={msg.id} className="flex justify-start items-start w-full min-w-0 group">
-                <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                  <ToolResultCard
-                    msg={msg}
-                    expanded={!collapsedResultIds.has(msg.id)}
-                    onToggle={toggleResultCollapsed}
-                  />
-                  {/* 时间戳隐藏时（桌面端）该行高度归零：复制按钮绝对定位浮在消息间隙，
-                      移动端保持原样（按钮常显、需占位）。
-                      约束：chip 高度需小于容器 space-y 间隙（当前约 15px < 16px），否则会压到下一条消息 */}
-                  <div className={`relative flex items-center gap-2 px-1 mt-1 ${timestampText === null ? 'md:mt-0' : ''}`}>
-                    {msg.content_text ? (
-                      <button
-                        type="button"
-                        onClick={() => handleCopyMessage(msg.id, msg.content_text)}
-                        className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer whitespace-nowrap order-2 ${timestampText === null ? 'md:absolute md:top-0 md:left-1' : ''}`}
-                        title="复制消息"
-                      >
-                        {copiedMessageId === msg.id ? (
-                          <>
-                            <Check className="w-3 h-3 text-green-600" />
-                            <span className="text-green-600 font-medium">已复制</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3 h-3" />
-                            <span>复制</span>
-                          </>
-                        )}
-                      </button>
-                    ) : null}
-                    {timestampText !== null && (
-                      <span data-testid="message-timestamp" className="text-[10px] text-slate-400 dark:text-slate-500 font-mono order-1">
-                        {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
-                      </span>
-                    )}
-                  </div>
-                </div>
+                data-message-id={msg.id}
+                className={prependAnimIds?.has(msg.id) ? 'chat-prepend-in' : undefined}
+              >
+                {node}
               </div>
             );
-          }
+          })}
 
-          return (
-            <div key={msg.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start w-full min-w-0 group`}>
-              <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} min-w-0 ${isUser ? 'max-w-[85%]' : 'max-w-full flex-1'}`}>
-                {isUser ? (
-                  <div className="space-y-2 max-w-full">
-                    {imageBlocks(msg).length > 0 && (
-                      <div className="flex flex-wrap justify-end gap-2">
-                        {imageBlocks(msg).map((block, index) => {
-                          const src = imageBlockToDataUrl(block);
-                          if (!src) return null;
-                          return (
-                            <button
-                              key={`${msg.id}-image-${index}`}
-                              type="button"
-                              onClick={() => openImagePreview(block)}
-                              className="overflow-hidden rounded-xl border border-blue-400/30 bg-blue-500/10 hover:opacity-95 transition cursor-pointer shrink-0"
-                              title={block.filename ?? '预览图片'}
-                            >
-                              <ImageThumbnail
-                                src={src}
-                                alt={block.filename ?? `attachment-${index + 1}`}
-                                mimeType={block.mime_type}
-                                className="max-h-20 max-w-56 h-auto w-auto object-contain transition-transform duration-150 hover:scale-[1.03]"
-                              />
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {(msg.content_text || textBlocks(msg).length > 0) && (
-                      <div className="bg-blue-600 text-white rounded-2xl px-4 py-2.5 text-sm shadow-xs font-sans leading-relaxed break-words overflow-hidden">
-                        <MarkdownRenderer content={msg.content_text ?? ''} variant="user" />
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
-                    {msg.content_text?.includes('</think>') ? (
-                      <blockquote className="border-l-4 border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 pl-3.5 py-3 my-2 text-slate-600 dark:text-slate-400 rounded-r-lg text-[13px] leading-relaxed whitespace-pre-wrap">
-                        {msg.content_text.replace(/<\/?think>|<\/?thinking>/gi, '').trim()}
-                      </blockquote>
-                    ) : (
-                      <MarkdownRenderer content={msg.content_text ?? ''} variant="assistant" blockIdPrefix={msg.id} />
-                    )}
-                </div>
-              )}
-                {/* 时间戳隐藏时（桌面端）该行高度归零：复制按钮绝对定位浮在消息间隙（用户消息靠右、助手消息靠左），
-                    移动端保持原样（按钮常显、需占位）。
-                    约束：chip 高度需小于容器 space-y 间隙（当前约 15px < 16px），否则会压到下一条消息 */}
-                <div className={`relative flex items-center gap-2 px-1 ${timestampText === null ? 'mt-1 md:mt-0' : 'mt-2'}`}>
-                  {msg.content_text ? (
-                    <button
-                      type="button"
-                      onClick={() => handleCopyMessage(msg.id, msg.content_text)}
-                      className={`md:opacity-0 md:group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 font-mono cursor-pointer whitespace-nowrap ${timestampText === null ? `md:absolute md:top-0 ${isUser ? 'md:right-1' : 'md:left-1'}` : (isUser ? '' : 'order-2')}`}
-                      title="复制消息"
-                    >
-                      {copiedMessageId === msg.id ? (
-                        <>
-                          <Check className="w-3 h-3 text-green-600" />
-                          <span className="text-green-600 font-medium">已复制</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3" />
-                          <span>复制</span>
-                        </>
-                      )}
-                    </button>
-                  ) : null}
-                  {timestampText !== null && (
-                    <span data-testid="message-timestamp" className={`text-[10px] text-slate-400 dark:text-slate-500 font-mono ${isUser ? '' : 'order-1'}`}>
-                      {new Date(timestampText ?? msg.created_at).toLocaleTimeString()}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-
-        {/* Streaming content（仅 streaming 阶段渲染，complete 后由占位消息接管，避免重复渲染） */}
-        {phase === 'streaming' && streamingContent && (
-          <div className="flex justify-start items-start w-full min-w-0">
-            <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-              <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
-                <MarkdownRenderer content={sanitizeStreamingContent(streamingContent)} variant="assistant" blockIdPrefix="stream" />
-              </div>
-              <span className="text-[10px] text-blue-500 mt-2 px-1 font-mono animate-pulse">
-                streaming…
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* 等待用户回答（ask_question 阻塞）：与运行中同位置，蓝色闪烁 */}
-        {hasWaitingAsk && isRunning && !streamingContent ? (
-          <div className="flex items-start w-full">
-            <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-blue-700 dark:text-blue-300 font-sans">
-              <div className="flex space-x-1">
-                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-              </div>
-              <span className="italic pl-1 font-medium">等待用户回答… 请选择或输入后提交</span>
-            </div>
-          </div>
-        ) : isRunning && !streamingContent ? (
-          <div className="flex items-start w-full">
-            <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-slate-500 dark:text-slate-400 font-sans">
-              <div className="flex space-x-1">
-                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-              </div>
-              <span className="italic pl-1 text-slate-600 dark:text-slate-300 font-medium">
-                正在生成回复…
-              </span>
-            </div>
-          </div>
-        ) : null}
-
-        {/* Stopping indicator */}
-        {isStopping && (
-          <div className="flex items-start w-full">
-            <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-amber-700 dark:text-amber-300 font-sans">
-              <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
-              <span>正在停止…</span>
-            </div>
-          </div>
-        )}
-
-        {/* Runtime error (agent loop) */}
-        {!isRunning && !streamingContent && runtimeErrors && runtimeErrors.length > 0 && (() => {
-          const err = runtimeErrors[runtimeErrors.length - 1];
-          const errId = `runtime-error-${err.runId}`;
-          const isExpanded = expandedToolIds.has(errId);
-          const isLong = err.error.length > 200;
-          const toggleExpand = () => {
-            setExpandedToolIds((prev) => {
-              const next = new Set(prev);
-              if (next.has(errId)) next.delete(errId);
-              else next.add(errId);
-              return next;
-            });
-          };
-          return (
-            <div key={errId} className="flex justify-start items-start w-full">
+          {/* Streaming content（仅 streaming 阶段渲染，complete 后由占位消息接管，避免重复渲染） */}
+          {phase === 'streaming' && streamingContent && (
+            <div className="flex justify-start items-start w-full min-w-0">
               <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
-                <div className="bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded-xl overflow-hidden w-full">
-                  <div
-                    className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
-                    onClick={isLong ? toggleExpand : undefined}
-                  >
-                    <OctagonX className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
-                    <span className="text-xs font-semibold text-red-800 dark:text-red-300">
-                      Agent Loop Error / Agent 循环错误
-                    </span>
-                    {isLong && (
-                      isExpanded
-                        ? <ChevronDown className="w-3.5 h-3.5 text-red-400 shrink-0 ml-auto" />
-                        : <ChevronRight className="w-3.5 h-3.5 text-red-400 shrink-0 ml-auto" />
-                    )}
-                  </div>
-                  <div className={`border-t border-red-200 dark:border-red-800 px-3 py-2 ${!isExpanded && isLong ? 'max-h-20 overflow-hidden' : ''}`}>
-                    <pre className="text-[11px] text-red-900 dark:text-red-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
-                      {err.error}
-                    </pre>
+                <div className="text-slate-800 dark:text-slate-200 w-full pl-0">
+                  <MarkdownRenderer content={sanitizeStreamingContent(streamingContent)} variant="assistant" blockIdPrefix="stream" />
+                </div>
+                <span className="text-[10px] text-blue-500 mt-2 px-1 font-mono animate-pulse">
+                  streaming…
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* 等待用户回答（ask_question 阻塞）：与运行中同位置，蓝色闪烁 */}
+          {hasWaitingAsk && isRunning && !streamingContent ? (
+            <div className="flex items-start w-full">
+              <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-blue-700 dark:text-blue-300 font-sans">
+                <div className="flex space-x-1">
+                  <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                </div>
+                <span className="italic pl-1 font-medium">等待用户回答… 请选择或输入后提交</span>
+              </div>
+            </div>
+          ) : isRunning && !streamingContent ? (
+            <div className="flex items-start w-full">
+              <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-slate-500 dark:text-slate-400 font-sans">
+                <div className="flex space-x-1">
+                  <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                </div>
+                <span className="italic pl-1 text-slate-600 dark:text-slate-300 font-medium">
+                  正在生成回复…
+                </span>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Stopping indicator */}
+          {isStopping && (
+            <div className="flex items-start w-full">
+              <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-2xl p-4 shadow-2xs flex items-center space-x-2 text-xs text-amber-700 dark:text-amber-300 font-sans">
+                <LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+                <span>正在停止…</span>
+              </div>
+            </div>
+          )}
+
+          {/* Runtime error (agent loop) */}
+          {!isRunning && !streamingContent && runtimeErrors && runtimeErrors.length > 0 && (() => {
+            const err = runtimeErrors[runtimeErrors.length - 1];
+            const errId = `runtime-error-${err.runId}`;
+            const isExpanded = expandedToolIds.has(errId);
+            const isLong = err.error.length > 200;
+            const toggleExpand = () => {
+              setExpandedToolIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(errId)) next.delete(errId);
+                else next.add(errId);
+                return next;
+              });
+            };
+            return (
+              <div key={errId} className="flex justify-start items-start w-full">
+                <div className="flex flex-col items-start max-w-full flex-1 min-w-0">
+                  <div className="bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded-xl overflow-hidden w-full">
+                    <div
+                      className="px-3 py-2 flex items-center gap-2 cursor-pointer select-none"
+                      onClick={isLong ? toggleExpand : undefined}
+                    >
+                      <OctagonX className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+                      <span className="text-xs font-semibold text-red-800 dark:text-red-300">
+                        Agent Loop Error / Agent 循环错误
+                      </span>
+                      {isLong && (
+                        isExpanded
+                          ? <ChevronDown className="w-3.5 h-3.5 text-red-400 shrink-0 ml-auto" />
+                          : <ChevronRight className="w-3.5 h-3.5 text-red-400 shrink-0 ml-auto" />
+                      )}
+                    </div>
+                    <div className={`border-t border-red-200 dark:border-red-800 px-3 py-2 ${!isExpanded && isLong ? 'max-h-20 overflow-hidden' : ''}`}>
+                      <pre className="text-[11px] text-red-900 dark:text-red-200 font-mono whitespace-pre-wrap overflow-x-auto leading-relaxed">
+                        {err.error}
+                      </pre>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          );
-        })()}
+            );
+          })()}
 
-        {/* Scroll to bottom button */}
-        {!isNearBottom && (
-          <div className="sticky bottom-6 z-10 flex justify-end pointer-events-none">
-            <button
-              onClick={handleScrollToBottom}
-              className="pointer-events-auto w-11 h-11 rounded-full bg-white dark:bg-slate-700 shadow-lg border border-slate-200 dark:border-slate-600 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-600 transition cursor-pointer"
-              aria-label="滚动到底部"
-            >
-              <ChevronDown className="w-5 h-5 text-slate-600 dark:text-slate-300" />
-            </button>
-          </div>
-        )}
+          {/* Scroll to bottom button */}
+          {!isNearBottom && (
+            <div className="sticky bottom-6 z-10 flex justify-end pointer-events-none">
+              <button
+                onClick={handleScrollToBottom}
+                className="pointer-events-auto w-11 h-11 rounded-full bg-white dark:bg-slate-700 shadow-lg border border-slate-200 dark:border-slate-600 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-600 transition cursor-pointer"
+                aria-label="滚动到底部"
+              >
+                <ChevronDown className="w-5 h-5 text-slate-600 dark:text-slate-300" />
+              </button>
+            </div>
+          )}
+
+        </div>
       </div>
 
       {/* Input area */}

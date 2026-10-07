@@ -9,6 +9,7 @@ import { useSystemNotifications } from './use-system-notifications';
 import { useSessionSelection } from './use-session-selection';
 import { useSessionActions } from './use-session-actions';
 import { computeSessionMessagesRefetchInterval } from './session-messages-refetch';
+import { useMinDuration } from './use-min-duration';
 import { useTitleEditing } from './use-title-editing';
 import { useTerminalBridge } from './use-terminal-bridge';
 import { useProjectActions } from './use-project-actions';
@@ -42,6 +43,10 @@ import {
 } from './hooks';
 
 type SendShortcutMode = 'enter' | 'mod_enter';
+
+// 触顶加载「过快响应」的最短展示时长（ms）：本地/AppImage 历史接口近零延迟时，
+// 把「加载更早消息 → 加载中… → 新内容」压成一帧会造成顶端闪跳，只对这种过快完成补足。
+const MIN_LOADING_VISIBLE_MS = 200;
 
 /**
  * App 的组合根：auth、查询、UI 状态、主题/通知与各专项 hook 都在这里编排，
@@ -166,6 +171,8 @@ export function useAppShell() {
     () => messagesQuery.data?.pages.flatMap((p) => p.messages).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()) ?? [],
     [messagesQuery.data],
   );
+  // 历史分页加载态：对过快完成补足最短展示时长，避免本地瞬时插入造成的视觉跳变
+  const loadingMore = useMinDuration(messagesQuery.isFetchingNextPage, MIN_LOADING_VISIBLE_MS);
 
   const [currentModelSupportsImages, setCurrentModelSupportsImages] = useState<boolean | null>(null);
   useEffect(() => {
@@ -283,7 +290,7 @@ export function useAppShell() {
   const tabChat = {
     messages,
     hasMore: Boolean(messagesQuery.hasNextPage),
-    loadingMore: messagesQuery.isFetchingNextPage,
+    loadingMore,
     onLoadMore: sessionActions.handleLoadMore,
     onSend: sessionActions.handleSend,
     onStop: sessionActions.handleStop,
