@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Window } from 'happy-dom';
 import { WebSocketProvider, useWebSocket, useWebSocketConnected, useChatStream } from './ws-provider';
 import { TOKEN_STORAGE_KEY } from './auth-session';
+import { SYSTEM_NOTIFICATIONS_STORAGE_KEY } from './notification';
 
 // 验收场景（reviewer 🔴）：4401 登出停摆后，用户重新登录必须能重建 WS 连接
 // 且 hello 帧携带最新 token。通过真实渲染 WebSocketProvider 并驱动登录态查询缓存完成。
@@ -149,6 +150,23 @@ describe('WebSocketProvider reconnect after re-login', () => {
       );
     });
     return { connectedValues };
+  }
+
+  /** 渲染自定义探针（与 renderProvider 相同的 Provider/QueryClient 包装）。 */
+  function renderNode(node: React.ReactNode) {
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    container = (globalThis.document as Document).createElement('div');
+    (globalThis.document as Document).body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <WebSocketProvider>{node}</WebSocketProvider>
+        </QueryClientProvider>,
+      );
+    });
   }
 
   beforeEach(() => {
@@ -419,6 +437,196 @@ describe('WebSocketProvider reconnect after re-login', () => {
         await new Promise((resolve) => setTimeout(resolve, 120));
       });
       expect(phases.at(-1)).toBe('streaming');
+    });
+  });
+
+  describe('重连后清理残留流式快照（R4）', () => {
+    test('断线期间 run 结束（idle 事件丢失）：重连后把 streaming 快照复位并通知订阅者', async () => {
+      const snapshots: Array<{ phase: string; streamingContent: string }> = [];
+      function StreamProbe() {
+        const ctx = useWebSocket() as unknown as {
+          setSessionContext: (s: string | null, p: string | null, t: string) => void;
+        };
+        // chat_stream 仅对「当前会话」转发给流式订阅者，测试需要先设定会话上下文
+        useEffect(() => {
+          ctx.setSessionContext('sess_reconnect', null, 'chat');
+        }, []);
+        const snap = useChatStream('sess_reconnect');
+        snapshots.push({ phase: snap.phase, streamingContent: snap.streamingContent });
+        return null;
+      }
+      renderNode(<StreamProbe />);
+      await act(async () => {
+        await flush();
+        await flush();
+      });
+
+      const socket = FakeWebSocket.instances[0]!;
+      await act(async () => {
+        socket.open();
+        await flush();
+      });
+
+      const dispatch = (body: Record<string, unknown>) => {
+        socket.dispatch('message', { data: JSON.stringify(body) } as unknown as MessageEvent);
+      };
+
+      // 进入流式状态（越过 80ms 节流窗口）
+      await act(async () => {
+        dispatch({ kind: 'chat_stream', phase: 'start', scope: { session_id: 'sess_reconnect' }, payload: {} });
+        dispatch({ kind: 'chat_stream', phase: 'delta', scope: { session_id: 'sess_reconnect' }, payload: { delta: '半截内容' } });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      });
+      expect(snapshots.at(-1)).toMatchObject({ phase: 'streaming', streamingContent: '半截内容' });
+
+      // 断线：run 在断线期间结束，idle 事件永远不会到达
+      const invalidations: Array<{ queryKey?: unknown[] }> = [];
+      const originalInvalidate = queryClient.invalidateQueries.bind(queryClient);
+      queryClient.invalidateQueries = ((filters?: { queryKey?: unknown[] }) => {
+        invalidations.push(filters ?? {});
+        return originalInvalidate(filters as never);
+      }) as typeof queryClient.invalidateQueries;
+
+      await act(async () => {
+        socket.dispatch('close', { code: 1006 });
+        await flush();
+      });
+
+      // 既有指数退避重连（首次 2000ms）→ 新连接 onOpen
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2100));
+        await flush();
+      });
+      expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+      const second = FakeWebSocket.instances[1]!;
+      await act(async () => {
+        second.open();
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      });
+
+      // 残留的 streaming 快照被清理（否则半截流式气泡在补拉出完整消息后仍常驻）
+      expect(snapshots.at(-1)).toMatchObject({ phase: 'idle', streamingContent: '' });
+      // 重连补拉：当前会话消息被 invalidate
+      expect(invalidations).toContainEqual({ queryKey: ['session', 'messages', 'sess_reconnect'] });
+    });
+  });
+
+  describe('订阅被拒（subscription.denied）（R7）', () => {
+    class FakeNotification {
+      static permission: NotificationPermission = 'granted';
+      static instances: FakeNotification[] = [];
+      title: string;
+      options?: NotificationOptions;
+      constructor(title: string, options?: NotificationOptions) {
+        this.title = title;
+        this.options = options;
+        FakeNotification.instances.push(this);
+      }
+    }
+    const originalNotification = globalThis.Notification;
+    let originalWindowNotification: unknown;
+
+    beforeEach(() => {
+      FakeNotification.instances = [];
+      originalWindowNotification = (window as unknown as { Notification?: unknown }).Notification;
+      (window as unknown as { Notification: unknown }).Notification = FakeNotification;
+      (globalThis as { Notification?: unknown }).Notification = FakeNotification;
+      window.localStorage.setItem(SYSTEM_NOTIFICATIONS_STORAGE_KEY, 'true');
+    });
+
+    afterEach(() => {
+      (window as unknown as { Notification?: unknown }).Notification = originalWindowNotification;
+      (globalThis as { Notification?: unknown }).Notification = originalNotification;
+      window.localStorage.removeItem(SYSTEM_NOTIFICATIONS_STORAGE_KEY);
+    });
+
+    /** 渲染「当前会话 = sess_denied」的探针并打开连接，返回驱动函数。 */
+    async function renderDeniedScenario() {
+      function DeniedProbe() {
+        const ctx = useWebSocket() as unknown as {
+          setSessionContext: (s: string | null, p: string | null, t: string) => void;
+        };
+        useEffect(() => {
+          ctx.setSessionContext('sess_denied', null, 'chat');
+        }, []);
+        return null;
+      }
+      renderNode(<DeniedProbe />);
+      await act(async () => {
+        await flush();
+        await flush();
+      });
+
+      const socket = FakeWebSocket.instances[0]!;
+      await act(async () => {
+        socket.open();
+        await flush();
+      });
+
+      return {
+        socket,
+        subscribeFrames: () => socket.sent
+          .map((raw) => JSON.parse(raw) as { type?: string; payload?: { session_id?: string } })
+          .filter((m) => m.type === 'subscribe_session' && m.payload?.session_id === 'sess_denied'),
+        deny: () => socket.dispatch('message', {
+          data: JSON.stringify({
+            kind: 'event',
+            type: 'subscription.denied',
+            timestamp: new Date().toISOString(),
+            payload: { session_id: 'sess_denied' },
+          }),
+        } as unknown as MessageEvent),
+      };
+    }
+
+    test('被拒后提示用户并做一次延迟重订阅', async () => {
+      const { socket, subscribeFrames, deny } = await renderDeniedScenario();
+
+      // onOpen 已订阅一次
+      expect(subscribeFrames()).toHaveLength(1);
+
+      // 第一次被拒：提示用户 + 延迟重订阅
+      await act(async () => {
+        deny();
+        await flush();
+      });
+      expect(FakeNotification.instances).toHaveLength(1);
+      expect(FakeNotification.instances[0]!.title).toContain('订阅');
+      expect(FakeNotification.instances[0]!.options?.body).toContain('重试');
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 3200));
+      });
+      expect(subscribeFrames()).toHaveLength(2);
+    });
+
+    test('重试仍失败则放弃：给出最终提示且不再重订阅（避免无限循环）', async () => {
+      const { socket, subscribeFrames, deny } = await renderDeniedScenario();
+
+      // 连续三次被拒：首次提示 → 第二次静默重试 → 第三次放弃
+      await act(async () => {
+        deny();
+        await flush();
+      });
+      expect(FakeNotification.instances).toHaveLength(1);
+      await act(async () => {
+        deny();
+        await flush();
+      });
+      expect(FakeNotification.instances).toHaveLength(1);
+      await act(async () => {
+        deny();
+        await flush();
+      });
+      expect(FakeNotification.instances).toHaveLength(2);
+      expect(FakeNotification.instances[1]!.options?.body).toContain('刷新页面');
+
+      // 放弃时取消挂起的重试定时器：等待超过重试延迟后不得再出现 subscribe_session
+      const before = subscribeFrames().length;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 3200));
+      });
+      expect(subscribeFrames()).toHaveLength(before);
     });
   });
 });
