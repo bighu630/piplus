@@ -361,6 +361,7 @@ describe('startSessionRun', () => {
 
       expect(childId).not.toBeNull();
       // 原有路径不丢：父会话自己的流事件照常转发；且不得把子会话事件打成父会话
+      expect(streamEvents.some((event) => event.sessionId === 'session_test_runtime')).toBe(true);
       expect(streamEvents.every((event) => event.sessionId === childId || event.sessionId === 'session_test_runtime')).toBe(true);
     } finally {
       clearIdleRuntimeCleanup('session_test_runtime');
@@ -1198,7 +1199,7 @@ describe('startSessionRun', () => {
     expect(state.unsubscribed).toContain('session_test_runtime');
   });
 
-  // ─── 子会话安全计时器：不传 onStreamEvent 也必须订阅流事件 ─────────────
+  // ─── 安全计时器：不传 onStreamEvent（可选回调）也必须订阅流事件 ─────────────
   test('subscribes to stream events even without onStreamEvent (callers without UI bridge)', async () => {
     const { db } = await setupSession({ sessionId: 'session_subscribe_no_ui' });
     const { client, state } = makePiClient();
@@ -1216,7 +1217,7 @@ describe('startSessionRun', () => {
     });
 
     try {
-      // 即使没有 UI 消费方，runtime 也必须订阅流事件（否则 10 分钟硬超时必杀子会话）
+      // 即使调用方没有 UI 桥，runtime 也必须订阅流事件（否则 10 分钟硬超时必杀会话）
       expect(state.subscribed).toContain('session_subscribe_no_ui');
 
       // sendMessage 正常 resolve → 会话正常回到 idle，订阅随之解除
